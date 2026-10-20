@@ -1,0 +1,1 @@
+{"variants":{"facing=north":{"model":"blockommander:block/if"},"facing=east":{"model":"blockommander:block/if","y":90},"facing=south":{"model":"blockommander:block/if","y":180},"facing=west":{"model":"blockommander:block/if","y":270}}}

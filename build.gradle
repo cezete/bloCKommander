@@ -1,0 +1,73 @@
+plugins {
+    id 'net.fabricmc.fabric-loom' version "${loom_version}"
+    id 'org.jetbrains.kotlin.jvm' version "${kotlin_version}"
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base { archivesName = project.archives_base_name }
+
+repositories { mavenCentral() }
+
+loom {
+    splitEnvironmentSourceSets()
+    mods {
+        blockommander {
+            sourceSet sourceSets.main
+            sourceSet sourceSets.client
+        }
+    }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+    implementation "net.fabricmc:fabric-language-kotlin:${project.fabric_kotlin_version}"
+    include "net.fabricmc:fabric-language-kotlin:${project.fabric_kotlin_version}"
+    implementation 'com.google.code.gson:gson:2.13.2'
+    include 'com.google.code.gson:gson:2.13.2'
+    testImplementation platform('org.junit:junit-bom:5.13.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+def expandedModVersion = project.version.toString()
+processResources {
+    inputs.property 'version', expandedModVersion
+    filesMatching('fabric.mod.json') { expand version: expandedModVersion }
+}
+
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask).configureEach {
+    compilerOptions.jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_25
+}
+
+tasks.withType(JavaCompile).configureEach { options.release = 25 }
+
+java {
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
+}
+
+test { useJUnitPlatform() }
+
+tasks.register('pythonTest', Exec) {
+    workingDir 'python-service'
+    def python = System.getenv('BLOCKCOMMANDER_PYTHON') ?: 'python'
+    commandLine python, '-m', 'unittest', 'discover', '-s', 'tests', '-v'
+    environment 'PYTHONPATH', file('python-service/src').absolutePath
+}
+
+tasks.register('runtimeBundle', Zip) {
+    dependsOn tasks.named('jar')
+    archiveFileName = "blockommander-runtime-${project.version}.zip"
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+    from(tasks.named('jar').flatMap { it.archiveFile }) { into 'fabric-server/mods' }
+    from('python-service') {
+        into 'python-service'
+        exclude '.venv/**', '**/__pycache__/**', '**/*.pyc'
+    }
+    from('deployment') { into 'deployment' }
+    from('docs') { into 'docs' }
+}

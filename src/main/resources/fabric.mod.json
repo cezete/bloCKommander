@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "blockommander",
+  "version": "${version}",
+  "name": "bloCKommander",
+  "description": "Fabric server/client mod for developer halls and CK program blocks.",
+  "authors": ["Buciqua"],
+  "license": "All-Rights-Reserved",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["me.buciqua.blockommander.BlockCommanderMod"],
+    "client": ["me.buciqua.blockommander.client.BlockCommanderClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.3",
+    "java": ">=25",
+    "fabric-api": "*",
+    "fabric-language-kotlin": ">=1.13.10"
+  }
+}
