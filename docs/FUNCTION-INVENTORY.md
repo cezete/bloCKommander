@@ -4,7 +4,7 @@
 
 | Funkció | Régi hely | Tényleges működés | Fabric-átvétel |
 |---|---|---|---|
-| Hangár Kard + recept | `BlockCommanderTransmitter/.../items/HangarSword.kt` | Egyedi PDC-vel jelölt aranykard, 2 aranyrúd + bot recept | Regisztrált `blockommander:hangar_sword` item és shaped recept; nincs Bukkit/PDC. |
+| Hangár Kard + recept | `BlockCommanderTransmitter/.../items/HangarSword.kt` | Egyedi PDC-vel jelölt aranykard, 2 aranyrúd + bot recept | Regisztrált `blockommander:hangar_sword` item; a vanilla receptütközést egy, a bot mellé tett redstone por oldja fel. Nincs Bukkit/PDC. |
 | Suhintás, kijelölés | `.../events/SelectionListener.kt` | Játékosonként A pont és anyag memóriában; B pont után adatbekérés és HTTP | `runtime/Interactions.kt`: AttackBlock/UseBlock Fabric callback, játékosonkénti kijelölés. |
 | Adatbekérés | `SelectionListener.kt`, `ProgramBlockListener.kt` | Paper üllőinventory kétlépcsős kezelése | `client/screen/CkFormScreen.kt` és hitelesített C2S payload; külön hall- és blokkszerkesztő űrlap. |
 | Hangárgeometria | `CKpu/src/hangar/builder.py`, Paper `HallRegistry.kt` | Normalizált doboz, üreg, ablak, tetőfény, ajtónyílás, kezelőszervek | A validáció és terv a Pythonban maradt; `runtime/WorldRenderer.kt` kizárólag a Fabric szerver főszálán ír világot. |

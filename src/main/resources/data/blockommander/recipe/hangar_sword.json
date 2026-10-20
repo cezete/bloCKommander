@@ -1,8 +1,9 @@
 {
   "type": "minecraft:crafting_shaped",
-  "pattern": [" G", "G ", "S "],
+  "pattern": [" G ", " G ", "RS "],
   "key": {
     "G": "minecraft:gold_ingot",
+    "R": "minecraft:redstone",
     "S": "minecraft:stick"
   },
   "result": {"id": "blockommander:hangar_sword", "count": 1}

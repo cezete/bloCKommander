@@ -34,9 +34,10 @@ python -m unittest discover -s python-service/tests -v
 ## Használat
 
 1. A kreatív inventory **CK** füléről vedd ki a Hangár Kardot vagy a START/STOP/IF/FOR/FUN blokkot.
-2. Hangár Karddal bal kattintás adja az A pontot, jobb kattintás a B pontot; ezután a saját képernyőn add meg a nevet és a stabil kódot.
-3. CK-blokk csak egy betöltött Stage-en helyezhető el. Lerakás, törés és szerkesztés a szerver által ellenőrzött Python API-n megy át.
-4. Meglévő CK-blokkra jobb kattintva szerkeszthető a felirat és a leírás.
-5. A külön MENTÉS és DESTROY kezelőszerveket kizárólag a DB-ben nyilvántartott tulajdonos használhatja.
+2. A Hangár Kard receptje két függőleges aranyrúd, alattuk egy bot, a bot mellett pedig egy redstone por. A redstone különbözteti meg a vanilla aranykardtól.
+3. Hangár Karddal bal kattintás adja az A pontot, jobb kattintás a B pontot; ezután a saját képernyőn add meg a nevet és a stabil kódot.
+4. CK-blokk csak egy betöltött Stage-en helyezhető el. Lerakás, törés és szerkesztés a szerver által ellenőrzött Python API-n megy át.
+5. Meglévő CK-blokkra jobb kattintva szerkeszthető a felirat és a leírás.
+6. A külön MENTÉS és DESTROY kezelőszerveket kizárólag a DB-ben nyilvántartott tulajdonos használhatja.
 
 Részletek: [funkcióleltár](docs/FUNCTION-INVENTORY.md), [üzemeltetés](docs/OPERATIONS.md), [kézi próba](docs/MANUAL-TEST.md).
