@@ -4,8 +4,10 @@ from dataclasses import dataclass
 import re
 from typing import Any, Iterable
 
-GENERATOR_VERSION = 2
+GENERATOR_VERSION = 3
 MIN_WIDTH = MIN_DEPTH = MIN_HEIGHT = 5
+MIN_INTERIOR_HEIGHT = 3
+MAX_INTERIOR_HEIGHT = 64
 MAX_VOLUME = 250_000
 AIR, GLASS, GLOWSTONE, WOODEN_DOOR, WALL_SIGN, STONE_BUTTON = 0, 20, 89, 64, 68, 77
 
@@ -18,14 +20,25 @@ class BlockElement:
     def as_record(self) -> dict[str, Any]:
         return {"kind": self.kind, "x": self.x, "y": self.y, "z": self.z}
 
-def normalize_bounds(p1: dict[str, Any], p2: dict[str, Any]) -> dict[str, int]:
+def normalize_bounds(p1: dict[str, Any], p2: dict[str, Any], interior_height: Any = None) -> dict[str, int]:
     try:
         x1, x2 = sorted((int(p1["x"]), int(p2["x"])))
-        y1, y2 = sorted((int(p1["y"]), int(p2["y"])))
         z1, z2 = sorted((int(p1["z"]), int(p2["z"])))
+        if interior_height is None:
+            y1, y2 = sorted((int(p1["y"]), int(p2["y"])))
+            if y1 == y2: y2 = y1 + MIN_HEIGHT - 1
+        else:
+            height = int(interior_height)
+            if not MIN_INTERIOR_HEIGHT <= height <= MAX_INTERIOR_HEIGHT:
+                raise HallValidationError(
+                    f"A belső magasság {MIN_INTERIOR_HEIGHT}–{MAX_INTERIOR_HEIGHT} blokk lehet."
+                )
+            y1 = int(p1["y"])
+            y2 = y1 + height + 1
+    except HallValidationError:
+        raise
     except (KeyError, TypeError, ValueError) as exc:
         raise HallValidationError("A kijelölési koordináták hiányosak vagy hibásak.") from exc
-    if y1 == y2: y2 = y1 + MIN_HEIGHT - 1
     width, height, depth = x2-x1+1, y2-y1+1, z2-z1+1
     if width < MIN_WIDTH or depth < MIN_DEPTH or height < MIN_HEIGHT:
         raise HallValidationError(f"A csarnok minimális mérete {MIN_WIDTH}x{MIN_DEPTH}x{MIN_HEIGHT} blokk; a kijelölés {width}x{depth}x{height}.")
@@ -62,14 +75,14 @@ def prepare_hall(payload: dict[str,Any], hall_id: str, hall_name: str) -> dict[s
     if missing: raise HallValidationError("Hiányzó mezők: "+", ".join(missing))
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,23}",str(payload["hall_code"])):
         raise HallValidationError("A csarnokkód 1–24 karakteres lehet: betű, szám, _ vagy -.")
-    b=normalize_bounds(payload["p1"],payload["p2"]); orientation=str(payload.get("orientation","SOUTH")).upper()
+    b=normalize_bounds(payload["p1"],payload["p2"],payload.get("interior_height")); orientation=str(payload.get("orientation","SOUTH")).upper()
     controls=control_elements(b,orientation,str(payload["player_name"]),hall_name); occupied=dict(b)
     for e in controls:
         for axis,value in (("x",e.x),("y",e.y),("z",e.z)):
             occupied[f"min_{axis}"]=min(occupied[f"min_{axis}"],value); occupied[f"max_{axis}"]=max(occupied[f"max_{axis}"],value)
     return {"hall_id":hall_id,"hall_name":hall_name,"hall_code":str(payload["hall_code"]),"owner_uuid":str(payload["player_uuid"]),"owner_name":str(payload["player_name"]),
             "world_uuid":str(payload["world_uuid"]),"world_name":str(payload["world_name"]),"dimension_key":str(payload["dimension"]),
-            "orientation":orientation,"material_name":str(payload.get("material","STONE")).upper(),"material_id":int(payload.get("material_id",1)),
+            "orientation":orientation,"material_name":str(payload.get("material","minecraft:stone")).lower(),"material_id":int(payload.get("material_id",1)),
             "generator_version":GENERATOR_VERSION,"generator_params":{"window_block_id":GLASS,"light_block_id":GLOWSTONE,"door_block_id":WOODEN_DOOR},
             **b,**{f"occupied_{k}":v for k,v in occupied.items()},
             "controls":[e.as_record() for e in controls]}

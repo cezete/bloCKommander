@@ -38,8 +38,8 @@ object ModContent {
 
     private val tabKey = ResourceKey.create(BuiltInRegistries.CREATIVE_MODE_TAB.key(), BlockCommanderMod.id("ck"))
     private val tab: CreativeModeTab = FabricCreativeModeTab.builder()
-        .icon { ItemStack(START) }
-        .title(Component.translatable("creativeTab.blockommander"))
+        .icon { ItemStack(HANGAR_SWORD) }
+        .title(Component.literal("bloCKommander"))
         .displayItems { _, output ->
             output.accept(START); output.accept(STOP); output.accept(IF)
             output.accept(FOR); output.accept(FUN); output.accept(HANGAR_SWORD)

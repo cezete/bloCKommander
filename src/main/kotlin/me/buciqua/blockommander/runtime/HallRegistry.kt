@@ -56,7 +56,13 @@ class HallRegistry {
     fun stageBlockAt(worldUuid: String, pos: BlockPos) = stageAt(worldUuid, pos)?.let { stage ->
         stage.blocks.firstOrNull { it.pos == pos }?.let { stage to it }
     }
-    fun isProtected(worldUuid: String, pos: BlockPos) = halls.values.any { it.worldUuid == worldUuid && it.contains(pos) }
+    fun isProtected(worldUuid: String, pos: BlockPos) = halls.values.any { hall ->
+        hall.worldUuid == worldUuid && (
+            hall.controls.any { it.pos == pos } ||
+                (hall.contains(pos) && (pos.x == hall.min.x || pos.x == hall.max.x ||
+                    pos.y == hall.min.y || pos.y == hall.max.y || pos.z == hall.min.z || pos.z == hall.max.z))
+            )
+    }
     fun inWorld(worldUuid: String) = halls.values.filter { it.worldUuid == worldUuid }
 
     private fun parseStage(json: JsonObject): Stage {

@@ -33,7 +33,7 @@ class Interactions(private val api: ApiClient, private val registry: HallRegistr
             if (level.isClientSide || hand != net.minecraft.world.InteractionHand.MAIN_HAND || player.getItemInHand(hand).item !== ModContent.HANGAR_SWORD)
                 return@register InteractionResult.PASS
             val serverPlayer = player as ServerPlayer
-            val material = BuiltInRegistries.BLOCK.getKey(level.getBlockState(pos).block).path.uppercase()
+            val material = BuiltInRegistries.BLOCK.getKey(level.getBlockState(pos).block).toString()
             selections[player.uuid] = Selection(pos.immutable(), material)
             serverPlayer.sendSystemMessage(Component.literal("§a[CK] A pont: ${pos.x}, ${pos.y}, ${pos.z}. Jobb kattintás a B ponthoz."))
             InteractionResult.SUCCESS
@@ -51,18 +51,20 @@ class Interactions(private val api: ApiClient, private val registry: HallRegistr
                 if (selection == null) serverPlayer.sendSystemMessage(Component.literal("§e[CK] Előbb bal kattintással jelöld ki az A pontot."))
                 else {
                     val defaultCode = "hall-${System.currentTimeMillis().toString().takeLast(8)}"
-                    ServerPlayNetworking.send(serverPlayer, OpenFormPayload("hall", "${hit.blockPos.x},${hit.blockPos.y},${hit.blockPos.z}", defaultCode, defaultCode))
+                    ServerPlayNetworking.send(serverPlayer, OpenFormPayload(
+                        "hall", "${hit.blockPos.x},${hit.blockPos.y},${hit.blockPos.z}|$defaultCode", "", "7"
+                    ))
                 }
+                return@register InteractionResult.SUCCESS
+            }
+            registry.stageBlockAt(worldUuid, hit.blockPos)?.let { (stage, block) ->
+                ServerPlayNetworking.send(serverPlayer, OpenFormPayload("block", "${stage.id}|${block.instanceId}", block.label, block.description))
                 return@register InteractionResult.SUCCESS
             }
             val type = (held.item as? BlockItem)?.block?.let(ModContent::typeOf)
             if (type != null) {
                 val target = hit.blockPos.relative(hit.direction)
                 placeProgramBlock(serverPlayer, serverLevel, worldUuid, target, type)
-                return@register InteractionResult.SUCCESS
-            }
-            registry.stageBlockAt(worldUuid, hit.blockPos)?.let { (stage, block) ->
-                ServerPlayNetworking.send(serverPlayer, OpenFormPayload("block", "${stage.id}|${block.instanceId}", block.label, block.description))
                 return@register InteractionResult.SUCCESS
             }
             InteractionResult.PASS
@@ -74,7 +76,7 @@ class Interactions(private val api: ApiClient, private val registry: HallRegistr
             registry.stageBlockAt(worldUuid, pos)?.let { (stage, block) ->
                 val payload = playerPayload(serverPlayer, serverLevel)
                 api.post(serverPlayer, "/api/v1/stages/${stage.id}/blocks/${block.instanceId}/delete", payload) { response ->
-                    registry.updateStage(response.getAsJsonObject("stage"))?.stage?.let { WorldRenderer.renderStage(serverLevel, it) }
+                    registry.updateStage(response.getAsJsonObject("stage"))?.let { WorldRenderer.renderStage(serverLevel, it) }
                 }
                 return@register false
             }
@@ -89,9 +91,11 @@ class Interactions(private val api: ApiClient, private val registry: HallRegistr
                 val selection = selections[player.uuid] ?: run {
                     player.sendSystemMessage(Component.literal("§c[CK] A kijelölés már nem él; jelöld ki újra az A pontot.")); return
                 }
-                val coordinates = payload.contextId.split(',').mapNotNull(String::toIntOrNull)
+                val context = payload.contextId.split('|', limit = 2)
+                val coordinates = context[0].split(',').mapNotNull(String::toIntOrNull)
                 if (coordinates.size != 3) return
-                createHall(player, level, selection, BlockPos(coordinates[0], coordinates[1], coordinates[2]), payload.value1, payload.value2)
+                val code = context.getOrNull(1) ?: "hall-${System.currentTimeMillis().toString().takeLast(8)}"
+                createHall(player, level, selection, BlockPos(coordinates[0], coordinates[1], coordinates[2]), code, payload.value1, payload.value2)
             }
             "block" -> {
                 val ids = payload.contextId.split('|', limit = 2); if (ids.size != 2) return
@@ -100,7 +104,7 @@ class Interactions(private val api: ApiClient, private val registry: HallRegistr
                 }
                 val body = playerPayload(player, level).apply { addProperty("label", payload.value1); addProperty("description", payload.value2) }
                 api.post(player, "/api/v1/stages/${ids[0]}/blocks/${ids[1]}", body) { response ->
-                    registry.updateStage(response.getAsJsonObject("stage"))?.stage?.let { WorldRenderer.renderStage(level, it) }
+                    registry.updateStage(response.getAsJsonObject("stage"))?.let { WorldRenderer.renderStage(level, it) }
                 }
             }
         }
@@ -122,16 +126,19 @@ class Interactions(private val api: ApiClient, private val registry: HallRegistr
         }
     }
 
-    private fun createHall(player: ServerPlayer, level: ServerLevel, selection: Selection, second: BlockPos, requestedCode: String, requestedName: String) {
+    private fun createHall(player: ServerPlayer, level: ServerLevel, selection: Selection, second: BlockPos,
+                           requestedCode: String, requestedName: String, requestedHeight: String) {
         val code = requestedCode.trim().take(24)
         val name = requestedName.trim().take(96)
-        if (!code.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,23}")) || name.isBlank()) {
-            player.sendSystemMessage(Component.literal("§c[CK] A kód 1–24 karakteres (betű, szám, _ vagy -), a név nem lehet üres.")); return
+        val interiorHeight = requestedHeight.trim().toIntOrNull()
+        if (!code.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,23}")) || name.isBlank() || interiorHeight == null || interiorHeight !in 3..64) {
+            player.sendSystemMessage(Component.literal("§c[CK] A csarnok neve nem lehet üres, a belső magasság 3–64 blokk lehet.")); return
         }
         val payload = playerPayload(player, level).apply {
             addProperty("request_id", UUID.randomUUID().toString()); addProperty("hall_code", code); addProperty("hall_name", name)
             addProperty("orientation", player.direction.name); addProperty("material", selection.material)
-            add("p1", pos(selection.first)); add("p2", pos(second))
+            addProperty("interior_height", interiorHeight)
+            add("p1", pos(selection.first)); add("p2", pos(BlockPos(second.x, selection.first.y, second.z)))
         }
         api.post(player, "/api/v1/halls", payload) { response ->
             val hall = registry.install(response.getAsJsonObject("hall")); WorldRenderer.buildHall(level, hall); selections.remove(player.uuid)
@@ -146,7 +153,7 @@ class Interactions(private val api: ApiClient, private val registry: HallRegistr
             addProperty("orientation", player.direction.name)
         }
         api.post(player, "/api/v1/stages/${stage.id}/blocks", payload) { response ->
-            registry.updateStage(response.getAsJsonObject("stage"))?.stage?.let { WorldRenderer.renderStage(level, it) }
+            registry.updateStage(response.getAsJsonObject("stage"))?.let { WorldRenderer.renderStage(level, it) }
         }
     }
 
@@ -159,7 +166,7 @@ class Interactions(private val api: ApiClient, private val registry: HallRegistr
                 registry.remove(response["hall_id"].asString)?.let { WorldRenderer.demolish(level, it) }
             }
             "SAVE_BUTTON" -> api.post(player, "/api/v1/halls/save-button", payload) { response ->
-                registry.updateStage(response.getAsJsonObject("stage"))?.stage?.let { WorldRenderer.renderStage(level, it) }
+                registry.updateStage(response.getAsJsonObject("stage"))?.let { WorldRenderer.renderStage(level, it) }
             }
         }
     }

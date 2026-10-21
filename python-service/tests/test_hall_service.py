@@ -56,4 +56,17 @@ class HallServiceTest(unittest.TestCase):
         payload={**self.payload,"p2":{"x":100,"y":100,"z":100}}
         with self.assertRaises(HallValidationError): self.service.create(payload)
 
+    def test_requested_interior_height_ignores_second_vertical_coordinate(self):
+        payload={**self.payload,"interior_height":7,"material":"minecraft:bricks",
+                 "p1":{"x":0,"y":10,"z":0},"p2":{"x":6,"y":-50,"z":6}}
+        hall=self.service.create(payload)
+        self.assertEqual(10,hall["min_y"])
+        self.assertEqual(18,hall["max_y"])
+        self.assertEqual(7,hall["max_y"]-hall["min_y"]-1)
+        self.assertEqual("minecraft:bricks",hall["material_name"])
+
+    def test_requested_interior_height_is_validated(self):
+        with self.assertRaises(HallValidationError):
+            self.service.create({**self.payload,"interior_height":2})
+
 if __name__=="__main__": unittest.main()
