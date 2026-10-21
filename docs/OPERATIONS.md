@@ -1,5 +1,28 @@
 # Üzemeltetés
 
+## Gradle taskok
+
+```powershell
+# Mod + Python teszt + runtime ZIP
+.\gradlew.bat buildAll
+
+# Csak a Windows kliens JAR-jának cseréje
+.\gradlew.bat deployClient
+
+# Csak a Fabric szervermod cseréje és szabályos Fabric restart
+.\gradlew.bat deployServerMod
+
+# Csak a Python webhook frissítése; nem indítja újra a Fabricot
+.\gradlew.bat deployWebhook
+
+# Sorrend: kliens -> webhook -> szervermod
+.\gradlew.bat deployAll
+```
+
+`deployServerMod` világ- és modmentést készít. `deployWebhook` DB-dumpot és Python-forrásmentést
+készít. Mindkettő readiness ellenőrzést és saját rollbacket használ. A normál build soha nem
+indít deployt.
+
 ## Python szolgáltatás
 
 Telepítési cél: `/home/mcuser/blockommander-fabric-python`. A `.env` titkos, nem kerül a repóba.
@@ -32,10 +55,13 @@ screen -dmS blockommander-fabric ./start.sh
 
 # konzol / szabályos leállítás
 screen -r blockommander-fabric
+screen -S blockommander-fabric -X stuff $'save-all flush\r'
 screen -S blockommander-fabric -X stuff $'stop\r'
 ```
 
-Frissítési sorrend: `save-all flush`, szabályos `stop`, régi mod JAR mentése, új JAR másolása, Python kód/venv frissítése, Python indítása, Fabric indítása, log és `/health` ellenőrzése. Ugyanarra a világra második szerverpéldány nem indítható.
+Modfrissítési sorrend: `save-all flush`, szabályos `stop`, világ- és modmentés, új JAR,
+Fabric indítás és log/readiness ellenőrzés. A webhook ettől függetlenül frissíthető.
+Ugyanarra a világra második szerverpéldány nem indítható.
 
 ## Visszaállás
 

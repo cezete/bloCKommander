@@ -18,7 +18,7 @@ Java 25 szükséges. A projektbe lokálisan letöltött JDK-val PowerShellben:
 $env:JAVA_HOME="$PWD\.tools\jdk-25"
 $env:Path="$env:JAVA_HOME\bin;$env:Path"
 $env:GRADLE_USER_HOME='C:\Users\tamas\.gradle'
-.\gradlew.bat clean build runtimeBundle --no-daemon
+.\gradlew.bat buildAll --no-daemon
 ```
 
 A kliensre és a szerverre ugyanaz a runtime JAR kerül: `build/libs/blockommander-fabric-0.1.0.jar`.
@@ -30,6 +30,19 @@ Python teszt:
 $env:PYTHONPATH="$PWD\python-service\src"
 python -m unittest discover -s python-service/tests -v
 ```
+
+## Gradle telepítési taskok
+
+```powershell
+.\gradlew.bat deployClient       # csak a helyi kliens JAR
+.\gradlew.bat deployServerMod    # csak a HP Fabric mod, Python nélkül
+.\gradlew.bat deployWebhook      # csak a HP Python szolgáltatás, Fabric restart nélkül
+.\gradlew.bat deployAll          # kliens, webhook, majd szervermod
+```
+
+A deploy taskok nem futnak a normál `build`/`buildAll` részeként. A kliens célja
+`C:\Users\tamas\Minecraft\bloCKommander\mods`; a régi kliens-JAR a mellette létrehozott
+`mods-backup` könyvtárba kerül. A két szerveroldali task külön backupot és rollbacket használ.
 
 ## Használat
 

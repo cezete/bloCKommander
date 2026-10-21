@@ -52,10 +52,32 @@ java {
 
 test { useJUnitPlatform() }
 
+def windowsHost = System.getProperty('os.name').toLowerCase().contains('windows')
+def pythonServiceDir = file('python-service')
+def pythonVenvDir = file('python-service/.venv')
+def pythonVenvExecutable = file("python-service/.venv/${windowsHost ? 'Scripts/python.exe' : 'bin/python'}")
+def bootstrapPython = System.getenv('BLOCKCOMMANDER_PYTHON') ?: 'python'
+
+tasks.register('pythonVenv', Exec) {
+    description = 'Creates the project-local Python virtual environment when it is missing.'
+    onlyIf { !pythonVenvExecutable.isFile() }
+    commandLine bootstrapPython, '-m', 'venv', pythonVenvDir.absolutePath
+}
+
+tasks.register('pythonSetup', Exec) {
+    description = 'Installs the pinned Python service dependencies into the project-local venv.'
+    dependsOn tasks.named('pythonVenv')
+    workingDir pythonServiceDir
+    inputs.file file('python-service/requirements.txt')
+    doFirst {
+        commandLine pythonVenvExecutable.absolutePath, '-m', 'pip', 'install', '-r', 'requirements.txt'
+    }
+}
+
 tasks.register('pythonTest', Exec) {
-    workingDir 'python-service'
-    def python = System.getenv('BLOCKCOMMANDER_PYTHON') ?: 'python'
-    commandLine python, '-m', 'unittest', 'discover', '-s', 'tests', '-v'
+    dependsOn tasks.named('pythonSetup')
+    workingDir pythonServiceDir
+    commandLine pythonVenvExecutable.absolutePath, '-m', 'unittest', 'discover', '-s', 'tests', '-v'
     environment 'PYTHONPATH', file('python-service/src').absolutePath
 }
 
@@ -71,3 +93,45 @@ tasks.register('runtimeBundle', Zip) {
     from('deployment') { into 'deployment' }
     from('docs') { into 'docs' }
 }
+
+def powershellExecutable = 'powershell.exe'
+
+tasks.register('buildAll') {
+    group = 'blockommander'
+    description = 'Builds and tests the Fabric mod and Python service, then creates the runtime bundle.'
+    dependsOn tasks.named('build'), tasks.named('pythonTest'), tasks.named('runtimeBundle')
+}
+
+tasks.register('deployClient', Exec) {
+    group = 'blockommander'
+    description = 'Builds and copies the mod JAR to the configured local Minecraft client.'
+    dependsOn tasks.named('jar')
+    commandLine powershellExecutable, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+        file('deployment/deploy-client.ps1').absolutePath,
+        '-JarPath', tasks.named('jar').flatMap { it.archiveFile }.get().asFile.absolutePath
+}
+
+tasks.register('deployServerMod', Exec) {
+    group = 'blockommander'
+    description = 'Deploys only the Fabric mod JAR to the HP server with backup and rollback.'
+    dependsOn tasks.named('jar')
+    commandLine powershellExecutable, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+        file('deployment/deploy-hp.ps1').absolutePath, '-Mode', 'Server'
+}
+
+tasks.register('deployWebhook', Exec) {
+    group = 'blockommander'
+    description = 'Deploys only the Python webhook to the HP server with DB backup and rollback.'
+    dependsOn tasks.named('pythonTest'), tasks.named('runtimeBundle')
+    commandLine powershellExecutable, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+        file('deployment/deploy-hp.ps1').absolutePath, '-Mode', 'Webhook'
+}
+
+tasks.register('deployAll') {
+    group = 'blockommander'
+    description = 'Deploys the client JAR, Python webhook, and server mod in that order.'
+    dependsOn tasks.named('deployClient'), tasks.named('deployWebhook'), tasks.named('deployServerMod')
+}
+
+tasks.named('deployWebhook') { mustRunAfter tasks.named('deployClient') }
+tasks.named('deployServerMod') { mustRunAfter tasks.named('deployWebhook') }
