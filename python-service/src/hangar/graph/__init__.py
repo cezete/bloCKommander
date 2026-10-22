@@ -13,6 +13,9 @@ from .state import (
     EdgeIndicatorStatus, GraphStatus, GraphWorkspaceState, SaveStatus,
     mark_saved, record_validation, replace_content,
 )
+from .validation import (
+    DEFERRED_RULE_GROUPS, VALIDATED_RULE_GROUPS, PortCatalog, validate_graph,
+)
 
 __all__ = [
     "CardinalDirection", "EdgeKind", "EdgeRoute", "GraphEdge", "GraphNode",
@@ -23,4 +26,6 @@ __all__ = [
     "sort_diagnostics", "EdgeIndicatorStatus", "GraphStatus",
     "GraphWorkspaceState", "SaveStatus", "mark_saved", "record_validation",
     "replace_content",
+    "DEFERRED_RULE_GROUPS", "VALIDATED_RULE_GROUPS", "PortCatalog",
+    "validate_graph",
 ]
