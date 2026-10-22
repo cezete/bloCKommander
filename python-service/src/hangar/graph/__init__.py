@@ -16,6 +16,9 @@ from .state import (
 from .validation import (
     DEFERRED_RULE_GROUPS, VALIDATED_RULE_GROUPS, PortCatalog, validate_graph,
 )
+from .binding import (
+    BindEdgesCommand, BindingResult, RouteCandidate, bind_edges,
+)
 
 __all__ = [
     "CardinalDirection", "EdgeKind", "EdgeRoute", "GraphEdge", "GraphNode",
@@ -28,4 +31,5 @@ __all__ = [
     "replace_content",
     "DEFERRED_RULE_GROUPS", "VALIDATED_RULE_GROUPS", "PortCatalog",
     "validate_graph",
+    "BindEdgesCommand", "BindingResult", "RouteCandidate", "bind_edges",
 ]
