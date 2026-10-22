@@ -19,6 +19,10 @@ from .validation import (
 from .binding import (
     BindEdgesCommand, BindingResult, RouteCandidate, bind_edges,
 )
+from .destruction import (
+    CellChange, ConnectionSelection, DestructionPreview, DestructionResult,
+    RouteChange, confirm_destruction, preview_destruction,
+)
 
 __all__ = [
     "CardinalDirection", "EdgeKind", "EdgeRoute", "GraphEdge", "GraphNode",
@@ -32,4 +36,7 @@ __all__ = [
     "DEFERRED_RULE_GROUPS", "VALIDATED_RULE_GROUPS", "PortCatalog",
     "validate_graph",
     "BindEdgesCommand", "BindingResult", "RouteCandidate", "bind_edges",
+    "CellChange", "ConnectionSelection", "DestructionPreview",
+    "DestructionResult", "RouteChange", "confirm_destruction",
+    "preview_destruction",
 ]
