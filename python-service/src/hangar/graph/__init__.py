@@ -23,6 +23,18 @@ from .destruction import (
     CellChange, ConnectionSelection, DestructionPreview, DestructionResult,
     RouteChange, confirm_destruction, preview_destruction,
 )
+from .adapter import (
+    AdapterIssue, AdapterIssueCode, GraphWorkspaceMapping,
+    GraphWorkspaceMappingError, GraphWorkspaceUpdatePlan,
+    StageStatusDTO, prepare_graph_workspace_update, to_graph_workspace,
+    to_stage_snapshot, to_stage_status_dto,
+)
+from .snapshot import ProgramValidationStatus, StageBlockSnapshot, StageSnapshot
+from .port_catalog import (
+    BlockPortSpecification, BlockPortStatus, CK_CONTROL_PORT_CATALOG,
+    PORT_CATALOG_VERSION, PortCatalogIssue, PortCatalogIssueCode,
+    PortCatalogLookupError, RuntimeCatalogCheck, VersionedPortCatalog,
+)
 
 __all__ = [
     "CardinalDirection", "EdgeKind", "EdgeRoute", "GraphEdge", "GraphNode",
@@ -39,4 +51,13 @@ __all__ = [
     "CellChange", "ConnectionSelection", "DestructionPreview",
     "DestructionResult", "RouteChange", "confirm_destruction",
     "preview_destruction",
+    "AdapterIssue", "AdapterIssueCode", "GraphWorkspaceMapping",
+    "GraphWorkspaceMappingError", "GraphWorkspaceUpdatePlan",
+    "ProgramValidationStatus", "StageStatusDTO",
+    "prepare_graph_workspace_update", "to_graph_workspace",
+    "to_stage_snapshot", "to_stage_status_dto", "StageBlockSnapshot",
+    "StageSnapshot", "BlockPortSpecification", "BlockPortStatus",
+    "CK_CONTROL_PORT_CATALOG", "PORT_CATALOG_VERSION", "PortCatalogIssue",
+    "PortCatalogIssueCode", "PortCatalogLookupError", "RuntimeCatalogCheck",
+    "VersionedPortCatalog",
 ]

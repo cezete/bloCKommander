@@ -1,25 +1,109 @@
 """In-memory editable stage workspaces backed by atomic PostgreSQL snapshots."""
 from __future__ import annotations
 
-import copy
 import threading
 import uuid
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass, field, replace
+from typing import Any, Callable
 
 from .builder import HallValidationError
+from .graph.adapter import (
+    AdapterIssue,
+    AdapterIssueCode,
+    GraphWorkspaceMappingError,
+    prepare_graph_workspace_update,
+    to_graph_workspace,
+    to_stage_snapshot,
+)
+from .graph.model import CardinalDirection, GridPos
+from .graph.port_catalog import CK_CONTROL_PORT_CATALOG
+from .graph.snapshot import (
+    ProgramValidationStatus,
+    StageBlockSnapshot,
+    StageSnapshot,
+)
+from .graph.state import GraphWorkspaceState
 from .repository import HallConflict, HallForbidden, HallNotFound, HallRepository
 
 ORIENTATIONS={"NORTH","SOUTH","EAST","WEST"}
 
-@dataclass
+@dataclass(init=False)
 class StageWorkspace:
     stage: dict[str,Any]
-    blocks: list[dict[str,Any]]
+    snapshot: StageSnapshot
     saved_version: int
     dirty: bool=False
-    revision: int=0
+    workspace_epoch: uuid.UUID=field(default_factory=uuid.uuid4)
     lock: threading.RLock=field(default_factory=threading.RLock)
+
+    def __init__(
+        self,stage:dict[str,Any],snapshot:StageSnapshot|None=None,saved_version:int=0,
+        dirty:bool=False,workspace_epoch:uuid.UUID|None=None,
+        lock:threading.RLock|None=None,*,blocks:list[dict[str,Any]]|None=None,
+        revision:int=0,
+    ):
+        self.stage=stage;self.saved_version=saved_version;self.dirty=dirty
+        self.workspace_epoch=workspace_epoch or uuid.uuid4();self.lock=lock or threading.RLock()
+        if snapshot is not None and blocks is not None:
+            raise TypeError("pass snapshot or legacy blocks, not both")
+        if snapshot is None:
+            converted=[];seen=set()
+            for index,raw in enumerate(blocks or []):
+                required=("instance_id","type_key","rel_x","rel_y","rel_z","orientation","label")
+                missing=[name for name in required if name not in raw]
+                if missing:
+                    raise GraphWorkspaceMappingError(tuple(
+                        AdapterIssue(AdapterIssueCode.MISSING_BLOCK_FIELD,f"missing {name}",index,name)
+                        for name in missing
+                    ))
+                try: instance_id=uuid.UUID(str(raw["instance_id"]))
+                except (TypeError,ValueError) as exc:
+                    raise GraphWorkspaceMappingError((AdapterIssue(
+                        AdapterIssueCode.INVALID_INSTANCE_ID,"instance_id must be a UUID",index,"instance_id"
+                    ),)) from exc
+                if instance_id in seen:
+                    raise GraphWorkspaceMappingError((AdapterIssue(
+                        AdapterIssueCode.DUPLICATE_INSTANCE_ID,"duplicate instance_id",index,"instance_id"
+                    ),))
+                seen.add(instance_id)
+                coords=(raw["rel_x"],raw["rel_y"],raw["rel_z"])
+                if any(not isinstance(value,int) or isinstance(value,bool) for value in coords):
+                    raise GraphWorkspaceMappingError((AdapterIssue(
+                        AdapterIssueCode.INVALID_POSITION,"relative coordinates must be integers",index,None
+                    ),))
+                try: orientation=CardinalDirection(raw["orientation"])
+                except (TypeError,ValueError) as exc:
+                    raise GraphWorkspaceMappingError((AdapterIssue(
+                        AdapterIssueCode.UNKNOWN_ORIENTATION,"invalid orientation",index,"orientation"
+                    ),)) from exc
+                converted.append(StageBlockSnapshot(
+                    instance_id,str(raw["type_key"]),GridPos(*coords),orientation,
+                    str(raw["label"]),raw.get("description"),
+                    str(raw.get("display_name",raw["type_key"])),str(raw.get("material_name","")),
+                    raw.get("display_definition") or {},
+                ))
+            try: stage_id=uuid.UUID(str(stage["stage_id"]))
+            except (KeyError,TypeError,ValueError): stage_id=uuid.UUID(int=0)
+            snapshot=StageSnapshot(
+                stage_id,tuple(converted),(),(),(),revision,None,None,
+                ProgramValidationStatus.NOT_CHECKED,CK_CONTROL_PORT_CATALOG.version,
+            )
+        self.snapshot=snapshot
+
+    @property
+    def revision(self)->int:
+        return self.snapshot.working_revision
+
+    @property
+    def blocks(self)->list[dict[str,Any]]:
+        """Legacy read projection; mutating it cannot alter the workspace."""
+        return [item.as_legacy_dict(self.snapshot.stage_id) for item in self.snapshot.blocks]
+
+
+class GraphOperationRejected(HallConflict):
+    def __init__(self, diagnostics=(), issues=()):
+        self.diagnostics=tuple(diagnostics);self.issues=tuple(issues)
+        super().__init__("A gráfműveletet a domain vagy az alkalmazási szerződés elutasította.")
 
 class StageService:
     def __init__(self,repository:HallRepository):
@@ -39,9 +123,39 @@ class StageService:
         with self._guard:
             if stage_id not in self._workspaces:
                 data=loaded or self.repository.load_stage(stage_id)
-                blocks=copy.deepcopy(data.pop("blocks",[]))
-                self._workspaces[stage_id]=StageWorkspace(data,blocks,int(data["saved_version"]))
+                stage=dict(data);raw_blocks=stage.pop("blocks",[])
+                snapshot=self._snapshot_from_legacy(stage,raw_blocks,working_revision=0)
+                self._workspaces[stage_id]=StageWorkspace(
+                    stage,snapshot,int(stage["saved_version"])
+                )
             return self._workspaces[stage_id]
+
+    @staticmethod
+    def _block_from_legacy(raw:dict[str,Any])->StageBlockSnapshot:
+        return StageBlockSnapshot(
+            instance_id=uuid.UUID(str(raw["instance_id"])),
+            type_key=str(raw["type_key"]),
+            position=GridPos(int(raw["rel_x"]),int(raw["rel_y"]),int(raw["rel_z"])),
+            orientation=CardinalDirection(str(raw["orientation"])),
+            label=str(raw["label"]),
+            description=(None if raw.get("description") is None else str(raw["description"])),
+            display_name=str(raw.get("display_name",raw["type_key"])),
+            material_name=str(raw.get("material_name","")),
+            display_definition=raw.get("display_definition") or {},
+        )
+
+    @classmethod
+    def _snapshot_from_legacy(
+        cls,stage:dict[str,Any],raw_blocks:list[dict[str,Any]],*,working_revision:int
+    )->StageSnapshot:
+        return StageSnapshot(
+            stage_id=uuid.UUID(str(stage["stage_id"])),
+            blocks=tuple(cls._block_from_legacy(item) for item in raw_blocks),
+            edges=(),routes=(),wire_cells=(),working_revision=working_revision,
+            validated_revision=None,last_graph_validation=None,
+            program_validation_status=ProgramValidationStatus.NOT_CHECKED,
+            port_catalog_version=CK_CONTROL_PORT_CATALOG.version,
+        )
 
     @staticmethod
     def _authorize(ws:StageWorkspace,player_uuid:str)->None:
@@ -69,49 +183,77 @@ class StageService:
             types={str(t["type_key"]):t for t in self.repository.list_block_types()}
             if type_key not in types: raise HallValidationError("Ismeretlen CK-elemtípus.")
             rel=self._relative(ws.stage,int(payload["x"]),int(payload["y"]),int(payload["z"]))
-            if any((int(b["rel_x"]),int(b["rel_y"]),int(b["rel_z"]))==rel for b in ws.blocks):
+            if any((b.position.x,b.position.y,b.position.z)==rel for b in ws.snapshot.blocks):
                 raise HallConflict("Ezen a stage-pozíción már van programelem.")
             orientation=str(payload.get("orientation","SOUTH")).upper()
             if orientation not in ORIENTATIONS: raise HallValidationError("Hibás blokkirány.")
-            block={"instance_id":str(uuid.uuid4()),"stage_id":stage_id,"type_key":type_key,
-                   "rel_x":rel[0],"rel_y":rel[1],"rel_z":rel[2],"orientation":orientation,
-                   "label":str(types[type_key]["default_label"]),"description":types[type_key].get("default_description"),
-                   "display_name":types[type_key]["display_name"],"material_name":types[type_key]["material_name"],
-                   "display_definition":types[type_key].get("display_definition") or {}}
-            ws.blocks.append(block);ws.dirty=True;ws.revision+=1
+            block=StageBlockSnapshot(
+                uuid.uuid4(),type_key,GridPos(*rel),CardinalDirection(orientation),
+                str(types[type_key]["default_label"]),types[type_key].get("default_description"),
+                str(types[type_key]["display_name"]),str(types[type_key]["material_name"]),
+                types[type_key].get("display_definition") or {},
+            )
+            ws.snapshot=ws.snapshot.with_content_change(blocks=(*ws.snapshot.blocks,block))
+            ws.dirty=True
             return self.view(ws)
 
     def update(self,stage_id:str,instance_id:str,payload:dict[str,Any])->dict[str,Any]:
         ws=self._workspace(stage_id)
         with ws.lock:
             self._authorize(ws,str(payload["player_uuid"]));block=self._find(ws,instance_id)
+            updated=block
             if "label" in payload:
                 label=str(payload["label"]).strip()
                 if not label or len(label)>32: raise HallValidationError("A rövid felirat 1–32 karakteres lehet.")
-                block["label"]=label
+                updated=replace(updated,label=label)
             if "description" in payload:
                 description=str(payload["description"]).strip()
                 if len(description)>256: raise HallValidationError("A leírás legfeljebb 256 karakteres lehet.")
-                block["description"]=description or None
-            ws.dirty=True;ws.revision+=1
+                updated=replace(updated,description=description or None)
+            if updated != block:
+                ws.snapshot=ws.snapshot.with_content_change(
+                    blocks=tuple(updated if item.instance_id==block.instance_id else item for item in ws.snapshot.blocks)
+                )
+                ws.dirty=True
             return self.view(ws)
 
     def delete(self,stage_id:str,instance_id:str,payload:dict[str,Any])->dict[str,Any]:
         ws=self._workspace(stage_id)
         with ws.lock:
             self._authorize(ws,str(payload["player_uuid"]));block=self._find(ws,instance_id)
-            ws.blocks.remove(block);ws.dirty=True;ws.revision+=1
+            removed_edges=tuple(
+                edge for edge in ws.snapshot.edges
+                if edge.source_instance_id!=block.instance_id and edge.target_instance_id!=block.instance_id
+            )
+            kept_edge_ids={edge.edge_id for edge in removed_edges}
+            removed_routes=tuple(
+                route for route in ws.snapshot.routes
+                if route.edge_id in kept_edge_ids or (
+                    route.edge_id is None
+                    and (route.source_port is None or route.source_port.instance_id!=block.instance_id)
+                    and (route.target_port is None or route.target_port.instance_id!=block.instance_id)
+                )
+            )
+            ws.snapshot=ws.snapshot.with_content_change(
+                blocks=tuple(item for item in ws.snapshot.blocks if item.instance_id!=block.instance_id),
+                edges=removed_edges,routes=removed_routes,
+            )
+            ws.dirty=True
             return self.view(ws)
 
     def save(self,stage_id:str,payload:dict[str,Any])->dict[str,Any]:
         ws=self._workspace(stage_id)
         with ws.lock:
             self._authorize(ws,str(payload["player_uuid"]))
-            snapshot=copy.deepcopy(ws.blocks)
+            if ws.snapshot.has_unpersisted_graph_content:
+                raise HallConflict(
+                    "A graph-tartalmú Stage teljes mentése csak a CK-03/B2 repository után lehetséges."
+                )
+            blocks=[item.as_legacy_dict(ws.snapshot.stage_id) for item in ws.snapshot.blocks]
             # The repository transaction either replaces every saved block and bumps
             # the version, or rolls back. On failure the workspace remains untouched.
-            new_version=self.repository.save_stage_snapshot(stage_id,ws.saved_version,snapshot)
-            ws.saved_version=new_version;ws.stage["saved_version"]=new_version;ws.dirty=False;ws.revision+=1
+            new_version=self.repository.save_stage_snapshot(stage_id,ws.saved_version,blocks)
+            ws.saved_version=new_version;ws.stage["saved_version"]=new_version;ws.dirty=False
             return self.view(ws)
 
     def rebuild(self,stage_id:str,payload:dict[str,Any])->dict[str,Any]:
@@ -120,13 +262,68 @@ class StageService:
             self._authorize(ws,str(payload["player_uuid"]))
             if ws.dirty and not bool(payload.get("confirm_discard")):
                 raise HallConflict("Nem mentett módosítások vannak. Ismételd meg kifejezett eldobási megerősítéssel.")
-            loaded=self.repository.load_stage(stage_id);blocks=copy.deepcopy(loaded.pop("blocks",[]))
-            ws.stage=loaded;ws.blocks=blocks;ws.saved_version=int(loaded["saved_version"]);ws.dirty=False;ws.revision+=1
+            loaded=self.repository.load_stage(stage_id);stage=dict(loaded);blocks=stage.pop("blocks",[])
+            snapshot=self._snapshot_from_legacy(
+                stage,blocks,working_revision=ws.snapshot.working_revision+1
+            )
+            ws.stage=stage;ws.snapshot=snapshot;ws.saved_version=int(stage["saved_version"])
+            ws.dirty=False;ws.workspace_epoch=uuid.uuid4()
+            return self.view(ws)
+
+    def apply_graph_operation(
+        self,
+        stage_id:str,
+        payload:dict[str,Any],
+        operation:Callable[[GraphWorkspaceState],Any],
+        *,
+        new_block_metadata:tuple[StageBlockSnapshot,...]=(),
+    )->dict[str,Any]:
+        """Execute one domain operation and atomically swap the resulting snapshot."""
+        ws=self._workspace(stage_id)
+        with ws.lock:
+            self._authorize(ws,str(payload["player_uuid"]))
+            try: expected_epoch=uuid.UUID(str(payload["workspace_epoch"]))
+            except (KeyError,TypeError,ValueError) as exc:
+                raise HallConflict("Hiányzó vagy hibás workspace epoch.") from exc
+            if expected_epoch!=ws.workspace_epoch:
+                raise HallConflict("A workspace epoch elavult; töltsd újra a Stage-et.")
+            expected_revision=payload.get("expected_working_revision")
+            if expected_revision!=ws.snapshot.working_revision:
+                raise HallConflict("A working revision elavult; töltsd újra a Stage-et.")
+
+            runtime_types={str(item["type_key"]) for item in self.repository.list_block_types()}
+            mapping=to_graph_workspace(
+                ws,CK_CONTROL_PORT_CATALOG,known_block_types=runtime_types
+            )
+            if not mapping.permits_graph_mutation:
+                raise GraphWorkspaceMappingError(mapping.issues)
+            domain_result=operation(mapping.state)
+            if isinstance(domain_result,GraphWorkspaceState):
+                accepted=True;target=domain_result;diagnostics=()
+            else:
+                target=getattr(domain_result,"state",None)
+                accepted=bool(
+                    getattr(domain_result,"accepted",getattr(domain_result,"applied",False))
+                )
+                diagnostics=getattr(domain_result,"diagnostics",())
+            if not isinstance(target,GraphWorkspaceState):
+                raise TypeError("graph operation must return a GraphWorkspaceState result")
+            plan=prepare_graph_workspace_update(
+                mapping.state,target,operation_accepted=accepted
+            )
+            if not plan.accepted:
+                raise GraphOperationRejected(diagnostics,plan.issues)
+            next_snapshot=to_stage_snapshot(
+                ws.snapshot,plan,new_block_metadata=new_block_metadata
+            )
+            if plan.requires_apply:
+                ws.snapshot=next_snapshot
+                ws.dirty=target.dirty
             return self.view(ws)
 
     @staticmethod
-    def _find(ws:StageWorkspace,instance_id:str)->dict[str,Any]:
-        try: return next(b for b in ws.blocks if str(b["instance_id"])==str(instance_id))
+    def _find(ws:StageWorkspace,instance_id:str)->StageBlockSnapshot:
+        try: return next(b for b in ws.snapshot.blocks if str(b.instance_id)==str(instance_id))
         except StopIteration as exc: raise HallNotFound("Nincs ilyen programelem a munkapéldányban.") from exc
 
     @classmethod
@@ -134,12 +331,14 @@ class StageService:
         with ws.lock:
             s=ws.stage;ox,oy,oz=cls._origin(s)
             blocks=[]
-            for raw in ws.blocks:
-                b=copy.deepcopy(raw)
-                b.update({"instance_id":str(b["instance_id"]),"x":ox+int(b["rel_x"]),
-                          "y":oy+int(b["rel_y"]),"z":oz+int(b["rel_z"])})
+            for raw in ws.snapshot.blocks:
+                b=raw.as_legacy_dict(ws.snapshot.stage_id)
+                b.update({"x":ox+raw.position.x,"y":oy+raw.position.y,"z":oz+raw.position.z})
                 blocks.append(b)
             return {"stage_id":str(s["stage_id"]),"hall_id":str(s["hall_id"]),"stage_name":s["stage_name"],
                     "world_uuid":str(s["world_uuid"]),"origin":{"x":ox,"y":oy,"z":oz},
                     "size":{"x":int(s["size_x"]),"y":int(s["size_y"]),"z":int(s["size_z"])},
-                    "saved_version":ws.saved_version,"working_revision":ws.revision,"dirty":ws.dirty,"blocks":blocks}
+                    "saved_version":ws.saved_version,"working_revision":ws.revision,"dirty":ws.dirty,
+                    "workspace_epoch":str(ws.workspace_epoch),"port_catalog_version":ws.snapshot.port_catalog_version,
+                    "graph_persistence":"BLOCKED" if ws.snapshot.has_unpersisted_graph_content else "LEGACY_BLOCKS_ONLY",
+                    "blocks":blocks}
