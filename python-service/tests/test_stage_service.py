@@ -2,11 +2,19 @@ import copy
 import unittest
 import uuid
 
-from hangar.repository import HallConflict, HallForbidden
+from hangar.graph import (
+    CK_CONTROL_PORT_CATALOG,
+    GridPos,
+    ProgramValidationStatus,
+    StageBlockSnapshot,
+    StageSnapshot,
+)
+from hangar.graph.model import CardinalDirection
+from hangar.repository import HallConflict, HallForbidden, LoadedStageSnapshot
 from hangar.stage import StageService
 
 class FakeStageRepository:
-    def __init__(self):
+    def __init__(self,*,graph_aware=False):
         self.fail_save=False
         self.types=[
             {"type_key":"START","display_name":"START","material_name":"LIME_GLAZED_TERRACOTTA","default_label":"START","default_description":"start","display_definition":{}},
@@ -14,8 +22,12 @@ class FakeStageRepository:
         ]
         self.stage={"stage_id":str(uuid.uuid4()),"hall_id":str(uuid.uuid4()),"stage_name":"alpha stage",
             "owner_uuid":str(uuid.uuid4()),"world_uuid":str(uuid.uuid4()),"hall_min_x":10,"hall_min_y":64,"hall_min_z":20,
-            "origin_rel_x":1,"origin_rel_y":1,"origin_rel_z":1,"size_x":5,"size_y":4,"size_z":5,"saved_version":0,"blocks":[]}
+            "origin_rel_x":1,"origin_rel_y":1,"origin_rel_z":1,"size_x":5,"size_y":4,"size_z":5,"saved_version":0,
+            "graph_snapshot_version":1 if graph_aware else 0,
+            "port_catalog_version":CK_CONTROL_PORT_CATALOG.version if graph_aware else None,
+            "blocks":[]}
         self.saved=[]
+        self.full_saved=None
     def ensure_stage(self,hall): return copy.deepcopy({k:v for k,v in self.stage.items() if k!="blocks"})
     def load_stage(self,stage_id):
         result=copy.deepcopy(self.stage);result["blocks"]=copy.deepcopy(self.saved);return result
@@ -25,6 +37,36 @@ class FakeStageRepository:
         if self.fail_save: raise RuntimeError("db unavailable")
         if expected_version!=self.stage["saved_version"]: raise RuntimeError("version conflict")
         self.saved=copy.deepcopy(blocks);self.stage["saved_version"]+=1;return self.stage["saved_version"]
+    def _legacy_snapshot(self):
+        blocks=tuple(StageBlockSnapshot(
+            uuid.UUID(str(item["instance_id"])),str(item["type_key"]),
+            GridPos(int(item["rel_x"]),int(item["rel_y"]),int(item["rel_z"])),
+            CardinalDirection(str(item["orientation"])),str(item["label"]),
+            item.get("description"),str(item.get("display_name",item["type_key"])),
+            str(item.get("material_name","")),item.get("display_definition") or {},
+        ) for item in self.saved)
+        return StageSnapshot(
+            uuid.UUID(self.stage["stage_id"]),blocks,(),(),(),0,None,None,
+            ProgramValidationStatus.NOT_CHECKED,self.stage["port_catalog_version"],
+        )
+    def load_full_stage_snapshot(self,stage_id):
+        snapshot=self.full_saved or self._legacy_snapshot()
+        version=int(self.stage["graph_snapshot_version"])
+        compatible=(version==1 and self.stage["port_catalog_version"]==CK_CONTROL_PORT_CATALOG.version)
+        issues=() if compatible else ("Legacy Stage requires explicit graph upgrade",)
+        return LoadedStageSnapshot(
+            copy.deepcopy({k:v for k,v in self.stage.items() if k!="blocks"}),
+            snapshot,int(self.stage["saved_version"]),version,
+            self.stage["port_catalog_version"],compatible,issues,
+        )
+    def save_full_stage_snapshot(self,stage_id,expected_version,snapshot):
+        if self.fail_save: raise RuntimeError("db unavailable")
+        if expected_version!=self.stage["saved_version"]: raise RuntimeError("version conflict")
+        self.full_saved=snapshot
+        self.stage["saved_version"]+=1
+        self.stage["graph_snapshot_version"]=1
+        self.stage["port_catalog_version"]=CK_CONTROL_PORT_CATALOG.version
+        return self.stage["saved_version"]
 
 class StageServiceTest(unittest.TestCase):
     def setUp(self):

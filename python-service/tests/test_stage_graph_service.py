@@ -43,7 +43,7 @@ class RejectedResult:
 
 class StageGraphServiceTest(unittest.TestCase):
     def setUp(self):
-        self.repo = FakeStageRepository()
+        self.repo = FakeStageRepository(graph_aware=True)
         self.repo.types = runtime_types()
         self.service = StageService(self.repo)
         self.stage_id = self.repo.stage["stage_id"]
@@ -100,7 +100,7 @@ class StageGraphServiceTest(unittest.TestCase):
         self.assertEqual(workspace.snapshot.wire_cells, (straight_cell(),))
         self.assertEqual(view["working_revision"], before.working_revision + 1)
         self.assertTrue(view["dirty"])
-        self.assertEqual(view["graph_persistence"], "BLOCKED")
+        self.assertEqual(view["graph_persistence"], "FULL")
 
     def test_real_binding_result_is_applied_with_stable_ids(self):
         self.service.apply_graph_operation(self.stage_id, self.command_payload(), self.add_wire)
@@ -178,15 +178,15 @@ class StageGraphServiceTest(unittest.TestCase):
         conflicts = sum(isinstance(future.exception(), HallConflict) for future in futures)
         self.assertEqual((successes, conflicts), (1, 1))
 
-    def test_graph_snapshot_cannot_be_reported_as_legacy_saved(self):
+    def test_graph_snapshot_is_saved_through_full_repository_api(self):
         self.service.apply_graph_operation(self.stage_id, self.command_payload(), self.add_wire)
         before = self.service._workspace(self.stage_id).snapshot
-        with self.assertRaises(HallConflict):
-            self.service.save(self.stage_id, {"player_uuid": self.owner})
+        saved=self.service.save(self.stage_id, {"player_uuid": self.owner})
         self.assertIs(self.service._workspace(self.stage_id).snapshot, before)
-        self.assertEqual(self.repo.saved, [])
+        self.assertIs(self.repo.full_saved, before)
+        self.assertFalse(saved["dirty"])
 
-    def test_block_metadata_edit_preserves_graph_and_remains_unsaveable(self):
+    def test_block_metadata_edit_preserves_graph_and_is_fully_saved(self):
         self.service.apply_graph_operation(self.stage_id, self.command_payload(), self.add_wire)
         workspace = self.service._workspace(self.stage_id)
         instance_id = str(workspace.snapshot.blocks[0].instance_id)
@@ -197,8 +197,8 @@ class StageGraphServiceTest(unittest.TestCase):
         )
         self.assertEqual(workspace.snapshot.wire_cells, (straight_cell(),))
         self.assertEqual(next(item for item in workspace.snapshot.blocks if str(item.instance_id) == instance_id).label, "Megőrzött")
-        with self.assertRaises(HallConflict):
-            self.service.save(self.stage_id, {"player_uuid": self.owner})
+        self.service.save(self.stage_id, {"player_uuid": self.owner})
+        self.assertEqual(self.repo.full_saved.wire_cells, (straight_cell(),))
 
     def test_legacy_save_does_not_increment_working_revision(self):
         before = self.command_payload()["expected_working_revision"]
@@ -217,7 +217,7 @@ class StageGraphServiceTest(unittest.TestCase):
         )
         self.assertNotEqual(rebuilt["workspace_epoch"], before["workspace_epoch"])
         self.assertEqual(rebuilt["working_revision"], before["working_revision"] + 1)
-        self.assertEqual(rebuilt["graph_persistence"], "LEGACY_BLOCKS_ONLY")
+        self.assertEqual(rebuilt["graph_persistence"], "FULL")
 
 
 if __name__ == "__main__":

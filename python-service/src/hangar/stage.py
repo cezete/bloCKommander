@@ -18,12 +18,21 @@ from .graph.adapter import (
 from .graph.model import CardinalDirection, GridPos
 from .graph.port_catalog import CK_CONTROL_PORT_CATALOG
 from .graph.snapshot import (
+    GRAPH_SNAPSHOT_VERSION,
     ProgramValidationStatus,
     StageBlockSnapshot,
     StageSnapshot,
 )
 from .graph.state import GraphWorkspaceState
-from .repository import HallConflict, HallForbidden, HallNotFound, HallRepository
+from .graph.validation import validate_graph
+from .repository import (
+    HallConflict,
+    HallForbidden,
+    HallNotFound,
+    HallRepository,
+    LoadedStageSnapshot,
+    SnapshotCompatibilityError,
+)
 
 ORIENTATIONS={"NORTH","SOUTH","EAST","WEST"}
 
@@ -35,15 +44,23 @@ class StageWorkspace:
     dirty: bool=False
     workspace_epoch: uuid.UUID=field(default_factory=uuid.uuid4)
     lock: threading.RLock=field(default_factory=threading.RLock)
+    graph_snapshot_version: int=GRAPH_SNAPSHOT_VERSION
+    compatible_for_graph_mutation: bool=True
+    compatibility_issues: tuple[str,...]=()
 
     def __init__(
         self,stage:dict[str,Any],snapshot:StageSnapshot|None=None,saved_version:int=0,
         dirty:bool=False,workspace_epoch:uuid.UUID|None=None,
         lock:threading.RLock|None=None,*,blocks:list[dict[str,Any]]|None=None,
-        revision:int=0,
+        revision:int=0,graph_snapshot_version:int=GRAPH_SNAPSHOT_VERSION,
+        compatible_for_graph_mutation:bool=True,
+        compatibility_issues:tuple[str,...]=(),
     ):
         self.stage=stage;self.saved_version=saved_version;self.dirty=dirty
         self.workspace_epoch=workspace_epoch or uuid.uuid4();self.lock=lock or threading.RLock()
+        self.graph_snapshot_version=int(graph_snapshot_version)
+        self.compatible_for_graph_mutation=bool(compatible_for_graph_mutation)
+        self.compatibility_issues=tuple(compatibility_issues)
         if snapshot is not None and blocks is not None:
             raise TypeError("pass snapshot or legacy blocks, not both")
         if snapshot is None:
@@ -117,18 +134,60 @@ class StageService:
 
     def for_hall(self,hall_id:str)->dict[str,Any]:
         loaded=self.repository.load_stage_for_hall(hall_id)
-        return self.view(self._workspace(str(loaded["stage_id"]),loaded))
+        return self.view(self._workspace(str(loaded["stage_id"])))
 
-    def _workspace(self,stage_id:str,loaded:dict[str,Any]|None=None)->StageWorkspace:
+    def _workspace(self,stage_id:str)->StageWorkspace:
         with self._guard:
             if stage_id not in self._workspaces:
-                data=loaded or self.repository.load_stage(stage_id)
-                stage=dict(data);raw_blocks=stage.pop("blocks",[])
-                snapshot=self._snapshot_from_legacy(stage,raw_blocks,working_revision=0)
-                self._workspaces[stage_id]=StageWorkspace(
-                    stage,snapshot,int(stage["saved_version"])
+                loaded=self.repository.load_full_stage_snapshot(stage_id)
+                self._workspaces[stage_id]=self._prepare_loaded_workspace(
+                    loaded,working_revision=0
                 )
             return self._workspaces[stage_id]
+
+    def _prepare_loaded_workspace(
+        self,loaded:LoadedStageSnapshot,*,working_revision:int
+    )->StageWorkspace:
+        stage=dict(loaded.stage)
+        snapshot=replace(
+            loaded.snapshot,
+            working_revision=working_revision,
+            validated_revision=None,
+            last_graph_validation=None,
+            program_validation_status=ProgramValidationStatus.NOT_CHECKED,
+        )
+        candidate=StageWorkspace(
+            stage,snapshot,loaded.saved_version,False,
+            graph_snapshot_version=loaded.graph_snapshot_version,
+            compatible_for_graph_mutation=loaded.compatible_for_graph_mutation,
+            compatibility_issues=loaded.compatibility_issues,
+        )
+        if loaded.compatible_for_graph_mutation:
+            runtime_types={str(item["type_key"]) for item in self.repository.list_block_types()}
+            try:
+                mapping=to_graph_workspace(
+                    candidate,CK_CONTROL_PORT_CATALOG,known_block_types=runtime_types
+                )
+            except GraphWorkspaceMappingError as exc:
+                candidate.compatible_for_graph_mutation=False
+                candidate.compatibility_issues=tuple(
+                    f"{item.code.value}: {item.message}" for item in exc.issues
+                )
+                return candidate
+            if not mapping.permits_graph_mutation:
+                candidate.compatible_for_graph_mutation=False
+                candidate.compatibility_issues=tuple(
+                    f"{item.code.value}: {item.message}" for item in mapping.issues
+                )
+                return candidate
+            report=validate_graph(mapping.state,CK_CONTROL_PORT_CATALOG)
+            candidate.snapshot=replace(
+                snapshot,
+                validated_revision=(None if report.has_blocking_errors else report.revision),
+                last_graph_validation=report,
+                program_validation_status=ProgramValidationStatus.NOT_CHECKED,
+            )
+        return candidate
 
     @staticmethod
     def _block_from_legacy(raw:dict[str,Any])->StageBlockSnapshot:
@@ -245,14 +304,24 @@ class StageService:
         ws=self._workspace(stage_id)
         with ws.lock:
             self._authorize(ws,str(payload["player_uuid"]))
-            if ws.snapshot.has_unpersisted_graph_content:
-                raise HallConflict(
-                    "A graph-tartalmú Stage teljes mentése csak a CK-03/B2 repository után lehetséges."
+            self._check_client_version(ws,payload)
+            if ws.graph_snapshot_version==0:
+                if ws.snapshot.has_unpersisted_graph_content:
+                    raise SnapshotCompatibilityError(
+                        "Legacy Stage nem tartalmazhat menthető graph-tartalmat explicit upgrade nélkül."
+                    )
+                blocks=[item.as_legacy_dict(ws.snapshot.stage_id) for item in ws.snapshot.blocks]
+                new_version=self.repository.save_stage_snapshot(
+                    stage_id,ws.saved_version,blocks
                 )
-            blocks=[item.as_legacy_dict(ws.snapshot.stage_id) for item in ws.snapshot.blocks]
-            # The repository transaction either replaces every saved block and bumps
-            # the version, or rolls back. On failure the workspace remains untouched.
-            new_version=self.repository.save_stage_snapshot(stage_id,ws.saved_version,blocks)
+            else:
+                if not ws.compatible_for_graph_mutation:
+                    raise SnapshotCompatibilityError(
+                        "Az inkompatibilis graph snapshot csak olvasható."
+                    )
+                new_version=self.repository.save_full_stage_snapshot(
+                    stage_id,ws.saved_version,ws.snapshot
+                )
             ws.saved_version=new_version;ws.stage["saved_version"]=new_version;ws.dirty=False
             return self.view(ws)
 
@@ -260,14 +329,23 @@ class StageService:
         ws=self._workspace(stage_id)
         with ws.lock:
             self._authorize(ws,str(payload["player_uuid"]))
+            self._check_client_version(ws,payload)
             if ws.dirty and not bool(payload.get("confirm_discard")):
                 raise HallConflict("Nem mentett módosítások vannak. Ismételd meg kifejezett eldobási megerősítéssel.")
-            loaded=self.repository.load_stage(stage_id);stage=dict(loaded);blocks=stage.pop("blocks",[])
-            snapshot=self._snapshot_from_legacy(
-                stage,blocks,working_revision=ws.snapshot.working_revision+1
+            loaded=self.repository.load_full_stage_snapshot(stage_id)
+            prepared=self._prepare_loaded_workspace(
+                loaded,working_revision=ws.snapshot.working_revision+1
             )
-            ws.stage=stage;ws.snapshot=snapshot;ws.saved_version=int(stage["saved_version"])
-            ws.dirty=False;ws.workspace_epoch=uuid.uuid4()
+            next_epoch=uuid.uuid4()
+            (
+                ws.stage,ws.snapshot,ws.saved_version,ws.dirty,ws.workspace_epoch,
+                ws.graph_snapshot_version,ws.compatible_for_graph_mutation,
+                ws.compatibility_issues,
+            )=(
+                prepared.stage,prepared.snapshot,prepared.saved_version,False,next_epoch,
+                prepared.graph_snapshot_version,prepared.compatible_for_graph_mutation,
+                prepared.compatibility_issues,
+            )
             return self.view(ws)
 
     def apply_graph_operation(
@@ -282,6 +360,10 @@ class StageService:
         ws=self._workspace(stage_id)
         with ws.lock:
             self._authorize(ws,str(payload["player_uuid"]))
+            if not ws.compatible_for_graph_mutation:
+                raise SnapshotCompatibilityError(
+                    "A Stage graph formátuma vagy portkatalógusa nem kompatibilis módosításhoz."
+                )
             try: expected_epoch=uuid.UUID(str(payload["workspace_epoch"]))
             except (KeyError,TypeError,ValueError) as exc:
                 raise HallConflict("Hiányzó vagy hibás workspace epoch.") from exc
@@ -322,6 +404,22 @@ class StageService:
             return self.view(ws)
 
     @staticmethod
+    def _check_client_version(ws:StageWorkspace,payload:dict[str,Any])->None:
+        carries_epoch="workspace_epoch" in payload
+        carries_revision="expected_working_revision" in payload
+        if not carries_epoch and not carries_revision:
+            return
+        if not carries_epoch or not carries_revision:
+            raise HallConflict("Az epoch és a working revision csak együtt adható meg.")
+        try: expected_epoch=uuid.UUID(str(payload["workspace_epoch"]))
+        except (TypeError,ValueError) as exc:
+            raise HallConflict("Hiányzó vagy hibás workspace epoch.") from exc
+        if expected_epoch!=ws.workspace_epoch:
+            raise HallConflict("A workspace epoch elavult; töltsd újra a Stage-et.")
+        if payload["expected_working_revision"]!=ws.snapshot.working_revision:
+            raise HallConflict("A working revision elavult; töltsd újra a Stage-et.")
+
+    @staticmethod
     def _find(ws:StageWorkspace,instance_id:str)->StageBlockSnapshot:
         try: return next(b for b in ws.snapshot.blocks if str(b.instance_id)==str(instance_id))
         except StopIteration as exc: raise HallNotFound("Nincs ilyen programelem a munkapéldányban.") from exc
@@ -335,10 +433,18 @@ class StageService:
                 b=raw.as_legacy_dict(ws.snapshot.stage_id)
                 b.update({"x":ox+raw.position.x,"y":oy+raw.position.y,"z":oz+raw.position.z})
                 blocks.append(b)
+            if ws.graph_snapshot_version==0:
+                persistence="LEGACY_BLOCKS_ONLY"
+            elif ws.compatible_for_graph_mutation:
+                persistence="FULL"
+            else:
+                persistence="READ_ONLY_INCOMPATIBLE"
             return {"stage_id":str(s["stage_id"]),"hall_id":str(s["hall_id"]),"stage_name":s["stage_name"],
                     "world_uuid":str(s["world_uuid"]),"origin":{"x":ox,"y":oy,"z":oz},
                     "size":{"x":int(s["size_x"]),"y":int(s["size_y"]),"z":int(s["size_z"])},
                     "saved_version":ws.saved_version,"working_revision":ws.revision,"dirty":ws.dirty,
                     "workspace_epoch":str(ws.workspace_epoch),"port_catalog_version":ws.snapshot.port_catalog_version,
-                    "graph_persistence":"BLOCKED" if ws.snapshot.has_unpersisted_graph_content else "LEGACY_BLOCKS_ONLY",
+                    "graph_snapshot_version":ws.graph_snapshot_version,
+                    "graph_persistence":persistence,
+                    "graph_compatibility_issues":list(ws.compatibility_issues),
                     "blocks":blocks}

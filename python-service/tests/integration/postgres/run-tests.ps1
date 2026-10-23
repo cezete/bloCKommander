@@ -35,6 +35,9 @@ try {
     $env:BLOCKCOMMANDER_TEST_CONTAINER_ID = $state.containerId
     & $python $testFile -v
     if ($LASTEXITCODE -ne 0) { throw "PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
+    $stageServiceTestFile = Join-Path $PSScriptRoot 'postgres_stage_service_integration.py'
+    & $python $stageServiceTestFile -v
+    if ($LASTEXITCODE -ne 0) { throw "StageService PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
 } finally {
     $env:PYTHONPATH = $oldPythonPath
     Remove-Item Env:BLOCKCOMMANDER_TEST_DB_DSN -ErrorAction SilentlyContinue
