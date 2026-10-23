@@ -1,0 +1,32 @@
+name: blockcommander-ck03-b2t
+
+services:
+  postgres:
+    image: postgres@sha256:b6b4d0b75c699a2c94dfc5a94fe09f38630f3b67ab0e1653ede1b7ac8e13c197
+    container_name: blockcommander-ck03-b2t-postgres
+    restart: "no"
+    environment:
+      POSTGRES_DB: blockcommander_b2t
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${B2T_POSTGRES_PASSWORD:?B2T_POSTGRES_PASSWORD is required}
+    ports:
+      - "127.0.0.1:${B2T_REMOTE_PORT:?B2T_REMOTE_PORT is required}:5432"
+    labels:
+      com.blockcommander.environment: ck03-b2t
+      com.blockcommander.purpose: disposable-postgresql-integration
+      com.blockcommander.identity: 5f4b53b6-2c82-4d68-b788-7860daf2b70f
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./init-test-identity.sql:/docker-entrypoint-initdb.d/010-test-identity.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blockcommander_b2t -d blockcommander_b2t"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+volumes:
+  pgdata:
+    labels:
+      com.blockcommander.environment: ck03-b2t
+      com.blockcommander.identity: 5f4b53b6-2c82-4d68-b788-7860daf2b70f

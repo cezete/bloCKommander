@@ -124,7 +124,7 @@ CREATE TABLE blockcommander.wire_channels (
         REFERENCES blockcommander.wire_cells(stage_id, rel_x, rel_y, rel_z)
         ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
     CONSTRAINT wire_channels_shape_check CHECK (
-        (channel = 'SINGLE' AND bit_count(connections_mask::bit(4)) <= 2)
+        (channel = 'SINGLE' AND bit_count(connections_mask::integer::bit(4)) <= 2)
         OR (channel = 'NS' AND connections_mask = 5)
         OR (channel = 'EW' AND connections_mask = 10)
     )
