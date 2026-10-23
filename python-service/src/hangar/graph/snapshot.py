@@ -19,6 +19,9 @@ from .model import (
 )
 
 
+GRAPH_SNAPSHOT_VERSION = 1
+
+
 class ProgramValidationStatus(str, Enum):
     NOT_CHECKED = "NOT_CHECKED"
     VALID = "VALID"
@@ -112,7 +115,7 @@ class StageSnapshot:
     validated_revision: int | None
     last_graph_validation: ValidationReport | None
     program_validation_status: ProgramValidationStatus
-    port_catalog_version: str
+    port_catalog_version: str | None
 
     def __post_init__(self) -> None:
         if not isinstance(self.stage_id, UUID):
@@ -149,8 +152,11 @@ class StageSnapshot:
             raise ValueError("last_graph_validation cannot refer to a future revision")
         if not isinstance(self.program_validation_status, ProgramValidationStatus):
             raise TypeError("program_validation_status has an invalid value")
-        if not isinstance(self.port_catalog_version, str) or not self.port_catalog_version:
-            raise ValueError("port_catalog_version must be a non-empty string")
+        if self.port_catalog_version is not None and (
+            not isinstance(self.port_catalog_version, str)
+            or not self.port_catalog_version
+        ):
+            raise ValueError("port_catalog_version must be a non-empty string or None")
 
         object.__setattr__(
             self, "blocks", tuple(sorted(self.blocks, key=lambda item: item.instance_id.int))

@@ -29,7 +29,10 @@ from .adapter import (
     StageStatusDTO, prepare_graph_workspace_update, to_graph_workspace,
     to_stage_snapshot, to_stage_status_dto,
 )
-from .snapshot import ProgramValidationStatus, StageBlockSnapshot, StageSnapshot
+from .snapshot import (
+    GRAPH_SNAPSHOT_VERSION, ProgramValidationStatus, StageBlockSnapshot,
+    StageSnapshot,
+)
 from .port_catalog import (
     BlockPortSpecification, BlockPortStatus, CK_CONTROL_PORT_CATALOG,
     PORT_CATALOG_VERSION, PortCatalogIssue, PortCatalogIssueCode,
@@ -55,7 +58,8 @@ __all__ = [
     "GraphWorkspaceMappingError", "GraphWorkspaceUpdatePlan",
     "ProgramValidationStatus", "StageStatusDTO",
     "prepare_graph_workspace_update", "to_graph_workspace",
-    "to_stage_snapshot", "to_stage_status_dto", "StageBlockSnapshot",
+    "to_stage_snapshot", "to_stage_status_dto", "GRAPH_SNAPSHOT_VERSION",
+    "StageBlockSnapshot",
     "StageSnapshot", "BlockPortSpecification", "BlockPortStatus",
     "CK_CONTROL_PORT_CATALOG", "PORT_CATALOG_VERSION", "PortCatalogIssue",
     "PortCatalogIssueCode", "PortCatalogLookupError", "RuntimeCatalogCheck",
