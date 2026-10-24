@@ -122,6 +122,24 @@ class GraphOperationRejected(HallConflict):
         self.diagnostics=tuple(diagnostics);self.issues=tuple(issues)
         super().__init__("A gráfműveletet a domain vagy az alkalmazási szerződés elutasította.")
 
+
+@dataclass(frozen=True)
+class StageGraphContext:
+    """Immutable, authorized read model for graph application adapters."""
+
+    stage_id: uuid.UUID
+    hall_id: str
+    world_uuid: str
+    origin: GridPos
+    size: GridPos
+    workspace_epoch: uuid.UUID
+    graph_snapshot_version: int
+    compatible_for_graph_mutation: bool
+    compatibility_issues: tuple[str,...]
+    port_catalog_version: str|None
+    program_validation_status: ProgramValidationStatus
+    state: GraphWorkspaceState
+
 class StageService:
     def __init__(self,repository:HallRepository):
         self.repository=repository
@@ -402,6 +420,44 @@ class StageService:
                 ws.snapshot=next_snapshot
                 ws.dirty=target.dirty
             return self.view(ws)
+
+    def read_graph_context(self,stage_id:str,player_uuid:str)->StageGraphContext:
+        """Return an immutable graph snapshot without changing workspace content."""
+        ws=self._workspace(stage_id)
+        with ws.lock:
+            self._authorize(ws,str(player_uuid))
+            snapshot=ws.snapshot
+            ox,oy,oz=self._origin(ws.stage)
+            state=GraphWorkspaceState(
+                stage_id=snapshot.stage_id,
+                nodes=snapshot.graph_nodes(),
+                edges=snapshot.edges,
+                wire_cells=snapshot.wire_cells,
+                routes=snapshot.routes,
+                working_revision=snapshot.working_revision,
+                validated_revision=snapshot.validated_revision,
+                saved_version=ws.saved_version,
+                dirty=ws.dirty,
+                last_validation=snapshot.last_graph_validation,
+            )
+            return StageGraphContext(
+                stage_id=snapshot.stage_id,
+                hall_id=str(ws.stage["hall_id"]),
+                world_uuid=str(ws.stage["world_uuid"]),
+                origin=GridPos(ox,oy,oz),
+                size=GridPos(
+                    int(ws.stage["size_x"]),
+                    int(ws.stage["size_y"]),
+                    int(ws.stage["size_z"]),
+                ),
+                workspace_epoch=ws.workspace_epoch,
+                graph_snapshot_version=ws.graph_snapshot_version,
+                compatible_for_graph_mutation=ws.compatible_for_graph_mutation,
+                compatibility_issues=ws.compatibility_issues,
+                port_catalog_version=snapshot.port_catalog_version,
+                program_validation_status=snapshot.program_validation_status,
+                state=state,
+            )
 
     @staticmethod
     def _check_client_version(ws:StageWorkspace,payload:dict[str,Any])->None:

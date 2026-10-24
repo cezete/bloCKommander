@@ -5,11 +5,17 @@ from hangar.builder import HallValidationError, control_elements, hall_client_vi
 from hangar.repository import HallConflict, HallForbidden, HallNotFound, HallRepository
 from hangar.service import HallService
 from hangar.stage import StageService
+from hangar.graph_application import (
+    API_VERSION, GRAPH_SECRET_ENV, GRAPH_SECRET_HEADER, GraphApplicationService, GraphCommand,
+    GraphRequestError, GraphTransportAuthError, GraphTransportAuthenticator,
+    parse_graph_command, parse_player_uuid, request_error_response,
+    transport_error_response,
+)
 
 BLOCK_IDS={"AIR":0,"STONE":1,"GRASS_BLOCK":2,"DIRT":3,"COBBLESTONE":4,"OAK_PLANKS":5,"SAND":12,
            "GRAVEL":13,"GOLD_BLOCK":41,"IRON_BLOCK":42,"BRICK_BLOCK":45,"OBSIDIAN":49,"DIAMOND_BLOCK":57}
 
-def create_app(repository=None,mc=None,migrate=True):
+def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
     app=Flask(__name__); repo=repository or HallRepository()
     if migrate: repo.migrate()
     world_driver=os.getenv("BLOCKCOMMANDER_WORLD_DRIVER","fabric").lower()
@@ -20,6 +26,47 @@ def create_app(repository=None,mc=None,migrate=True):
     if world_driver not in ("fabric","mcpi"):
         raise RuntimeError("BLOCKCOMMANDER_WORLD_DRIVER must be fabric or mcpi")
     service=HallService(repo,minecraft,apply_world=world_driver=="mcpi"); stages=StageService(repo)
+    graph_app=GraphApplicationService(stages)
+    configured_secret=(
+        graph_shared_secret if graph_shared_secret is not None
+        else os.getenv(GRAPH_SECRET_ENV)
+    )
+    graph_auth=GraphTransportAuthenticator(configured_secret)
+    app.extensions["blockcommander_stage_service"]=stages
+    app.extensions["blockcommander_graph_application"]=graph_app
+
+    def graph_authenticated():
+        try:
+            graph_auth.verify(request.headers.get(GRAPH_SECRET_HEADER))
+            return None
+        except GraphTransportAuthError as exc:
+            result=transport_error_response(exc)
+            return jsonify(result.body),result.status_code
+
+    def graph_command(stage_id,operation):
+        denied=graph_authenticated()
+        if denied is not None:return denied
+        try:
+            return parse_graph_command(
+                request.get_json(silent=True),
+                expected_stage_id=stage_id,
+                expected_operation=operation,
+            )
+        except GraphRequestError as exc:
+            result=request_error_response(exc)
+            return jsonify(result.body),result.status_code
+
+    def graph_internal_error(exc):
+        app.logger.exception("Graph API művelet sikertelen",exc_info=exc)
+        return jsonify({
+            "api_version":API_VERSION,"status":"error",
+            "error_code":"INTERNAL_ERROR",
+            "message":"A graph művelet belső hiba miatt nem sikerült.",
+            "diagnostics":[{
+                "code":"INTERNAL_ERROR","severity":"ERROR",
+                "message":"A graph művelet belső hiba miatt nem sikerült.",
+            }],
+        }),500
 
     def enrich(hall):
         bounds={k:int(hall[k]) for k in ("min_x","min_y","min_z","max_x","max_y","max_z")}
@@ -102,6 +149,35 @@ def create_app(repository=None,mc=None,migrate=True):
     def rebuild_stage(stage_id):
         stage=stages.rebuild(stage_id,request.get_json(silent=True) or {})
         return jsonify(status="ok",message="A stage a mentett DB-állapotból visszaépült.",stage=stage)
+
+    @app.get("/api/v1/stages/<stage_id>/graph")
+    def graph_state(stage_id):
+        denied=graph_authenticated()
+        if denied is not None:return denied
+        try:
+            player_uuid=parse_player_uuid(request.args.get("player_uuid"))
+        except GraphRequestError as exc:
+            result=request_error_response(exc)
+            return jsonify(result.body),result.status_code
+        try:result=graph_app.graph_state(stage_id,player_uuid)
+        except Exception as exc:return graph_internal_error(exc)
+        return jsonify(result.body),result.status_code
+
+    @app.post("/api/v1/stages/<stage_id>/graph/wire")
+    def graph_wire(stage_id):
+        command=graph_command(stage_id,"WIRE_LAYOUT")
+        if not isinstance(command,GraphCommand):return command
+        try:result=graph_app.apply_wire(command)
+        except Exception as exc:return graph_internal_error(exc)
+        return jsonify(result.body),result.status_code
+
+    @app.post("/api/v1/stages/<stage_id>/graph/bind")
+    def graph_bind(stage_id):
+        command=graph_command(stage_id,"BIND_EDGES")
+        if not isinstance(command,GraphCommand):return command
+        try:result=graph_app.bind_edges(command)
+        except Exception as exc:return graph_internal_error(exc)
+        return jsonify(result.body),result.status_code
 
     @app.post("/api/v1/halls/save-button")
     def save_button():
