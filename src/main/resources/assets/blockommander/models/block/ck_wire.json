@@ -1,0 +1,22 @@
+{
+  "parent": "minecraft:block/block",
+  "ambientocclusion": false,
+  "textures": {
+    "wire": "minecraft:block/cyan_concrete",
+    "particle": "minecraft:block/cyan_concrete"
+  },
+  "elements": [
+    {
+      "from": [0, 6, 6],
+      "to": [16, 10, 10],
+      "faces": {
+        "down": {"texture": "#wire"},
+        "up": {"texture": "#wire"},
+        "north": {"texture": "#wire"},
+        "south": {"texture": "#wire"},
+        "west": {"texture": "#wire"},
+        "east": {"texture": "#wire"}
+      }
+    }
+  ]
+}

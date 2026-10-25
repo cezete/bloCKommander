@@ -14,7 +14,7 @@ import net.minecraft.world.level.block.SoundType
 import net.minecraft.world.level.block.state.BlockBehaviour
 
 object ModContent {
-    private fun block(path: String, sound: SoundType): Block {
+    private fun programBlock(path: String, sound: SoundType): Block {
         val blockKey = ResourceKey.create(BuiltInRegistries.BLOCK.key(), BlockCommanderMod.id(path))
         val itemKey = ResourceKey.create(BuiltInRegistries.ITEM.key(), BlockCommanderMod.id(path))
         val block = Registry.register(BuiltInRegistries.BLOCK, blockKey,
@@ -24,16 +24,30 @@ object ModContent {
         return block
     }
 
+    private fun wire(): Pair<Block, Item> {
+        val blockKey = ResourceKey.create(BuiltInRegistries.BLOCK.key(), BlockCommanderMod.id("ck_wire"))
+        val itemKey = ResourceKey.create(BuiltInRegistries.ITEM.key(), BlockCommanderMod.id("ck_wire"))
+        val block = Registry.register(BuiltInRegistries.BLOCK, blockKey,
+            CkWireBlock(BlockBehaviour.Properties.of().strength(0.6f).sound(SoundType.COPPER)
+                .noOcclusion().setId(blockKey)))
+        val item = Registry.register(BuiltInRegistries.ITEM, itemKey,
+            BlockItem(block, Item.Properties().useBlockDescriptionPrefix().setId(itemKey)))
+        return block to item
+    }
+
     private fun item(path: String): Item {
         val key = ResourceKey.create(BuiltInRegistries.ITEM.key(), BlockCommanderMod.id(path))
         return Registry.register(BuiltInRegistries.ITEM, key, Item(Item.Properties().stacksTo(1).setId(key)))
     }
 
-    val START: Block = block("start", SoundType.GLASS)
-    val STOP: Block = block("stop", SoundType.GLASS)
-    val IF: Block = block("if", SoundType.GLASS)
-    val FOR: Block = block("for", SoundType.GLASS)
-    val FUN: Block = block("fun", SoundType.GLASS)
+    val START: Block = programBlock("start", SoundType.GLASS)
+    val STOP: Block = programBlock("stop", SoundType.GLASS)
+    val IF: Block = programBlock("if", SoundType.GLASS)
+    val FOR: Block = programBlock("for", SoundType.GLASS)
+    val FUN: Block = programBlock("fun", SoundType.GLASS)
+    private val wireContent = wire()
+    val CK_WIRE: Block = wireContent.first
+    val CK_WIRE_ITEM: Item = wireContent.second
     val HANGAR_SWORD: Item = item("hangar_sword")
 
     private val tabKey = ResourceKey.create(BuiltInRegistries.CREATIVE_MODE_TAB.key(), BlockCommanderMod.id("ck"))
@@ -42,7 +56,7 @@ object ModContent {
         .title(Component.literal("bloCKommander"))
         .displayItems { _, output ->
             output.accept(START); output.accept(STOP); output.accept(IF)
-            output.accept(FOR); output.accept(FUN); output.accept(HANGAR_SWORD)
+            output.accept(FOR); output.accept(FUN); output.accept(CK_WIRE); output.accept(HANGAR_SWORD)
         }.build()
 
     fun initialize() { Registry.register(BuiltInRegistries.CREATIVE_MODE_TAB, tabKey, tab) }

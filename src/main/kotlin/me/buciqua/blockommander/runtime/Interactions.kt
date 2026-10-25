@@ -4,6 +4,9 @@ import com.google.gson.JsonObject
 import me.buciqua.blockommander.ModContent
 import me.buciqua.blockommander.network.OpenFormPayload
 import me.buciqua.blockommander.network.SubmitFormPayload
+import me.buciqua.blockommander.runtime.graph.GraphPosition
+import me.buciqua.blockommander.runtime.graph.ServerPlayerIdentity
+import me.buciqua.blockommander.runtime.wire.*
 import net.fabricmc.fabric.api.event.player.AttackBlockCallback
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents
 import net.fabricmc.fabric.api.event.player.UseBlockCallback
@@ -20,7 +23,11 @@ import net.minecraft.core.registries.BuiltInRegistries
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
-class Interactions(private val api: ApiClient, private val registry: HallRegistry) {
+class Interactions(
+    private val api: ApiClient,
+    private val registry: HallRegistry,
+    private val wireCoordinator: () -> WireInteractionCoordinator? = { null },
+) {
     private data class Selection(val first: BlockPos, val material: String)
     private val selections = ConcurrentHashMap<UUID, Selection>()
 
@@ -39,13 +46,21 @@ class Interactions(private val api: ApiClient, private val registry: HallRegistr
             InteractionResult.SUCCESS
         }
         UseBlockCallback.EVENT.register { player, level, hand, hit ->
-            if (level.isClientSide || hand != net.minecraft.world.InteractionHand.MAIN_HAND) return@register InteractionResult.PASS
+            if (hand != net.minecraft.world.InteractionHand.MAIN_HAND) return@register InteractionResult.PASS
+            if (player.getItemInHand(hand).item === ModContent.CK_WIRE_ITEM && level.isClientSide)
+                return@register InteractionResult.SUCCESS
+            if (level.isClientSide) return@register InteractionResult.PASS
             val serverPlayer = player as ServerPlayer; val serverLevel = level as ServerLevel
             val worldUuid = WorldIdentity.uuid(serverLevel).toString()
             registry.controlAt(worldUuid, hit.blockPos)?.let { control ->
                 handleControl(serverPlayer, serverLevel, control); return@register InteractionResult.SUCCESS
             }
             val held = player.getItemInHand(hand)
+            if (held.item === ModContent.CK_WIRE_ITEM) {
+                val target = hit.blockPos.relative(hit.direction)
+                placeWire(serverPlayer, serverLevel, worldUuid, target, held)
+                return@register InteractionResult.SUCCESS
+            }
             if (held.item === ModContent.HANGAR_SWORD) {
                 val selection = selections[player.uuid]
                 if (selection == null) serverPlayer.sendSystemMessage(Component.literal("§e[CK] Előbb bal kattintással jelöld ki az A pontot."))
@@ -73,6 +88,10 @@ class Interactions(private val api: ApiClient, private val registry: HallRegistr
             val serverPlayer = player as? ServerPlayer ?: return@register true
             val serverLevel = level as ServerLevel
             val worldUuid = WorldIdentity.uuid(serverLevel).toString()
+            if (level.getBlockState(pos).block === ModContent.CK_WIRE) {
+                removeWire(serverPlayer, serverLevel, worldUuid, pos)
+                return@register false
+            }
             registry.stageBlockAt(worldUuid, pos)?.let { (stage, block) ->
                 val payload = playerPayload(serverPlayer, serverLevel)
                 api.post(serverPlayer, "/api/v1/stages/${stage.id}/blocks/${block.instanceId}/delete", payload) { response ->
@@ -122,8 +141,70 @@ class Interactions(private val api: ApiClient, private val registry: HallRegistr
     private fun restoreFor(player: ServerPlayer) {
         val level = player.level()
         api.post(player, "/api/v1/halls/restore", playerPayload(player, level)) { response ->
-            response.getAsJsonArray("halls").forEach { WorldRenderer.buildHall(level, registry.install(it.asJsonObject)) }
+            response.getAsJsonArray("halls").forEach {
+                val hall = registry.install(it.asJsonObject)
+                WorldRenderer.buildHall(level, hall)
+                hall.stage?.let { stage -> reconcileWire(player, level, stage) }
+            }
         }
+    }
+
+    private fun placeWire(player: ServerPlayer, level: ServerLevel, worldUuid: String, target: BlockPos,
+                          held: net.minecraft.world.item.ItemStack) {
+        val stage = registry.stageAt(worldUuid, target)
+        val coordinator = wireCoordinator()
+        if (stage == null || coordinator == null) {
+            correct(level, target)
+            player.sendSystemMessage(Component.literal("§c[CK] A CK Wire csak elérhető Stage graphban helyezhető el."))
+            return
+        }
+        val state = level.getBlockState(target)
+        val alreadyWire = state.block === ModContent.CK_WIRE
+        if (!state.isAir && !alreadyWire) {
+            correct(level, target)
+            player.sendSystemMessage(Component.literal("§c[CK] A célcellát idegen blokk foglalja."))
+            return
+        }
+        coordinator.place(stage.wireContext(), ServerPlayerIdentity.from(player), target.graphPosition(),
+            MinecraftWireWorldAccess(level)).thenAccept { result ->
+            if ((result.status == WireActionStatus.SUCCESS || result.status == WireActionStatus.RECOVERED) && !alreadyWire &&
+                !player.abilities.instabuild) held.shrink(1)
+            wireFeedback(player, result)
+        }
+    }
+
+    private fun removeWire(player: ServerPlayer, level: ServerLevel, worldUuid: String, target: BlockPos) {
+        val stage = registry.stageAt(worldUuid, target)
+        val coordinator = wireCoordinator()
+        if (stage == null || coordinator == null) {
+            correct(level, target)
+            player.sendSystemMessage(Component.literal("§c[CK] A CK Wire eltávolításához szinkronizált Stage szükséges."))
+            return
+        }
+        coordinator.remove(stage.wireContext(), ServerPlayerIdentity.from(player), target.graphPosition(),
+            MinecraftWireWorldAccess(level)).thenAccept { wireFeedback(player, it) }
+    }
+
+    private fun reconcileWire(player: ServerPlayer, level: ServerLevel, stage: Stage) {
+        wireCoordinator()?.reconcileAndRender(
+            stage.wireContext(), ServerPlayerIdentity.from(player), MinecraftWireWorldAccess(level),
+        )?.thenAccept { result -> if (result.status == WireActionStatus.NEEDS_REPAIR) wireFeedback(player, result) }
+    }
+
+    private fun wireFeedback(player: ServerPlayer, result: WireActionResult) {
+        val message = when (result.status) {
+            WireActionStatus.SUCCESS -> "§a[CK] A CK Wire állapotát a Python elfogadta."
+            WireActionStatus.RECOVERED -> "§a[CK] A CK Wire állapota reconciliation után helyreállt."
+            WireActionStatus.NEEDS_REPAIR -> "§c[CK] A graph mentve, de a világvetítés helyreállítást igényel."
+            WireActionStatus.NOT_SYNCED, WireActionStatus.STALE -> "§e[CK] A Stage graph állapota nem aktuális; próbáld újra."
+            WireActionStatus.REJECTED -> "§c[CK] A Python elutasította a CK Wire műveletet: ${result.detail ?: "ismeretlen hiba"}."
+        }
+        player.sendSystemMessage(Component.literal(message))
+    }
+
+    private fun correct(level: ServerLevel, position: BlockPos) {
+        val state = level.getBlockState(position)
+        level.sendBlockUpdated(position, state, state, net.minecraft.world.level.block.Block.UPDATE_ALL)
     }
 
     private fun createHall(player: ServerPlayer, level: ServerLevel, selection: Selection, second: BlockPos,
@@ -178,3 +259,8 @@ class Interactions(private val api: ApiClient, private val registry: HallRegistr
     }
     private fun pos(pos: BlockPos) = JsonObject().apply { addProperty("x", pos.x); addProperty("y", pos.y); addProperty("z", pos.z) }
 }
+
+private fun Stage.wireContext() = WireStageContext(
+    UUID.fromString(id), origin.graphPosition(), GraphPosition(sizeX, sizeY, sizeZ), workspaceEpoch,
+)
+private fun BlockPos.graphPosition() = GraphPosition(x, y, z)

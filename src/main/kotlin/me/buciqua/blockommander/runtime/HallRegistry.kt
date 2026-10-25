@@ -1,14 +1,18 @@
 package me.buciqua.blockommander.runtime
 
 import com.google.gson.JsonObject
+import me.buciqua.blockommander.runtime.graph.GraphProjectionStore
+import me.buciqua.blockommander.runtime.graph.StageGraphView
 import net.minecraft.core.BlockPos
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 data class Control(val hallId: String, val kind: String, val pos: BlockPos)
 data class StageBlock(val instanceId: String, val type: String, val pos: BlockPos, val orientation: String,
                       val label: String, val description: String)
 data class Stage(val id: String, val origin: BlockPos, val sizeX: Int, val sizeY: Int, val sizeZ: Int,
-                 val dirty: Boolean, val blocks: List<StageBlock>) {
+                 val dirty: Boolean, val workspaceEpoch: UUID, val workingRevision: Long,
+                 val blocks: List<StageBlock>) {
     fun contains(pos: BlockPos) = pos.x in origin.x until origin.x + sizeX &&
         pos.y in origin.y until origin.y + sizeY && pos.z in origin.z until origin.z + sizeZ
 }
@@ -19,7 +23,7 @@ data class Hall(val id: String, val name: String, val ownerUuid: String, val own
     fun contains(pos: BlockPos) = pos.x in min.x..max.x && pos.y in min.y..max.y && pos.z in min.z..max.z
 }
 
-class HallRegistry {
+class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionStore()) {
     private val halls = ConcurrentHashMap<String, Hall>()
 
     fun install(json: JsonObject): Hall {
@@ -36,17 +40,39 @@ class HallRegistry {
                 val c = it.asJsonObject
                 Control(hallId, c["kind"].asString, BlockPos(c["x"].asInt, c["y"].asInt, c["z"].asInt))
             }, stage)
-        halls[hall.id] = hall
+        val previous = halls.put(hall.id, hall)
+        if (previous?.stage?.id != null && previous.stage.id != stage?.id) {
+            graphProjections.remove(UUID.fromString(previous.stage.id))
+        }
+        stage?.let { graphProjections.authoritativeStageReload(UUID.fromString(it.id), it.workspaceEpoch, it.workingRevision) }
         return hall
     }
 
     fun updateStage(stageJson: JsonObject): Hall? {
         val stage = parseStage(stageJson)
         val hall = halls[stageJson["hall_id"].asString] ?: return null
-        val updated = hall.copy(stage = stage); halls[updated.id] = updated; return updated
+        val currentStage = hall.stage
+        if (currentStage != null && currentStage.id != stage.id) return hall
+        val projectedRevision = graphProjections.view(UUID.fromString(stage.id))?.stageRevision ?: -1
+        val accepted = currentStage == null || (
+            currentStage.id == stage.id && currentStage.workspaceEpoch == stage.workspaceEpoch &&
+                stage.workingRevision >= maxOf(currentStage.workingRevision, projectedRevision)
+            )
+        graphProjections.legacyStageUpdated(UUID.fromString(stage.id), stage.workspaceEpoch, stage.workingRevision)
+        if (!accepted) return hall
+        val updated = hall.copy(stage = stage)
+        halls[updated.id] = updated
+        if (hall.stage?.id != null && hall.stage.id != stage.id) {
+            graphProjections.remove(UUID.fromString(hall.stage.id))
+        }
+        return updated
     }
 
-    fun remove(id: String): Hall? = halls.remove(id)
+    fun remove(id: String): Hall? = halls.remove(id)?.also { hall ->
+        hall.stage?.let { graphProjections.remove(UUID.fromString(it.id)) }
+    }
+    fun graph(stageId: String): StageGraphView? = runCatching { UUID.fromString(stageId) }
+        .getOrNull()?.let(graphProjections::view)
     fun controlAt(worldUuid: String, pos: BlockPos) = halls.values.firstNotNullOfOrNull { hall ->
         if (hall.worldUuid == worldUuid) hall.controls.firstOrNull { it.pos == pos } else null
     }
@@ -69,6 +95,7 @@ class HallRegistry {
         val origin = json.getAsJsonObject("origin"); val size = json.getAsJsonObject("size")
         return Stage(json["stage_id"].asString, BlockPos(origin["x"].asInt, origin["y"].asInt, origin["z"].asInt),
             size["x"].asInt, size["y"].asInt, size["z"].asInt, json["dirty"].asBoolean,
+            UUID.fromString(json["workspace_epoch"].asString), json["working_revision"].asLong,
             json.getAsJsonArray("blocks").map {
                 val b = it.asJsonObject
                 StageBlock(b["instance_id"].asString, b["type_key"].asString,

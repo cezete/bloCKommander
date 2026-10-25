@@ -5,5 +5,6 @@
   "block.blockommander.if": "IF",
   "block.blockommander.for": "FOR",
   "block.blockommander.fun": "FUN",
+  "block.blockommander.ck_wire": "CK Vezeték",
   "item.blockommander.hangar_sword": "Hangár Kard"
 }
