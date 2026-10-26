@@ -29,7 +29,7 @@ class WireInteractionCoordinatorTest {
         assertEquals(PLAYER_ID, gateway.commands.single().player.uuid)
         assertEquals(GraphPosition(1, 0, 0), (gateway.commands.single() as WireLayoutCommand).changes.single().position)
         assertEquals(WireActionStatus.SUCCESS, result.status)
-        assertEquals(WireWorldCell.CK_WIRE, world.cell(target))
+        assertEquals(WireWorldCell.CK_WIRE_UNBOUND, world.cell(target))
     }
 
     @Test fun `unsynchronized Stage never sends modifying command when reconciliation fails`() {
@@ -52,6 +52,23 @@ class WireInteractionCoordinatorTest {
         assertEquals(WireActionStatus.REJECTED, result.status)
         assertEquals(0, world.setCalls)
         assertEquals(1, world.correctCalls)
+    }
+
+    @Test fun `HTTP reject detail includes diagnostic field path`() {
+        val store = syncedStore(1, withWire = true)
+        val gateway = FakeGraphGateway(store).apply {
+            rejectStatus = 400
+            rejectErrorCode = "MISSING_FIELD"
+            rejectDiagnostics = listOf(GraphDiagnostic(
+                "MISSING_FIELD", "ERROR", "missing", emptyList(), emptyList(), emptyList(), emptyList(),
+                null, "payload.changes[0].cell",
+            ))
+        }
+        val result = coordinator(store, gateway).remove(
+            stage, player, target, FakeWireWorld(mutableMapOf(target to WireWorldCell.CK_WIRE_UNBOUND)),
+        ).get(3, TimeUnit.SECONDS)
+        assertEquals(WireActionStatus.REJECTED, result.status)
+        assertEquals("MISSING_FIELD: payload.changes[0].cell", result.detail)
     }
 
     @Test fun `world remains unchanged until Python command future completes`() {
@@ -95,8 +112,8 @@ class WireInteractionCoordinatorTest {
         val world = object : WireWorldAccess {
             private var wire = false
             override fun ckWirePositions(stage: WireStageContext) = if (wire) setOf(target) else emptySet()
-            override fun cell(position: GraphPosition) = if (wire) WireWorldCell.CK_WIRE else WireWorldCell.REPLACEABLE
-            override fun setEastWestWire(position: GraphPosition) { wroteOnMain = onMain; wire = true }
+            override fun cell(position: GraphPosition) = if (wire) WireWorldCell.CK_WIRE_UNBOUND else WireWorldCell.REPLACEABLE
+            override fun setEastWestWire(position: GraphPosition, visualState: WireVisualState) { wroteOnMain = onMain; wire = true }
             override fun removeWire(position: GraphPosition) { wroteOnMain = onMain; wire = false }
             override fun correct(position: GraphPosition) = Unit
         }
@@ -121,17 +138,17 @@ class WireInteractionCoordinatorTest {
     @Test fun `break reject preserves wire and success removes it without bind command`() {
         val rejectStore = syncedStore(1, withWire = true)
         val rejecting = FakeGraphGateway(rejectStore).apply { rejectStatus = 422 }
-        val rejectWorld = FakeWireWorld(mutableMapOf(target to WireWorldCell.CK_WIRE))
+        val rejectWorld = FakeWireWorld(mutableMapOf(target to WireWorldCell.CK_WIRE_UNBOUND))
         val rejected = coordinator(rejectStore, rejecting).remove(stage, player, target, rejectWorld).get(3, TimeUnit.SECONDS)
         assertEquals(WireActionStatus.REJECTED, rejected.status)
-        assertEquals(WireWorldCell.CK_WIRE, rejectWorld.cell(target))
+        assertEquals(WireWorldCell.CK_WIRE_UNBOUND, rejectWorld.cell(target))
 
         val successStore = syncedStore(1, withWire = true)
         val retainedEdge = GraphEdge(EDGE_ID, NODE_A, "out", NODE_B, "in", "CONTROL")
         val success = FakeGraphGateway(successStore).apply {
             sendSnapshot = wireSnapshot(2, withWire = false).copy(edges = listOf(retainedEdge))
         }
-        val successWorld = FakeWireWorld(mutableMapOf(target to WireWorldCell.CK_WIRE))
+        val successWorld = FakeWireWorld(mutableMapOf(target to WireWorldCell.CK_WIRE_UNBOUND))
         val removed = coordinator(successStore, success).remove(stage, player, target, successWorld).get(3, TimeUnit.SECONDS)
         assertEquals(WireActionStatus.SUCCESS, removed.status)
         assertEquals(WireWorldCell.REPLACEABLE, successWorld.cell(target))
@@ -155,6 +172,46 @@ class WireInteractionCoordinatorTest {
         assertEquals(WireWorldStatus.NEEDS_REPAIR, coordinator.worldStatus(STAGE_ID))
     }
 
+    @Test fun `bind uses player identity renders green and repeated bind remains one edge`() {
+        val store = syncedStore(1, withWire = true)
+        val bound = wireSnapshot(2, edgeStatus = "VALID")
+        val gateway = FakeGraphGateway(store).apply {
+            sendSnapshots.add(bound)
+            sendSnapshots.add(bound)
+        }
+        val world = FakeWireWorld(mutableMapOf(target to WireWorldCell.CK_WIRE_UNBOUND))
+        val coordinator = coordinator(store, gateway)
+        assertEquals(WireActionStatus.SUCCESS, coordinator.bind(stage, player, world).get(3, TimeUnit.SECONDS).status)
+        assertEquals(WireWorldCell.CK_WIRE_BOUND_VALID, world.cell(target))
+        assertEquals(WireActionStatus.SUCCESS, coordinator.bind(stage, player, world).get(3, TimeUnit.SECONDS).status)
+        assertEquals(2, gateway.commands.size)
+        assertTrue(gateway.commands.all { it is BindEdgesCommand && it.player.uuid == PLAYER_ID })
+        assertEquals(1, store.view(STAGE_ID)!!.snapshot!!.edges.size)
+        assertEquals(1, world.setCalls)
+    }
+
+    @Test fun `bind rejection never produces false green`() {
+        val store = syncedStore(1, withWire = true)
+        val gateway = FakeGraphGateway(store).apply { rejectStatus = 422 }
+        val world = FakeWireWorld(mutableMapOf(target to WireWorldCell.CK_WIRE_UNBOUND))
+        val result = coordinator(store, gateway).bind(stage, player, world).get(3, TimeUnit.SECONDS)
+        assertEquals(WireActionStatus.REJECTED, result.status)
+        assertEquals(WireWorldCell.CK_WIRE_UNBOUND, world.cell(target))
+    }
+
+    @Test fun `bind conflict reconciles and remains non-green`() {
+        val store = syncedStore(1, withWire = true)
+        val gateway = FakeGraphGateway(store).apply {
+            rejectStatus = 409
+            reconcileSnapshot = wireSnapshot(2)
+        }
+        val world = FakeWireWorld(mutableMapOf(target to WireWorldCell.CK_WIRE_UNBOUND))
+        val result = coordinator(store, gateway).bind(stage, player, world).get(3, TimeUnit.SECONDS)
+        assertEquals(WireActionStatus.REJECTED, result.status)
+        assertEquals(1, gateway.reconcileCalls)
+        assertEquals(WireWorldCell.CK_WIRE_UNBOUND, world.cell(target))
+    }
+
     private fun coordinator(
         store: GraphProjectionStore,
         gateway: FakeGraphGateway,
@@ -172,7 +229,10 @@ private class FakeGraphGateway(private val store: GraphProjectionStore) : GraphG
     val commands = mutableListOf<GraphCommand>()
     var reconcileSnapshot: GraphStateSnapshot? = null
     var sendSnapshot: GraphStateSnapshot? = null
+    val sendSnapshots = ArrayDeque<GraphStateSnapshot>()
     var rejectStatus: Int? = null
+    var rejectErrorCode = "REJECTED"
+    var rejectDiagnostics: List<GraphDiagnostic> = emptyList()
     var afterSend: () -> Unit = {}
 
     override fun reconcile(stageId: UUID, player: ServerPlayerIdentity): CompletableFuture<ReconciliationOutcome> {
@@ -188,11 +248,15 @@ private class FakeGraphGateway(private val store: GraphProjectionStore) : GraphG
         rejectStatus?.let { status ->
             val error = GraphErrorResponse(
                 GRAPH_API_VERSION, "error", status, command.requestId, command.stageId,
-                command.workspaceEpoch, command.expectedWorkingRevision, false, "REJECTED", "rejected", emptyList(),
+                command.workspaceEpoch, command.expectedWorkingRevision, false,
+                rejectErrorCode, "rejected", rejectDiagnostics,
             )
-            return CompletableFuture.completedFuture(CommandTransportOutcome(GraphHttpResult.ApiError(error), null, null))
+            val transport = GraphHttpResult.ApiError(error)
+            return if (status == 409 || status >= 500) reconcile(command.stageId, command.player).thenApply {
+                CommandTransportOutcome(transport, null, it)
+            } else CompletableFuture.completedFuture(CommandTransportOutcome(transport, null, null))
         }
-        val snapshot = requireNotNull(sendSnapshot)
+        val snapshot = if (sendSnapshots.isEmpty()) requireNotNull(sendSnapshot) else sendSnapshots.removeFirst()
         val applied = store.apply(store.begin(command.stageId, GraphRequestKind.COMMAND), snapshot)
         afterSend()
         return CompletableFuture.completedFuture(CommandTransportOutcome(

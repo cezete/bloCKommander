@@ -22,12 +22,16 @@ class CkWireAssetsTest {
         })
     }
 
-    @Test fun `resource chain and east-west blockstate are consistent`() {
+    @Test fun `resource chain axis and visual variants are consistent`() {
         val base = root.resolve("src/main/resources")
         val blockstate = json(base.resolve("assets/blockommander/blockstates/ck_wire.json"))
         assertEquals("blockommander:block/ck_wire", blockstate.getAsJsonObject("variants")
-            .getAsJsonObject("axis=x")["model"].asString)
-        assertEquals(90, blockstate.getAsJsonObject("variants").getAsJsonObject("axis=z")["y"].asInt)
+            .getAsJsonObject("axis=x,visual=cyan")["model"].asString)
+        assertEquals(90, blockstate.getAsJsonObject("variants").getAsJsonObject("axis=z,visual=cyan")["y"].asInt)
+        assertEquals("blockommander:block/ck_wire_green", blockstate.getAsJsonObject("variants")
+            .getAsJsonObject("axis=x,visual=green")["model"].asString)
+        assertEquals("blockommander:block/ck_wire_orange", blockstate.getAsJsonObject("variants")
+            .getAsJsonObject("axis=x,visual=orange")["model"].asString)
         val model = json(base.resolve("assets/blockommander/models/block/ck_wire.json"))
         val element = model.getAsJsonArray("elements")[0].asJsonObject
         assertEquals(listOf(0, 6, 6), element.getAsJsonArray("from").map { it.asInt })
@@ -38,6 +42,21 @@ class CkWireAssetsTest {
             "assets/blockommander/models/item/ck_wire.json",
             "data/blockommander/loot_table/blocks/ck_wire.json",
         ).forEach { assertTrue(Files.isRegularFile(base.resolve(it)), "missing $it") }
+        listOf("ck_wire_green.json", "ck_wire_orange.json").forEach {
+            assertTrue(Files.isRegularFile(base.resolve("assets/blockommander/models/block/$it")))
+        }
+        val blockSource = Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/CkWireBlock.kt"))
+        assertTrue(blockSource.contains("BlockStateProperties.HORIZONTAL_AXIS"))
+        assertTrue(blockSource.contains("EnumProperty.create(\"visual\""))
+        assertTrue(blockSource.contains("builder.add(AXIS, VISUAL)"))
+    }
+
+    @Test fun `admin bind command uses the real ServerPlayer identity and existing coordinator`() {
+        val source = Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/Interactions.kt"))
+        assertTrue(source.contains("Commands.literal(\"ckbind\")"))
+        assertTrue(source.contains("Permissions.COMMANDS_ADMIN"))
+        assertTrue(source.contains("ServerPlayerIdentity.from(player)"))
+        assertTrue(source.contains("coordinator.bind("))
     }
 
     @Test fun `wire interactions cancel vanilla placement and break paths`() {

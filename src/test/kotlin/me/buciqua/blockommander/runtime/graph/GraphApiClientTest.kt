@@ -1,5 +1,6 @@
 package me.buciqua.blockommander.runtime.graph
 
+import com.google.gson.JsonParser
 import com.sun.net.httpserver.HttpServer
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
@@ -57,6 +58,21 @@ class GraphApiClientTest {
         assertTrue(result is GraphHttpResult.Success)
         assertTrue(body.get().contains(REQUEST_ID.toString()))
         assertEquals(REQUEST_ID, (result as GraphHttpResult.Success).response.requestId)
+    }
+
+    @Test fun `wire removal POST preserves explicit null cell in HTTP body`() {
+        val body = AtomicReference<String>()
+        val base = startServer { _, requestBody -> body.set(requestBody); 200 to successJson(requestId = REQUEST_ID) }
+        val command = WireLayoutCommand(
+            REQUEST_ID, STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID), EPOCH_A, 3,
+            listOf(GraphWireChangeInput(GraphPosition(1, 0, 0), null)),
+        )
+        val result = GraphApiClient.configured(base, "secret").send(command).get(3, TimeUnit.SECONDS)
+        assertTrue(result is GraphHttpResult.Success)
+        val change = JsonParser.parseString(body.get()).asJsonObject
+            .getAsJsonObject("payload").getAsJsonArray("changes")[0].asJsonObject
+        assertTrue(change.has("cell"))
+        assertTrue(change["cell"].isJsonNull)
     }
 
     private fun startServer(response: (String?, String) -> Pair<Int, String>): String {

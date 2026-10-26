@@ -6,6 +6,7 @@ from hangar.graph import (
     CardinalDirection,
     EdgeKind,
     EdgeRoute,
+    GRAPH_SNAPSHOT_VERSION,
     GraphEdge,
     GridPos,
     PORT_CATALOG_VERSION,
@@ -212,6 +213,37 @@ class RecordingConnection:
         return self._cursor
 
 
+class EnsureStageCursor:
+    def __init__(self):
+        self.calls = []
+        self.current = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def execute(self, sql, params=None):
+        normalized = " ".join(sql.split())
+        self.calls.append((normalized, params))
+        if normalized.startswith("SELECT * FROM blockcommander.stages"):
+            self.current = None
+        elif normalized.startswith("INSERT INTO blockcommander.stages"):
+            self.current = {
+                "stage_id": params[0],
+                "hall_id": params[1],
+                "stage_name": params[2],
+                "graph_snapshot_version": params[-2],
+                "port_catalog_version": params[-1],
+            }
+        else:
+            raise AssertionError(normalized)
+
+    def fetchone(self):
+        return self.current
+
+
 class LoadCursor:
     def __init__(self, stage, row_sets):
         self.stage = stage
@@ -267,6 +299,27 @@ class RepositoryGraphSnapshotUnitTest(unittest.TestCase):
         )
         self.assertEqual(_snapshot_rows(empty).blocks, ())
         self.assertEqual(_snapshot_rows(empty).wire_channels, ())
+
+    def test_new_stage_is_created_graph_aware_without_upgrading_existing_rows(self):
+        cursor = EnsureStageCursor()
+        repository = HallRepository(connect=lambda: RecordingConnection(cursor))
+        hall = {
+            "hall_id": "00000000-0000-0000-0000-000000008001",
+            "hall_name": "Graph Hall",
+            "owner_uuid": "00000000-0000-0000-0000-000000008002",
+            "world_uuid": "00000000-0000-0000-0000-000000008003",
+            "min_x": 10, "min_y": 20, "min_z": 30,
+            "max_x": 20, "max_y": 30, "max_z": 40,
+        }
+        stage = repository.ensure_stage(hall)
+        insert_sql, insert_params = next(
+            call for call in cursor.calls
+            if call[0].startswith("INSERT INTO blockcommander.stages")
+        )
+        self.assertIn("graph_snapshot_version,port_catalog_version", insert_sql)
+        self.assertEqual((GRAPH_SNAPSHOT_VERSION, PORT_CATALOG_VERSION), insert_params[-2:])
+        self.assertEqual(GRAPH_SNAPSHOT_VERSION, stage["graph_snapshot_version"])
+        self.assertEqual(PORT_CATALOG_VERSION, stage["port_catalog_version"])
 
     def test_full_snapshot_round_trip_preserves_graph_and_metadata(self):
         source = full_snapshot()

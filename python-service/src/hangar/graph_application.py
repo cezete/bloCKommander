@@ -362,6 +362,24 @@ class GraphApplicationService:
                 "WIRE_OCCUPIES_NODE","WireCell nem kerülhet GraphNode pozíciójára.",
                 wire_positions=(change.position,),
             )
+        if change.cell is not None:
+            expected_wire=_single_cell_start_stop_position(context.state)
+            if change.position!=expected_wire:
+                raise GraphApplicationError(
+                    "WIRE_POSITION_NOT_CONNECTOR",
+                    "A CK-04/B3 Wire csak a START.out és STOP.in közös csatlakozási cellájára kerülhet.",
+                    wire_positions=(change.position,expected_wire),
+                )
+            expected_channels=(WireChannelState(
+                WireChannel.SINGLE,
+                frozenset({CardinalDirection.EAST,CardinalDirection.WEST}),
+            ),)
+            if change.cell.channels!=expected_channels:
+                raise GraphApplicationError(
+                    "UNSUPPORTED_WIRE_GEOMETRY",
+                    "A CK-04/B3 csak E-W SINGLE WireCell geometriát támogat.",
+                    wire_positions=(change.position,),
+                )
 
         def mutate(state:GraphWorkspaceState)->GraphWorkspaceState:
             cells={cell.position:cell for cell in state.wire_cells}
@@ -442,25 +460,15 @@ def _read_error_response(stage_id:str,code:str,message:str,status_code:int)->Gra
 
 
 def _discover_single_cell_start_stop(state:GraphWorkspaceState)->RouteCandidate:
-    expected_start=GridPos(0,0,0);expected_stop=GridPos(2,0,0);expected_wire=GridPos(1,0,0)
-    start=next((node for node in state.nodes if node.type_key=="START" and node.position==expected_start),None)
-    stop=next((node for node in state.nodes if node.type_key=="STOP" and node.position==expected_stop),None)
-    if start is None or stop is None:
+    starts=tuple(node for node in state.nodes if node.type_key=="START")
+    stops=tuple(node for node in state.nodes if node.type_key=="STOP")
+    if len(starts)!=1 or len(stops)!=1:
         raise GraphApplicationError(
             "UNSUPPORTED_TOPOLOGY",
-            "A B1 Élbekötés START(0,0,0) és STOP(2,0,0) node-okat támogat.",
+            "A B1 Élbekötés pontosan egy START és egy STOP node-ot támogat.",
         )
-    if start.orientation is not CardinalDirection.EAST or stop.orientation is not CardinalDirection.EAST:
-        raise GraphApplicationError(
-            "UNSUPPORTED_TOPOLOGY","A B1 START és STOP orientációja EAST kell legyen.",
-        )
-    start_port=next(item for item in CK_CONTROL_PORT_CATALOG["START"] if item.port_key=="out")
-    stop_port=next(item for item in CK_CONTROL_PORT_CATALOG["STOP"] if item.port_key=="in")
-    if (port_connection_position(start,start_port)!=expected_wire or
-            port_connection_position(stop,stop_port)!=expected_wire):
-        raise GraphApplicationError(
-            "UNSUPPORTED_TOPOLOGY","A portok nem ugyanarra az egycellás wire pozícióra mutatnak.",
-        )
+    start,stop=starts[0],stops[0]
+    expected_wire=_single_cell_start_stop_position(state)
     cell=next((item for item in state.wire_cells if item.position==expected_wire),None)
     if cell is None:
         raise GraphApplicationError(
@@ -481,6 +489,30 @@ def _discover_single_cell_start_stop(state:GraphWorkspaceState)->RouteCandidate:
         PortRef(start.instance_id,"out"),PortRef(stop.instance_id,"in"),
         (WireStep(expected_wire,WireChannel.SINGLE),),
     )
+
+
+def _single_cell_start_stop_position(state:GraphWorkspaceState)->GridPos:
+    starts=tuple(node for node in state.nodes if node.type_key=="START")
+    stops=tuple(node for node in state.nodes if node.type_key=="STOP")
+    if len(starts)!=1 or len(stops)!=1:
+        raise GraphApplicationError(
+            "UNSUPPORTED_TOPOLOGY",
+            "A B3 Wire placement pontosan egy START és egy STOP node-ot támogat.",
+        )
+    start,stop=starts[0],stops[0]
+    if start.orientation is not CardinalDirection.EAST or stop.orientation is not CardinalDirection.EAST:
+        raise GraphApplicationError(
+            "UNSUPPORTED_TOPOLOGY","A B1 START és STOP orientációja EAST kell legyen.",
+        )
+    start_port=next(item for item in CK_CONTROL_PORT_CATALOG["START"] if item.port_key=="out")
+    stop_port=next(item for item in CK_CONTROL_PORT_CATALOG["STOP"] if item.port_key=="in")
+    start_position=port_connection_position(start,start_port)
+    stop_position=port_connection_position(stop,stop_port)
+    if start_position!=stop_position:
+        raise GraphApplicationError(
+            "UNSUPPORTED_TOPOLOGY","A portok nem ugyanarra az egycellás wire pozícióra mutatnak.",
+        )
+    return start_position
 
 
 def _stage_payload(command:GraphCommand)->dict[str,Any]:

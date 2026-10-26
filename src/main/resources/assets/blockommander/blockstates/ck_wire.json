@@ -1,1 +1,10 @@
-{"variants":{"axis=x":{"model":"blockommander:block/ck_wire"},"axis=z":{"model":"blockommander:block/ck_wire","y":90}}}
+{
+  "variants": {
+    "axis=x,visual=cyan": {"model": "blockommander:block/ck_wire"},
+    "axis=z,visual=cyan": {"model": "blockommander:block/ck_wire", "y": 90},
+    "axis=x,visual=green": {"model": "blockommander:block/ck_wire_green"},
+    "axis=z,visual=green": {"model": "blockommander:block/ck_wire_green", "y": 90},
+    "axis=x,visual=orange": {"model": "blockommander:block/ck_wire_orange"},
+    "axis=z,visual=orange": {"model": "blockommander:block/ck_wire_orange", "y": 90}
+  }
+}

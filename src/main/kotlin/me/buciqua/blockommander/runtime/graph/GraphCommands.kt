@@ -1,6 +1,7 @@
 package me.buciqua.blockommander.runtime.graph
 
 import com.google.gson.JsonArray
+import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import net.minecraft.server.level.ServerPlayer
 import java.util.UUID
@@ -54,7 +55,7 @@ class WireLayoutCommand(
             changes.forEach { change ->
                 add(JsonObject().apply {
                     add("position", change.position.toJson())
-                    if (change.cell == null) add("cell", null) else add("cell", JsonObject().apply {
+                    if (change.cell == null) add("cell", JsonNull.INSTANCE) else add("cell", JsonObject().apply {
                         add("channels", JsonArray().apply {
                             change.cell.channels.forEach { channel ->
                                 add(JsonObject().apply {

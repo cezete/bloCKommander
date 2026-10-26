@@ -36,6 +36,17 @@ class GraphDtoAndCommandTest {
         assertThrows(GraphProtocolException::class.java) { GraphResponseParser.parse(200, body) }
     }
 
+    @Test fun `legacy graph snapshot accepts null port catalog version`() {
+        val body = successJson()
+            .replace("\"port_catalog_version\":\"ck-control-v1\"", "\"port_catalog_version\":null")
+            .replace("\"compatible_for_graph_mutation\":true", "\"compatible_for_graph_mutation\":false")
+            .replace("\"compatibility_issues\":[]", "\"compatibility_issues\":[\"legacy\"]")
+        val response = GraphResponseParser.parse(200, body) as GraphSuccessResponse
+        assertNull(response.state.portCatalogVersion)
+        assertFalse(response.state.compatibleForGraphMutation)
+        assertEquals(listOf("legacy"), response.state.compatibilityIssues)
+    }
+
     @Test fun `wire command matches B1 contract`() {
         val identity = ServerPlayerIdentity.trustedForTest(PLAYER_ID)
         val command = WireLayoutCommand(
@@ -52,6 +63,17 @@ class GraphDtoAndCommandTest {
         val cell = json.getAsJsonObject("payload").getAsJsonArray("changes")[0].asJsonObject.getAsJsonObject("cell")
         assertFalse(cell.has("position"))
         assertEquals("SINGLE", cell.getAsJsonArray("channels")[0].asJsonObject["channel"].asString)
+    }
+
+    @Test fun `wire removal command keeps required cell field as explicit null`() {
+        val command = WireLayoutCommand(
+            REQUEST_ID, STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID), EPOCH_A, 3,
+            listOf(GraphWireChangeInput(GraphPosition(1, 0, 0), null)),
+        )
+        val change = command.toJson().getAsJsonObject("payload")
+            .getAsJsonArray("changes")[0].asJsonObject
+        assertTrue(change.has("cell"))
+        assertTrue(change["cell"].isJsonNull)
     }
 
     @Test fun `bind command has empty payload and retry retains request id`() {

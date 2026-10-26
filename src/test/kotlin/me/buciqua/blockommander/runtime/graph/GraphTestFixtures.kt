@@ -23,7 +23,7 @@ internal fun snapshot(
     nodes: List<GraphNode> = emptyList(),
 ) = GraphStateSnapshot(
     stageId, HALL_ID, WORLD_ID, GraphPosition(10, 20, 30), GraphPosition(7, 5, 7), epoch, revision, 2,
-    dirty, 1, 1, true, emptyList(), GraphStatuses("VALID", "CONNECTED", "DIRTY", "PRESENT", "VALID"),
+    dirty, 1, "ck-control-v1", true, emptyList(), GraphStatuses("VALID", "CONNECTED", "DIRTY", "PRESENT", "VALID"),
     nodes, emptyList(), emptyList(), emptyList(), GraphValidation(revision, emptyList()),
 )
 
@@ -41,7 +41,7 @@ internal fun successJson(
     "stage_id":"$stageId","hall_id":"$HALL_ID","world_uuid":"$WORLD_ID",
     "origin":{"x":10,"y":20,"z":30},"size":{"x":7,"y":5,"z":7},
     "workspace_epoch":"$epoch","working_revision":$revision,"saved_version":2,"dirty":true,
-    "graph_snapshot_version":1,"port_catalog_version":1,"compatible_for_graph_mutation":true,
+    "graph_snapshot_version":1,"port_catalog_version":"ck-control-v1","compatible_for_graph_mutation":true,
     "compatibility_issues":[],
     "status":{"graph":"VALID","edge_indicator":"CONNECTED","save":"DIRTY","layout":"PRESENT","program_validation":"VALID"},
     "nodes":[

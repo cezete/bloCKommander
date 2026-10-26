@@ -11,12 +11,15 @@ import net.fabricmc.fabric.api.event.player.AttackBlockCallback
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents
 import net.fabricmc.fabric.api.event.player.UseBlockCallback
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
+import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents
 import net.minecraft.core.BlockPos
 import net.minecraft.network.chat.Component
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
+import net.minecraft.commands.Commands
+import net.minecraft.server.permissions.Permissions
 import net.minecraft.world.InteractionResult
 import net.minecraft.world.item.BlockItem
 import net.minecraft.core.registries.BuiltInRegistries
@@ -32,6 +35,14 @@ class Interactions(
     private val selections = ConcurrentHashMap<UUID, Selection>()
 
     fun register() {
+        CommandRegistrationCallback.EVENT.register { dispatcher, _, _ ->
+            dispatcher.register(Commands.literal("ckbind")
+                .requires { source -> source.permissions().hasPermission(Permissions.COMMANDS_ADMIN) }
+                .executes { context ->
+                    bindCurrentStage(context.source.playerOrException)
+                    1
+                })
+        }
         ServerLifecycleEvents.SERVER_STARTED.register { server ->
             server.allLevels.forEach { level -> refresh(level) }
         }
@@ -191,10 +202,29 @@ class Interactions(
         )?.thenAccept { result -> if (result.status == WireActionStatus.NEEDS_REPAIR) wireFeedback(player, result) }
     }
 
+    private fun bindCurrentStage(player: ServerPlayer) {
+        val level = player.level()
+        val worldUuid = WorldIdentity.uuid(level).toString()
+        val stage = registry.stageAt(worldUuid, player.blockPosition())
+        val coordinator = wireCoordinator()
+        if (stage == null || coordinator == null) {
+            player.sendSystemMessage(Component.literal("§c[CK] Az Élbekötéshez állj az aktuális Stage területére."))
+            return
+        }
+        player.sendSystemMessage(Component.literal("§e[CK] Élbekötés indítása a Python graph szolgáltatáson keresztül…"))
+        coordinator.bind(
+            stage.wireContext(), ServerPlayerIdentity.from(player), MinecraftWireWorldAccess(level),
+        ).thenAccept { wireFeedback(player, it) }
+    }
+
     private fun wireFeedback(player: ServerPlayer, result: WireActionResult) {
         val message = when (result.status) {
-            WireActionStatus.SUCCESS -> "§a[CK] A CK Wire állapotát a Python elfogadta."
-            WireActionStatus.RECOVERED -> "§a[CK] A CK Wire állapota reconciliation után helyreállt."
+            WireActionStatus.SUCCESS -> if (result.action == WireAction.BIND)
+                "§a[CK] Az Élbekötést a Python elfogadta; a CK Wire vetítése frissült."
+            else "§a[CK] A CK Wire állapotát a Python elfogadta."
+            WireActionStatus.RECOVERED -> if (result.action == WireAction.BIND)
+                "§a[CK] Az Élbekötés reconciliation után helyreállt; a vetítés frissült."
+            else "§a[CK] A CK Wire állapota reconciliation után helyreállt."
             WireActionStatus.NEEDS_REPAIR -> "§c[CK] A graph mentve, de a világvetítés helyreállítást igényel."
             WireActionStatus.NOT_SYNCED, WireActionStatus.STALE -> "§e[CK] A Stage graph állapota nem aktuális; próbáld újra."
             WireActionStatus.REJECTED -> "§c[CK] A Python elutasította a CK Wire műveletet: ${result.detail ?: "ismeretlen hiba"}."

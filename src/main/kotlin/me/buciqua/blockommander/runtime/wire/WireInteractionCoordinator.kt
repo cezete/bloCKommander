@@ -6,7 +6,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
 
-enum class WireAction { PLACE, REMOVE }
+enum class WireAction { PLACE, REMOVE, BIND }
 enum class WireActionStatus { SUCCESS, RECOVERED, REJECTED, NOT_SYNCED, STALE, NEEDS_REPAIR }
 enum class WireWorldStatus { SYNCED, NEEDS_REPAIR }
 
@@ -51,6 +51,45 @@ class WireInteractionCoordinator(
         val requestId = requestIdFactory()
         return gateway.reconcile(stage.stageId, player).thenCompose {
             renderCurrent(stage, world, WireAction.PLACE, requestId, null, recovered = true)
+        }
+    }
+
+    fun bind(
+        stage: WireStageContext,
+        player: ServerPlayerIdentity,
+        world: WireWorldAccess,
+    ): CompletableFuture<WireActionResult> {
+        val requestId = requestIdFactory()
+        return ensureSynced(stage, player).thenCompose { view ->
+            if (view == null) return@thenCompose CompletableFuture.completedFuture(
+                WireActionResult(WireAction.BIND, WireActionStatus.NOT_SYNCED, requestId, detail = "GRAPH_NOT_SYNCED"),
+            )
+            val command = BindEdgesCommand(
+                requestId, stage.stageId, player, view.stageEpoch, view.stageRevision,
+            )
+            gateway.send(command).thenCompose { outcome ->
+                val authoritative = outcome.application is GraphApplyResult.Applied ||
+                    outcome.reconciliation?.application is GraphApplyResult.Applied
+                if (!authoritative) {
+                    CompletableFuture.completedFuture(WireActionResult(
+                        WireAction.BIND, WireActionStatus.REJECTED, requestId, detail = transportDetail(outcome.transport),
+                    ))
+                } else {
+                    val forceRejected = outcome.transport is GraphHttpResult.ApiError
+                    renderCurrent(
+                        stage, world, WireAction.BIND, requestId, null,
+                        recovered = outcome.application == null, forceRejected = forceRejected,
+                    ).thenCompose { rendered ->
+                        if (rendered.detail != "WORLD_RENDER_FAILED") CompletableFuture.completedFuture(rendered)
+                        else gateway.reconcile(stage.stageId, player).thenCompose {
+                            renderCurrent(
+                                stage, world, WireAction.BIND, requestId, null,
+                                recovered = true, forceRejected = forceRejected,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -142,7 +181,8 @@ class WireInteractionCoordinator(
             val result = projector.apply(stage, view.stageRevision, view.snapshot!!, world)
             val targetMatches = target == null || when (action) {
                 WireAction.PLACE -> target in result.rendered
-                WireAction.REMOVE -> world.cell(target) != WireWorldCell.CK_WIRE
+                WireAction.REMOVE -> !world.cell(target).isCkWire
+                WireAction.BIND -> true
             }
             if (result.complete && targetMatches && !forceRejected) {
                 worldStates[stage.stageId] = WireWorldStatus.SYNCED
@@ -165,7 +205,13 @@ class WireInteractionCoordinator(
     }, mainThread)
 
     private fun transportDetail(result: GraphHttpResult): String = when (result) {
-        is GraphHttpResult.ApiError -> result.response.errorCode
+        is GraphHttpResult.ApiError -> buildString {
+            append(result.response.errorCode)
+            result.response.diagnostics.firstNotNullOfOrNull(GraphDiagnostic::fieldName)?.let {
+                append(": ")
+                append(it)
+            }
+        }
         is GraphHttpResult.ProtocolFailure -> "PROTOCOL_FAILURE"
         is GraphHttpResult.Unavailable -> "TRANSPORT_UNAVAILABLE"
         is GraphHttpResult.Success -> "PROJECTION_REJECTED"

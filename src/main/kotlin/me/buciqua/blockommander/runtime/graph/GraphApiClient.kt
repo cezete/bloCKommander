@@ -1,6 +1,6 @@
 package me.buciqua.blockommander.runtime.graph
 
-import com.google.gson.Gson
+import com.google.gson.GsonBuilder
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -24,7 +24,7 @@ class GraphApiClient private constructor(
     private val secret: String?,
     private val http: HttpClient,
 ) {
-    private val gson = Gson()
+    private val gson = GsonBuilder().serializeNulls().create()
     private val baseUrl = baseUrl.trimEnd('/')
 
     companion object {

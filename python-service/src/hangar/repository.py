@@ -363,9 +363,11 @@ class HallRepository:
                 size_y=max(1,int(hall["max_y"])-int(hall["min_y"])-1)
                 size_z=max(1,int(hall["max_z"])-int(hall["min_z"])-3)
                 cur.execute("""INSERT INTO blockcommander.stages
-                    (stage_id,hall_id,stage_name,origin_rel_x,origin_rel_y,origin_rel_z,size_x,size_y,size_z)
-                    VALUES(%s,%s,%s,2,1,2,%s,%s,%s) RETURNING *""",
-                    (stage_id,hall["hall_id"],f"{hall['hall_name']} stage",size_x,size_y,size_z))
+                    (stage_id,hall_id,stage_name,origin_rel_x,origin_rel_y,origin_rel_z,
+                     size_x,size_y,size_z,graph_snapshot_version,port_catalog_version)
+                    VALUES(%s,%s,%s,2,1,2,%s,%s,%s,%s,%s) RETURNING *""",
+                    (stage_id,hall["hall_id"],f"{hall['hall_name']} stage",
+                     size_x,size_y,size_z,GRAPH_SNAPSHOT_VERSION,PORT_CATALOG_VERSION))
                 stage=cur.fetchone()
             result=dict(stage)
             result.update({
