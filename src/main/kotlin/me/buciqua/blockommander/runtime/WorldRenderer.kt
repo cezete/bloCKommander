@@ -21,6 +21,12 @@ import net.minecraft.world.level.block.state.properties.DoubleBlockHalf
 
 object WorldRenderer {
     fun buildHall(level: ServerLevel, hall: Hall) {
+        buildHallStructure(level, hall)
+        hall.controls.firstOrNull { it.kind == "SAVE_SIGN" }?.let { renderControl(level, hall, it) }
+        renderStage(level, hall)
+    }
+
+    fun buildHallStructure(level: ServerLevel, hall: Hall) {
         val wall = material(hall.material)
         for (x in hall.min.x..hall.max.x) for (y in hall.min.y..hall.max.y) for (z in hall.min.z..hall.max.z) {
             val shell = x == hall.min.x || x == hall.max.x || y == hall.min.y || y == hall.max.y || z == hall.min.z || z == hall.max.z
@@ -34,8 +40,7 @@ object WorldRenderer {
         for (x in hall.min.x + 2 until hall.max.x step 3) for (z in hall.min.z + 2 until hall.max.z step 3)
             level.setBlockAndUpdate(BlockPos(x, hall.max.y, z), Blocks.GLOWSTONE.defaultBlockState())
         renderDoor(level, hall)
-        hall.controls.forEach { renderControl(level, hall, it) }
-        renderStage(level, hall)
+        hall.controls.filterNot { it.kind == "SAVE_SIGN" }.forEach { renderControl(level, hall, it) }
     }
 
     fun demolish(level: ServerLevel, hall: Hall) {
@@ -45,6 +50,12 @@ object WorldRenderer {
     }
 
     fun renderStage(level: ServerLevel, hall: Hall) {
+        val stage = hall.stage ?: return
+        renderStageBlocks(level, hall)
+        renderSaveState(level, hall, stage.dirty)
+    }
+
+    fun renderStageBlocks(level: ServerLevel, hall: Hall) {
         val stage = hall.stage ?: return
         for (x in stage.origin.x until stage.origin.x + stage.sizeX)
             for (y in stage.origin.y until stage.origin.y + stage.sizeY)
@@ -57,7 +68,6 @@ object WorldRenderer {
             val direction = runCatching { Direction.valueOf(it.orientation.uppercase()) }.getOrDefault(Direction.NORTH)
             level.setBlockAndUpdate(it.pos, block(it.type).defaultBlockState().setValue(HorizontalDirectionalBlock.FACING, direction))
         }
-        renderSaveState(level, hall, stage.dirty)
     }
 
     fun renderSaveState(level: ServerLevel, hall: Hall, dirty: Boolean) {

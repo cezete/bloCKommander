@@ -48,6 +48,24 @@ class GraphProjectionStoreTest {
         assertTrue(result is GraphApplyResult.Applied)
     }
 
+    @Test fun `authoritative reconnect clears same epoch dirty snapshot and fences pending response`() {
+        val store = seeded(3)
+        val pending = store.begin(STAGE_ID, GraphRequestKind.RECONCILIATION)
+
+        val reset = store.authoritativeStageReconciliation(STAGE_ID, EPOCH_A, 3)
+        val late = store.apply(pending, snapshot(revision = 4))
+        val clean = store.apply(
+            store.begin(STAGE_ID, GraphRequestKind.RECONCILIATION),
+            snapshot(revision = 3, dirty = false),
+        )
+
+        assertEquals(GraphSyncStatus.NOT_REQUESTED, reset.status)
+        assertNull(reset.snapshot)
+        assertTrue(late is GraphApplyResult.IgnoredStaleRequest)
+        assertTrue(clean is GraphApplyResult.Applied)
+        assertFalse(store.view(STAGE_ID)!!.snapshot!!.dirty)
+    }
+
     @Test fun `old asynchronous response cannot overwrite newer request`() {
         val store = GraphProjectionStore()
         store.authoritativeStageReload(STAGE_ID, EPOCH_A, 0)

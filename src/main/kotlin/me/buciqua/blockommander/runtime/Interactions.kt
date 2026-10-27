@@ -1,6 +1,7 @@
 package me.buciqua.blockommander.runtime
 
 import com.google.gson.JsonObject
+import me.buciqua.blockommander.BlockCommanderMod
 import me.buciqua.blockommander.ModContent
 import me.buciqua.blockommander.network.OpenFormPayload
 import me.buciqua.blockommander.network.SubmitFormPayload
@@ -24,6 +25,7 @@ import net.minecraft.world.InteractionResult
 import net.minecraft.world.item.BlockItem
 import net.minecraft.core.registries.BuiltInRegistries
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 
 class Interactions(
@@ -104,9 +106,10 @@ class Interactions(
                 return@register false
             }
             registry.stageBlockAt(worldUuid, pos)?.let { (stage, block) ->
+                val fence = registry.stageUpdateFence(stage.id) ?: return@let
                 val payload = playerPayload(serverPlayer, serverLevel)
                 api.post(serverPlayer, "/api/v1/stages/${stage.id}/blocks/${block.instanceId}/delete", payload) { response ->
-                    registry.updateStage(response.getAsJsonObject("stage"))?.let { WorldRenderer.renderStage(serverLevel, it) }
+                    registry.updateStage(response.getAsJsonObject("stage"), fence)?.let { WorldRenderer.renderStage(serverLevel, it) }
                 }
                 return@register false
             }
@@ -133,8 +136,9 @@ class Interactions(
                     player.sendSystemMessage(Component.literal("§c[CK] A felirat 1–32, a leírás legfeljebb 256 karakteres lehet.")); return
                 }
                 val body = playerPayload(player, level).apply { addProperty("label", payload.value1); addProperty("description", payload.value2) }
+                val fence = registry.stageUpdateFence(ids[0]) ?: return
                 api.post(player, "/api/v1/stages/${ids[0]}/blocks/${ids[1]}", body) { response ->
-                    registry.updateStage(response.getAsJsonObject("stage"))?.let { WorldRenderer.renderStage(level, it) }
+                    registry.updateStage(response.getAsJsonObject("stage"), fence)?.let { WorldRenderer.renderStage(level, it) }
                 }
             }
         }
@@ -157,17 +161,59 @@ class Interactions(
     private fun restoreFor(player: ServerPlayer) {
         val level = player.level()
         val worldUuid = WorldIdentity.uuid(level).toString()
-        api.post(player, "/api/v1/halls/restore", playerPayload(player, level)) { response ->
-            val stages = linkedMapOf<String, Stage>()
-            response.getAsJsonArray("halls").forEach {
-                val hall = registry.install(it.asJsonObject)
-                WorldRenderer.buildHall(level, hall)
-                hall.stage?.let { stage -> stages[stage.id] = stage }
+        api.post(player, "/api/v1/halls/restore", playerPayload(player, level), onFailure = { detail ->
+            BlockCommanderMod.LOGGER.warn("Reconnect restore failed for player {}: {}", player.uuid, detail)
+        }) { response ->
+            val restoredHalls = response.getAsJsonArray("halls")
+            if (restoredHalls == null) {
+                BlockCommanderMod.LOGGER.warn("Reconnect restore response has no halls array for player {}", player.uuid)
+                return@post
             }
-            registry.inWorld(worldUuid).forEach { hall ->
-                if (hall.ownerUuid == player.uuid.toString()) hall.stage?.let { stage -> stages[stage.id] = stage }
+            val restoredHallIds = runCatching {
+                restoredHalls.map { it.asJsonObject["hall_id"].asString }.toSet()
+            }.getOrElse {
+                BlockCommanderMod.LOGGER.warn("Reconnect restore response is invalid for player {}", player.uuid, it)
+                return@post
             }
-            stages.values.forEach { stage -> reconcileWire(player, level, stage) }
+            refreshOwnerStages(player, level, worldUuid, restoredHallIds)
+        }
+    }
+
+    private fun refreshOwnerStages(player: ServerPlayer, level: ServerLevel, worldUuid: String,
+                                   restoredHallIds: Set<String>) {
+        val ownerUuid = player.uuid.toString()
+        val fences = registry.stageUpdateFencesForOwner(ownerUuid)
+        api.get(player, "/api/v1/worlds/$worldUuid/halls", onFailure = { detail ->
+            BlockCommanderMod.LOGGER.warn("Authoritative reconnect Stage GET failed for player {}: {}", player.uuid, detail)
+        }) { response ->
+            val reconciler = StageReconnectReconciler(
+                registry,
+                projectStage = { hall ->
+                    if (hall.id in restoredHallIds) WorldRenderer.buildHallStructure(level, hall)
+                    WorldRenderer.renderStageBlocks(level, hall)
+                },
+                reconcileGraphAndWire = { stage -> reconcileGraphAndWire(player, level, stage) },
+                projectSaveState = { hall, dirty -> WorldRenderer.renderSaveState(level, hall, dirty) },
+                diagnose = { detail ->
+                    BlockCommanderMod.LOGGER.warn("Reconnect reconciliation issue for player {}: {}", player.uuid, detail)
+                },
+            )
+            val halls = response.getAsJsonArray("halls")
+            if (halls == null) {
+                BlockCommanderMod.LOGGER.warn("Authoritative reconnect Stage GET has no halls array for player {}", player.uuid)
+                return@get
+            }
+            halls.forEach { element ->
+                val hallJson = runCatching { element.asJsonObject }.getOrElse {
+                    BlockCommanderMod.LOGGER.warn("Authoritative reconnect Stage entry is invalid for player {}", player.uuid, it)
+                    return@forEach
+                }
+                val identity = runCatching { hallJson["owner_uuid"].asString to hallJson["hall_id"].asString }.getOrElse {
+                    BlockCommanderMod.LOGGER.warn("Authoritative reconnect Stage identity is invalid for player {}", player.uuid, it)
+                    return@forEach
+                }
+                if (identity.first == ownerUuid) reconciler.reconcile(hallJson, fences[identity.second])
+            }
         }
     }
 
@@ -212,11 +258,28 @@ class Interactions(
     }
 
     private fun reconcileWire(player: ServerPlayer, level: ServerLevel, stage: Stage) {
-        wireCoordinator()?.reconcileAndRender(
-            stage.wireContext(), ServerPlayerIdentity.from(player), MinecraftWireWorldAccess(level),
-        )?.thenAccept { result ->
+        reconcileGraphAndWire(player, level, stage).thenAccept {
             refreshSaveSign(level, stage.id)
+        }
+    }
+
+    private fun reconcileGraphAndWire(player: ServerPlayer, level: ServerLevel,
+                                      stage: Stage): CompletableFuture<ReconnectGraphResult> {
+        val coordinator = wireCoordinator() ?: return CompletableFuture.completedFuture(
+            ReconnectGraphResult(false, "GRAPH_COORDINATOR_UNAVAILABLE"),
+        )
+        return coordinator.reconcileAndRender(
+            stage.wireContext(), ServerPlayerIdentity.from(player), MinecraftWireWorldAccess(level),
+        ).thenApply { result ->
+            val synchronized = result.status == WireActionStatus.SUCCESS || result.status == WireActionStatus.RECOVERED
+            if (!synchronized) {
+                BlockCommanderMod.LOGGER.warn(
+                    "Stage graph reconciliation failed: stage={} status={} detail={}",
+                    stage.id, result.status, result.detail,
+                )
+            }
             if (result.status == WireActionStatus.NEEDS_REPAIR) wireFeedback(player, result)
+            ReconnectGraphResult(synchronized, result.detail ?: result.status.name)
         }
     }
 
@@ -241,7 +304,7 @@ class Interactions(
     private fun refreshSaveSign(level: ServerLevel, stageId: String) {
         level.server.execute {
             val hall = registry.hallForStage(stageId) ?: return@execute
-            val dirty = registry.graph(stageId)?.snapshot?.dirty ?: hall.stage?.dirty ?: return@execute
+            val dirty = registry.saveDirty(stageId) ?: return@execute
             WorldRenderer.renderSaveState(level, hall, dirty)
         }
     }
@@ -292,8 +355,9 @@ class Interactions(
             addProperty("type_key", type); addProperty("x", target.x); addProperty("y", target.y); addProperty("z", target.z)
             addProperty("orientation", player.direction.name)
         }
+        val fence = registry.stageUpdateFence(stage.id) ?: return
         api.post(player, "/api/v1/stages/${stage.id}/blocks", payload) { response ->
-            registry.updateStage(response.getAsJsonObject("stage"))?.let { WorldRenderer.renderStage(level, it) }
+            registry.updateStage(response.getAsJsonObject("stage"), fence)?.let { WorldRenderer.renderStage(level, it) }
         }
     }
 
@@ -305,8 +369,10 @@ class Interactions(
             "DESTROY_BUTTON" -> api.post(player, "/api/v1/halls/button", payload) { response ->
                 registry.remove(response["hall_id"].asString)?.let { WorldRenderer.demolish(level, it) }
             }
-            "SAVE_BUTTON" -> api.post(player, "/api/v1/halls/save-button", payload) { response ->
-                registry.updateStage(response.getAsJsonObject("stage"))?.let { WorldRenderer.renderStage(level, it) }
+            "SAVE_BUTTON" -> registry.stageUpdateFenceForHall(control.hallId)?.let { fence ->
+                api.post(player, "/api/v1/halls/save-button", payload) { response ->
+                    registry.updateStage(response.getAsJsonObject("stage"), fence)?.let { WorldRenderer.renderStage(level, it) }
+                }
             }
         }
     }

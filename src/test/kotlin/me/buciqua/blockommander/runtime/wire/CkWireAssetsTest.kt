@@ -59,17 +59,21 @@ class CkWireAssetsTest {
         assertTrue(source.contains("coordinator.bind("))
     }
 
-    @Test fun `player join reconciles already loaded current-world Stage wires`() {
+    @Test fun `player join reloads authoritative current-world Stage before wire reconciliation`() {
         val source = Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/Interactions.kt"))
-        assertTrue(source.contains("registry.inWorld(worldUuid).forEach"))
-        assertTrue(source.contains("stages.values.forEach { stage -> reconcileWire(player, level, stage) }"))
-        assertTrue(source.contains("player.uuid.toString() == hall.ownerUuid"))
+        assertTrue(source.contains("/api/v1/worlds/\$worldUuid/halls"))
+        assertTrue(source.contains("StageReconnectReconciler("))
+        assertTrue(source.contains("WorldRenderer.renderStageBlocks(level, hall)"))
+        assertTrue(source.contains("reconcileGraphAndWire = { stage ->"))
     }
 
-    @Test fun `graph operations refresh save sign from authoritative graph snapshot`() {
+    @Test fun `save sign accepts only lifecycle-current synchronized graph dirty state`() {
         val interactions = Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/Interactions.kt"))
+        val registry = Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/HallRegistry.kt"))
         val renderer = Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/WorldRenderer.kt"))
-        assertTrue(interactions.contains("registry.graph(stageId)?.snapshot?.dirty"))
+        assertTrue(interactions.contains("registry.saveDirty(stageId)"))
+        assertTrue(registry.contains("GraphSyncStatus.SYNCED"))
+        assertTrue(registry.contains("graph.stageEpoch == stage.workspaceEpoch"))
         assertTrue(interactions.contains("WorldRenderer.renderSaveState(level, hall, dirty)"))
         assertTrue(renderer.contains("if (graphDirty ?: (hall.stage?.dirty == true))"))
     }

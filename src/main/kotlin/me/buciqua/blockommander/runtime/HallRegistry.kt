@@ -16,6 +16,8 @@ data class Stage(val id: String, val origin: BlockPos, val sizeX: Int, val sizeY
     fun contains(pos: BlockPos) = pos.x in origin.x until origin.x + sizeX &&
         pos.y in origin.y until origin.y + sizeY && pos.z in origin.z until origin.z + sizeZ
 }
+data class StageUpdateFence(val hallId: String, val stageId: String, val workspaceEpoch: UUID,
+                            val workingRevision: Long)
 data class Hall(val id: String, val name: String, val ownerUuid: String, val ownerName: String,
                 val worldUuid: String, val material: String,
                 val min: BlockPos, val max: BlockPos, val door: BlockPos, val orientation: String,
@@ -26,10 +28,22 @@ data class Hall(val id: String, val name: String, val ownerUuid: String, val own
 class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionStore()) {
     private val halls = ConcurrentHashMap<String, Hall>()
 
+    @Synchronized
     fun install(json: JsonObject): Hall {
+        val hall = parseHall(json)
+        val stage = hall.stage
+        val previous = halls.put(hall.id, hall)
+        if (previous?.stage?.id != null && previous.stage.id != stage?.id) {
+            graphProjections.remove(UUID.fromString(previous.stage.id))
+        }
+        stage?.let { graphProjections.authoritativeStageReload(UUID.fromString(it.id), it.workspaceEpoch, it.workingRevision) }
+        return hall
+    }
+
+    private fun parseHall(json: JsonObject): Hall {
         val hallId = json["hall_id"].asString
         val stage = json.getAsJsonObject("stage")?.let(::parseStage)
-        val hall = Hall(hallId, json["hall_name"].asString, json["owner_uuid"].asString,
+        return Hall(hallId, json["hall_name"].asString, json["owner_uuid"].asString,
             json["owner_name"].asString, json["world_uuid"].asString,
             json["material_name"].asString,
             BlockPos(json["min_x"].asInt, json["min_y"].asInt, json["min_z"].asInt),
@@ -40,31 +54,92 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
                 val c = it.asJsonObject
                 Control(hallId, c["kind"].asString, BlockPos(c["x"].asInt, c["y"].asInt, c["z"].asInt))
             }, stage)
-        val previous = halls.put(hall.id, hall)
-        if (previous?.stage?.id != null && previous.stage.id != stage?.id) {
-            graphProjections.remove(UUID.fromString(previous.stage.id))
-        }
-        stage?.let { graphProjections.authoritativeStageReload(UUID.fromString(it.id), it.workspaceEpoch, it.workingRevision) }
-        return hall
     }
 
-    fun updateStage(stageJson: JsonObject): Hall? {
+    fun stageUpdateFence(stageId: String): StageUpdateFence? = halls.values
+        .firstOrNull { it.stage?.id == stageId }
+        ?.let { hall -> hall.stage?.let { StageUpdateFence(hall.id, it.id, it.workspaceEpoch, it.workingRevision) } }
+
+    fun stageUpdateFenceForHall(hallId: String): StageUpdateFence? = halls[hallId]?.let { hall ->
+        hall.stage?.let { StageUpdateFence(hall.id, it.id, it.workspaceEpoch, it.workingRevision) }
+    }
+
+    fun stageUpdateFencesForOwner(ownerUuid: String): Map<String, StageUpdateFence> = halls.values
+        .filter { it.ownerUuid == ownerUuid }
+        .mapNotNull { hall -> hall.stage?.let { hall.id to StageUpdateFence(hall.id, it.id, it.workspaceEpoch, it.workingRevision) } }
+        .toMap()
+
+    /** Apply a direct authoritative Hall/Stage GET response captured under [fence]. */
+    @Synchronized
+    fun authoritativeReload(hallJson: JsonObject, fence: StageUpdateFence?): Hall? {
+        val incoming = parseHall(hallJson)
+        val incomingStage = incoming.stage ?: return null
+        val current = halls[incoming.id]
+
+        if (fence == null) {
+            if (current != null) return null
+        } else {
+            if (incoming.id != fence.hallId || incomingStage.id != fence.stageId) return null
+            val currentStage = current?.stage ?: return null
+            if (currentStage.id != fence.stageId || currentStage.workspaceEpoch != fence.workspaceEpoch ||
+                currentStage.workingRevision != fence.workingRevision) return null
+            if (incomingStage.workspaceEpoch == currentStage.workspaceEpoch) {
+                val projectedRevision = graphProjections.view(UUID.fromString(incomingStage.id))?.stageRevision ?: -1
+                if (incomingStage.workingRevision < maxOf(currentStage.workingRevision, projectedRevision)) return null
+            }
+        }
+
+        halls[incoming.id] = incoming
+        graphProjections.authoritativeStageReconciliation(
+            UUID.fromString(incomingStage.id), incomingStage.workspaceEpoch, incomingStage.workingRevision,
+        )
+        return incoming
+    }
+
+    fun saveDirty(stageId: String): Boolean? {
+        val hall = hallForStage(stageId) ?: return null
+        val stage = hall.stage ?: return null
+        val graph = graph(stageId)
+        val synchronizedSnapshot = graph?.snapshot?.takeIf {
+            graph.status == me.buciqua.blockommander.runtime.graph.GraphSyncStatus.SYNCED &&
+                graph.stageEpoch == stage.workspaceEpoch &&
+                it.workspaceEpoch == stage.workspaceEpoch &&
+                it.workingRevision >= stage.workingRevision
+        }
+        return synchronizedSnapshot?.dirty ?: stage.dirty
+    }
+
+    @Synchronized
+    fun updateStage(stageJson: JsonObject, fence: StageUpdateFence): Hall? {
         val stage = parseStage(stageJson)
-        val hall = halls[stageJson["hall_id"].asString] ?: return null
-        val currentStage = hall.stage
-        if (currentStage != null && currentStage.id != stage.id) return hall
-        val projectedRevision = graphProjections.view(UUID.fromString(stage.id))?.stageRevision ?: -1
-        val accepted = currentStage == null || (
-            currentStage.id == stage.id && currentStage.workspaceEpoch == stage.workspaceEpoch &&
-                stage.workingRevision >= maxOf(currentStage.workingRevision, projectedRevision)
+        val hallId = stageJson["hall_id"].asString
+        if (hallId != fence.hallId || stage.id != fence.stageId) return null
+        val hall = halls[hallId] ?: return null
+        val currentStage = hall.stage ?: return null
+        if (currentStage.id != stage.id) return null
+        val stageUuid = UUID.fromString(stage.id)
+        val projection = graphProjections.view(stageUuid)
+
+        if (stage.workspaceEpoch != currentStage.workspaceEpoch) {
+            val fenceStillCurrent = currentStage.workspaceEpoch == fence.workspaceEpoch &&
+                currentStage.workingRevision == fence.workingRevision
+            if (!fenceStillCurrent) return null
+
+            val updated = hall.copy(stage = stage)
+            halls[updated.id] = updated
+            graphProjections.authoritativeStageReload(
+                stageUuid, stage.workspaceEpoch, stage.workingRevision,
             )
-        graphProjections.legacyStageUpdated(UUID.fromString(stage.id), stage.workspaceEpoch, stage.workingRevision)
-        if (!accepted) return hall
+            return updated
+        }
+
+        if (fence.workspaceEpoch != currentStage.workspaceEpoch) return null
+        val projectedRevision = projection?.stageRevision ?: -1
+        if (stage.workingRevision < maxOf(currentStage.workingRevision, projectedRevision)) return null
+
         val updated = hall.copy(stage = stage)
         halls[updated.id] = updated
-        if (hall.stage?.id != null && hall.stage.id != stage.id) {
-            graphProjections.remove(UUID.fromString(hall.stage.id))
-        }
+        graphProjections.legacyStageUpdated(stageUuid, stage.workspaceEpoch, stage.workingRevision)
         return updated
     }
 

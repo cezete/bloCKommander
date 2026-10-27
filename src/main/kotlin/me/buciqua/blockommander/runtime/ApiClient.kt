@@ -16,11 +16,13 @@ class ApiClient {
     private val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
     private val baseUrl = System.getProperty("blockommander.api", "http://127.0.0.1:5001").trimEnd('/')
 
-    fun get(player: ServerPlayer?, path: String, success: (JsonObject) -> Unit) = request(player, "GET", path, null, success)
-    fun post(player: ServerPlayer, path: String, payload: JsonObject, success: (JsonObject) -> Unit) =
-        request(player, "POST", path, payload, success)
+    fun get(player: ServerPlayer?, path: String, onFailure: (String) -> Unit = {}, success: (JsonObject) -> Unit) =
+        request(player, "GET", path, null, success, onFailure)
+    fun post(player: ServerPlayer, path: String, payload: JsonObject, onFailure: (String) -> Unit = {},
+             success: (JsonObject) -> Unit) = request(player, "POST", path, payload, success, onFailure)
 
-    private fun request(player: ServerPlayer?, method: String, path: String, payload: JsonObject?, success: (JsonObject) -> Unit) {
+    private fun request(player: ServerPlayer?, method: String, path: String, payload: JsonObject?,
+                        success: (JsonObject) -> Unit, onFailure: (String) -> Unit) {
         val builder = HttpRequest.newBuilder(URI.create(baseUrl + path)).timeout(Duration.ofSeconds(10))
             .header("Accept", "application/json")
         if (payload == null) builder.GET() else builder.header("Content-Type", "application/json")
@@ -32,12 +34,15 @@ class ApiClient {
                     if (player == null) BlockCommanderMod.LOGGER.warn("Python service unavailable during background refresh: {} {}", method, path)
                     else BlockCommanderMod.LOGGER.error("Python service request failed: {} {}", method, path, failure)
                     player?.sendSystemMessage(Component.literal("§c[CK] A Python szolgáltatás nem érhető el."))
+                    onFailure("TRANSPORT_UNAVAILABLE")
                     return@Runnable
                 }
                 val body = runCatching { gson.fromJson(response.body(), JsonObject::class.java) }.getOrNull()
                 if (response.statusCode() !in 200..299 || body == null) {
                     val message = body?.get("message")?.asString ?: "HTTP ${response.statusCode()}"
+                    BlockCommanderMod.LOGGER.warn("Python service rejected request: {} {} status={} message={}", method, path, response.statusCode(), message)
                     player?.sendSystemMessage(Component.literal("§c[CK] $message"))
+                    onFailure("HTTP_${response.statusCode()}: $message")
                     return@Runnable
                 }
                 body.get("message")?.asString?.let { player?.sendSystemMessage(Component.literal("§a[CK] $it")) }

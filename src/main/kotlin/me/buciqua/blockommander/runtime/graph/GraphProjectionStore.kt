@@ -65,6 +65,27 @@ class GraphProjectionStore {
         view(stageId, slots.getValue(stageId))
     }
 
+    /**
+     * A reconnect authoritative Stage GET-je után a következő Graph GET új vetítést épít.
+     * Azonos epochnál is leválasztja a reconnect előtt indult kéréseket és snapshotot.
+     */
+    fun authoritativeStageReconciliation(stageId: UUID, epoch: UUID, revision: Long): StageGraphView = synchronized(slots) {
+        require(revision >= 0) { "A Stage revision nem lehet negatív." }
+        val current = slots[stageId]
+        if (current == null) {
+            slots[stageId] = Slot(epoch, revision, 1, 0, GraphSyncStatus.NOT_REQUESTED, null, null)
+        } else {
+            current.stageEpoch = epoch
+            current.stageRevision = revision
+            current.lifecycleGeneration++
+            current.requestGeneration++
+            current.status = GraphSyncStatus.NOT_REQUESTED
+            current.snapshot = null
+            current.problem = null
+        }
+        view(stageId, slots.getValue(stageId))
+    }
+
     /** Legacy block CRUD után a korábbi graph vetítés többé nem jelölhető aktuálisnak. */
     fun legacyStageUpdated(stageId: UUID, epoch: UUID, revision: Long): StageGraphView = synchronized(slots) {
         val current = slots[stageId]
