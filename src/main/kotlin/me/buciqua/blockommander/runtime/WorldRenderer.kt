@@ -57,7 +57,11 @@ object WorldRenderer {
             val direction = runCatching { Direction.valueOf(it.orientation.uppercase()) }.getOrDefault(Direction.NORTH)
             level.setBlockAndUpdate(it.pos, block(it.type).defaultBlockState().setValue(HorizontalDirectionalBlock.FACING, direction))
         }
-        hall.controls.firstOrNull { it.kind == "SAVE_SIGN" }?.let { renderControl(level, hall, it) }
+        renderSaveState(level, hall, stage.dirty)
+    }
+
+    fun renderSaveState(level: ServerLevel, hall: Hall, dirty: Boolean) {
+        hall.controls.firstOrNull { it.kind == "SAVE_SIGN" }?.let { renderControl(level, hall, it, dirty) }
     }
 
     private fun renderDoor(level: ServerLevel, hall: Hall) {
@@ -75,7 +79,7 @@ object WorldRenderer {
         "FOR" -> ModContent.FOR; "FUN" -> ModContent.FUN; else -> Blocks.BARRIER
     }
 
-    private fun renderControl(level: ServerLevel, hall: Hall, control: Control) {
+    private fun renderControl(level: ServerLevel, hall: Hall, control: Control, graphDirty: Boolean? = null) {
         val inward = runCatching { Direction.valueOf(hall.orientation.uppercase()) }.getOrDefault(Direction.SOUTH)
         if (control.kind.endsWith("BUTTON")) {
             val state = Blocks.STONE_BUTTON.defaultBlockState()
@@ -91,7 +95,10 @@ object WorldRenderer {
         val lines = when (control.kind) {
             "OWNER_SIGN" -> listOf("Fejlesztői", "csarnok", hall.ownerName.take(15), hall.name.take(15))
             "DESTROY_SIGN" -> listOf("Csarnok", "megszüntetése", "Tulajdonos", "gombja")
-            "SAVE_SIGN" -> listOf("STAGE", "MENTÉS", "", if (hall.stage?.dirty == true) "NINCS MENTVE" else "MENTVE")
+            "SAVE_SIGN" -> listOf(
+                "STAGE", "MENTÉS", "",
+                if (graphDirty ?: (hall.stage?.dirty == true)) "NINCS MENTVE" else "MENTVE",
+            )
             else -> listOf("bloCKommander", "", "", "")
         }
         val sign = level.getBlockEntity(control.pos) as? SignBlockEntity ?: return

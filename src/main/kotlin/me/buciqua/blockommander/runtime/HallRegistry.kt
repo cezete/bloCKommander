@@ -73,6 +73,7 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
     }
     fun graph(stageId: String): StageGraphView? = runCatching { UUID.fromString(stageId) }
         .getOrNull()?.let(graphProjections::view)
+    fun hallForStage(stageId: String): Hall? = halls.values.firstOrNull { it.stage?.id == stageId }
     fun controlAt(worldUuid: String, pos: BlockPos) = halls.values.firstNotNullOfOrNull { hall ->
         if (hall.worldUuid == worldUuid) hall.controls.firstOrNull { it.pos == pos } else null
     }

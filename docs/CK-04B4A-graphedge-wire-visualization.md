@@ -48,6 +48,8 @@ Egy létező GraphEdge önmagában nem tesz zölddé egy cellát: explicit, a ce
 - `WireWorldProjector` továbbra is ellenőrzi a Stage-határt, a támogatott SINGLE E–W geometriát, az epochot és a revisiont.
 - A projektor csak a hiteles `wire_cells` pozícióit rendereli. Idegen blokkot nem ír felül, extra CK Wire-t eltávolít.
 - Egy már létező CK Wire eltérő színénél ugyanazon blokk blockstate-je frissül; nincs eltávolítás és újralerakás.
+- Játékoscsatlakozáskor az aktuális világ registryjében már betöltött, saját Stage-ek is GET reconciliationt és wire-vetítést kapnak; ez helyreállítja a snapshotban létező, de a világban hiányzó wire-t.
+- Graph placement, removal, bind és reconciliation után a SAVE tábla az aktuális graph snapshot `dirty` mezőjéből frissül; a legacy Stage-envelope nem írhat ki hamis `MENTVE` állapotot.
 - Minden világírás a `WireInteractionCoordinator` szerver-main-thread executorán fut.
 - Az ismételt azonos projection nem írja újra az azonos blockstate-et.
 
@@ -120,22 +122,32 @@ A B4A tesztek lefedik:
 
 Aktuális eredmény az implementáció lezárásakor:
 
-- Gradle/JUnit: **59/59 PASS**, 0 failure, 0 error, 0 skipped;
+- Gradle/JUnit: **62/62 PASS**, 0 failure, 0 error, 0 skipped;
 - teljes Java 25 Gradle `cleanTest buildAll --no-daemon`: **BUILD SUCCESSFUL** (12 task, 10 executed, 2 up-to-date);
 - teljes Python regresszió: **387/387 PASS** (`Ran 387 tests`, `OK`).
 
 ## Kézi Minecraft acceptance
 
-**NOT VERIFIED ebben a munkamenetben.** Nem történt deploy, szerver-/kliens-újraindítás, produkciós DB-írás vagy világmódosítás.
+**PARTIALLY VERIFIED valódi klienssel és dedikált szerverrel.**
+
+2026-10-26-án ténylegesen ellenőrizve:
+
+- reconnect után a Python snapshotban létező CK Wire ciánként helyreállt;
+- `/ckbind` sikeres játékos-visszajelzést adott;
+- a CK Wire zöldre váltott;
+- a graph GET pontosan egy CONTROL GraphEdge-et és egy hozzá tartozó `VALID` EdgeRoute-ot adott;
+- a route egyetlen `(1,0,1)` relatív `SINGLE` lépése a megjelenített WireCellhez tartozott;
+- `working_revision=1`, `dirty=true`, tehát a bind módosította a munkapéldányt, de még nem történt SAVE.
+- az ismételt `/ckbind` után `working_revision=1`, egy edge és egy route maradt, változatlan edge- és route-azonosítókkal; az idempotencia igazolt.
+- SAVE után a friss graph GET `saved_version=8`, `working_revision=1`, `dirty=false`, egy edge és egy route értékeket adott; a graph-aware mentés és clean átmenet igazolt.
 
 A tényleges kliens/szerver teszten ellenőrizendő:
 
-1. a START–wire–STOP sor kezdetben cián;
-2. `/ckbind` után pontosan egy GraphEdge és egy VALID EdgeRoute létezik, a wire zöld;
-3. ismételt `/ckbind` nem duplikál edge-et;
-4. reconnect után zöld marad/helyreáll;
-5. SAVE után a kapcsolat perzisztál;
-6. izolált, biztonságosan előállított nem-VALID route narancssárga.
+Még ellenőrizendő:
+
+1. bind utáni reconnect esetén a zöld állapot helyreáll;
+2. a mentett kapcsolat PostgreSQL-sorainak közvetlen ellenőrzése;
+3. izolált, biztonságosan előállított nem-VALID route narancssárga.
 
 ## CK-04/B4B előfeltételek és review-javaslat
 

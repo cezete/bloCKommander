@@ -144,19 +144,30 @@ class Interactions(
         val worldUuid = WorldIdentity.uuid(level).toString()
         api.get(null, "/api/v1/worlds/$worldUuid/halls") { response ->
             level.server.execute {
-                response.getAsJsonArray("halls").forEach { WorldRenderer.buildHall(level, registry.install(it.asJsonObject)) }
+                response.getAsJsonArray("halls").forEach {
+                    val hall = registry.install(it.asJsonObject)
+                    WorldRenderer.buildHall(level, hall)
+                    val owner = level.players().firstOrNull { player -> player.uuid.toString() == hall.ownerUuid }
+                    if (owner != null) hall.stage?.let { stage -> reconcileWire(owner, level, stage) }
+                }
             }
         }
     }
 
     private fun restoreFor(player: ServerPlayer) {
         val level = player.level()
+        val worldUuid = WorldIdentity.uuid(level).toString()
         api.post(player, "/api/v1/halls/restore", playerPayload(player, level)) { response ->
+            val stages = linkedMapOf<String, Stage>()
             response.getAsJsonArray("halls").forEach {
                 val hall = registry.install(it.asJsonObject)
                 WorldRenderer.buildHall(level, hall)
-                hall.stage?.let { stage -> reconcileWire(player, level, stage) }
+                hall.stage?.let { stage -> stages[stage.id] = stage }
             }
+            registry.inWorld(worldUuid).forEach { hall ->
+                if (hall.ownerUuid == player.uuid.toString()) hall.stage?.let { stage -> stages[stage.id] = stage }
+            }
+            stages.values.forEach { stage -> reconcileWire(player, level, stage) }
         }
     }
 
@@ -180,6 +191,7 @@ class Interactions(
             MinecraftWireWorldAccess(level)).thenAccept { result ->
             if ((result.status == WireActionStatus.SUCCESS || result.status == WireActionStatus.RECOVERED) && !alreadyWire &&
                 !player.abilities.instabuild) held.shrink(1)
+            refreshSaveSign(level, stage.id)
             wireFeedback(player, result)
         }
     }
@@ -193,13 +205,19 @@ class Interactions(
             return
         }
         coordinator.remove(stage.wireContext(), ServerPlayerIdentity.from(player), target.graphPosition(),
-            MinecraftWireWorldAccess(level)).thenAccept { wireFeedback(player, it) }
+            MinecraftWireWorldAccess(level)).thenAccept {
+            refreshSaveSign(level, stage.id)
+            wireFeedback(player, it)
+        }
     }
 
     private fun reconcileWire(player: ServerPlayer, level: ServerLevel, stage: Stage) {
         wireCoordinator()?.reconcileAndRender(
             stage.wireContext(), ServerPlayerIdentity.from(player), MinecraftWireWorldAccess(level),
-        )?.thenAccept { result -> if (result.status == WireActionStatus.NEEDS_REPAIR) wireFeedback(player, result) }
+        )?.thenAccept { result ->
+            refreshSaveSign(level, stage.id)
+            if (result.status == WireActionStatus.NEEDS_REPAIR) wireFeedback(player, result)
+        }
     }
 
     private fun bindCurrentStage(player: ServerPlayer) {
@@ -214,7 +232,18 @@ class Interactions(
         player.sendSystemMessage(Component.literal("§e[CK] Élbekötés indítása a Python graph szolgáltatáson keresztül…"))
         coordinator.bind(
             stage.wireContext(), ServerPlayerIdentity.from(player), MinecraftWireWorldAccess(level),
-        ).thenAccept { wireFeedback(player, it) }
+        ).thenAccept {
+            refreshSaveSign(level, stage.id)
+            wireFeedback(player, it)
+        }
+    }
+
+    private fun refreshSaveSign(level: ServerLevel, stageId: String) {
+        level.server.execute {
+            val hall = registry.hallForStage(stageId) ?: return@execute
+            val dirty = registry.graph(stageId)?.snapshot?.dirty ?: hall.stage?.dirty ?: return@execute
+            WorldRenderer.renderSaveState(level, hall, dirty)
+        }
     }
 
     private fun wireFeedback(player: ServerPlayer, result: WireActionResult) {

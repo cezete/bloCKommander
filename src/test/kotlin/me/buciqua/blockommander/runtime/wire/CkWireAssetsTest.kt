@@ -59,6 +59,21 @@ class CkWireAssetsTest {
         assertTrue(source.contains("coordinator.bind("))
     }
 
+    @Test fun `player join reconciles already loaded current-world Stage wires`() {
+        val source = Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/Interactions.kt"))
+        assertTrue(source.contains("registry.inWorld(worldUuid).forEach"))
+        assertTrue(source.contains("stages.values.forEach { stage -> reconcileWire(player, level, stage) }"))
+        assertTrue(source.contains("player.uuid.toString() == hall.ownerUuid"))
+    }
+
+    @Test fun `graph operations refresh save sign from authoritative graph snapshot`() {
+        val interactions = Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/Interactions.kt"))
+        val renderer = Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/WorldRenderer.kt"))
+        assertTrue(interactions.contains("registry.graph(stageId)?.snapshot?.dirty"))
+        assertTrue(interactions.contains("WorldRenderer.renderSaveState(level, hall, dirty)"))
+        assertTrue(renderer.contains("if (graphDirty ?: (hall.stage?.dirty == true))"))
+    }
+
     @Test fun `wire interactions cancel vanilla placement and break paths`() {
         val source = Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/Interactions.kt"))
         assertTrue(source.contains("held.item === ModContent.CK_WIRE_ITEM"))

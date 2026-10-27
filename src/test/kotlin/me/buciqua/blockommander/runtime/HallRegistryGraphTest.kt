@@ -38,6 +38,13 @@ class HallRegistryGraphTest {
         assertEquals(GraphSyncStatus.CONFLICT, registry.graph(STAGE_ID.toString())!!.status)
     }
 
+    @Test fun `HallRegistry resolves the Hall owning a Stage for graph status projection`() {
+        val registry = HallRegistry()
+        val installed = registry.install(JsonParser.parseString(hallJson(EPOCH_A, 0)).asJsonObject)
+        assertSame(installed, registry.hallForStage(STAGE_ID.toString()))
+        assertNull(registry.hallForStage(OTHER_STAGE_ID.toString()))
+    }
+
     private fun hallJson(epoch: UUID, revision: Long) = """
       {"hall_id":"$HALL_ID","hall_name":"Hall","owner_uuid":"$PLAYER_ID","owner_name":"Owner",
        "world_uuid":"$WORLD_ID","material_name":"STONE","min_x":0,"min_y":0,"min_z":0,
