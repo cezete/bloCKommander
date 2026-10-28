@@ -84,21 +84,22 @@ class GraphApplicationTest(unittest.TestCase):
         self.assertTrue(removed.body["modified"])
         self.assertEqual([],removed.body["state"]["wire_cells"])
 
-    def test_wire_placement_is_limited_to_shared_start_stop_port_cell(self):
-        rejected=self._wire(position=(1,0,1))
-        self.assertEqual(422,rejected.status_code)
-        self.assertEqual("WIRE_POSITION_NOT_CONNECTOR",rejected.body["error_code"])
-        self.assertEqual((),self._context().state.wire_cells)
+    def test_wire_placement_outside_connector_cell_is_valid_incomplete_draft(self):
+        result=self._wire(position=(1,0,1))
+        self.assertEqual(200,result.status_code)
+        self.assertTrue(result.body["modified"])
+        self.assertEqual("INCOMPLETE",result.body["discovery"]["components"][0]["status"])
+        self.assertEqual(1,len(self._context().state.wire_cells))
 
     def test_wire_removal_outside_connector_cell_remains_supported(self):
         result=self._wire(position=(1,0,1),cell=False)
         self.assertEqual(200,result.status_code)
         self.assertFalse(result.body["modified"])
 
-    def test_unsupported_wire_geometry_is_rejected_on_placement(self):
+    def test_north_south_wire_geometry_is_accepted_as_incomplete_draft(self):
         result=self._wire(connections=("NORTH","SOUTH"))
-        self.assertEqual(422,result.status_code)
-        self.assertEqual("UNSUPPORTED_WIRE_GEOMETRY",result.body["error_code"])
+        self.assertEqual(200,result.status_code)
+        self.assertEqual("INCOMPLETE",result.body["discovery"]["components"][0]["status"])
 
     def test_wire_removal_preserves_existing_logical_edge_and_marks_graph_draft(self):
         self._wire();bound=self._bind()
@@ -226,10 +227,10 @@ class GraphApplicationTest(unittest.TestCase):
         self.assertEqual("UNSUPPORTED_TOPOLOGY",result.body["error_code"])
         self.assertEqual((),stages.read_graph_context(stage_id,owner).state.edges)
 
-    def test_unsupported_wire_geometry_is_structured(self):
+    def test_non_matching_geometry_has_structured_discovery_diagnostic(self):
         result=self._wire(connections=("NORTH","SOUTH"))
-        self.assertEqual(422,result.status_code)
-        self.assertEqual("UNSUPPORTED_WIRE_GEOMETRY",result.body["error_code"])
+        self.assertEqual(200,result.status_code)
+        self.assertEqual("OPEN_WIRE",result.body["discovery"]["diagnostics"][0]["code"])
 
     def test_domain_rejection_leaves_workspace_unchanged(self):
         self._wire();before=self._context().state

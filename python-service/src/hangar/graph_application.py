@@ -21,6 +21,7 @@ from .graph import (
     CK_CONTROL_PORT_CATALOG,
     CardinalDirection,
     Diagnostic,
+    DiscoveryDiagnostic,
     GraphWorkspaceMappingError,
     GraphWorkspaceState,
     GridPos,
@@ -31,6 +32,7 @@ from .graph import (
     WireChannelState,
     WireStep,
     bind_edges,
+    discover_physical_topology,
     port_connection_position,
     replace_content,
 )
@@ -40,6 +42,7 @@ from .stage import GraphOperationRejected, StageGraphContext, StageService
 
 API_VERSION = "ck-graph-v1"
 SCHEMA_VERSION = 1
+DISCOVERY_SCHEMA_VERSION = 1
 GRAPH_SECRET_ENV = "BLOCKCOMMANDER_GRAPH_SHARED_SECRET"
 GRAPH_SECRET_HEADER = "X-BlockCommander-Graph-Secret"
 
@@ -273,6 +276,9 @@ class GraphApplicationService:
             return GraphApplicationResponse(200,{
                 "api_version":API_VERSION,"status":"ok","modified":False,
                 **_context_envelope(context),"diagnostics":[],
+                "discovery":_discovery_dict(discover_physical_topology(
+                    context.state,CK_CONTROL_PORT_CATALOG
+                )),
                 "state":_state_dict(context),
             })
         except GraphRequestError as exc:
@@ -342,10 +348,17 @@ class GraphApplicationService:
                     "modified":after.state.working_revision!=before.state.working_revision,
                     **_context_envelope(after),
                     "diagnostics":[_diagnostic_dict(item) for item in diagnostics],
-                    "wire_diff":wire_diff,"state":_state_dict(after),**extra,
+                    "wire_diff":wire_diff,
+                    "discovery":_discovery_dict(discover_physical_topology(
+                        after.state,CK_CONTROL_PORT_CATALOG
+                    )),
+                    "state":_state_dict(after),**extra,
                 })
             except Exception as exc:
                 result=_exception_response(command,before,exc)
+                discovery=getattr(exc,"discovery",None)
+                if discovery is not None:
+                    result.body["discovery"]=_discovery_dict(discovery)
             self._remember(key,command.fingerprint,result)
             return result.copy()
 
@@ -353,33 +366,17 @@ class GraphApplicationService:
         if len(command.wire_changes)!=1:
             raise GraphApplicationError(
                 "UNSUPPORTED_BATCH_SIZE",
-                "A CK-04/B1 egy parancsban pontosan egy wire cella módosítását támogatja.",
+                "Egy WIRE_LAYOUT parancs pontosan egy wire cella módosítását támogatja.",
             )
         change=command.wire_changes[0]
         _validate_position(change.position,context)
-        if any(node.position==change.position for node in context.state.nodes):
+        if change.cell is not None and any(
+            node.position==change.position for node in context.state.nodes
+        ):
             raise GraphApplicationError(
                 "WIRE_OCCUPIES_NODE","WireCell nem kerülhet GraphNode pozíciójára.",
                 wire_positions=(change.position,),
             )
-        if change.cell is not None:
-            expected_wire=_single_cell_start_stop_position(context.state)
-            if change.position!=expected_wire:
-                raise GraphApplicationError(
-                    "WIRE_POSITION_NOT_CONNECTOR",
-                    "A CK-04/B3 Wire csak a START.out és STOP.in közös csatlakozási cellájára kerülhet.",
-                    wire_positions=(change.position,expected_wire),
-                )
-            expected_channels=(WireChannelState(
-                WireChannel.SINGLE,
-                frozenset({CardinalDirection.EAST,CardinalDirection.WEST}),
-            ),)
-            if change.cell.channels!=expected_channels:
-                raise GraphApplicationError(
-                    "UNSUPPORTED_WIRE_GEOMETRY",
-                    "A CK-04/B3 csak E-W SINGLE WireCell geometriát támogat.",
-                    wire_positions=(change.position,),
-                )
 
         def mutate(state:GraphWorkspaceState)->GraphWorkspaceState:
             cells={cell.position:cell for cell in state.wire_cells}
@@ -394,15 +391,33 @@ class GraphApplicationService:
         )
         return ({},(),(change.canonical(),))
 
-    def _bind_edges(self,command:GraphCommand,_context:StageGraphContext):
+    def _bind_edges(self,command:GraphCommand,context:StageGraphContext):
         captured={}
+        discovery=discover_physical_topology(context.state,CK_CONTROL_PORT_CATALOG)
+        candidates=tuple(item.as_route_candidate() for item in discovery.candidates)
+        if not candidates:
+            # Preserve the established CK-04 error contract for its exact
+            # one-START/one-STOP shape while exposing the richer discovery DTO.
+            starts=tuple(node for node in context.state.nodes if node.type_key=="START")
+            stops=tuple(node for node in context.state.nodes if node.type_key=="STOP")
+            if len(starts)==1 and len(stops)==1 and len(context.state.wire_cells)<=1:
+                try:
+                    _discover_single_cell_start_stop(context.state)
+                except GraphApplicationError as legacy_error:
+                    legacy_error.discovery=discovery
+                    raise
+            error=GraphApplicationError(
+                "NO_BINDABLE_CONNECTIONS",
+                "A Stage fizikai topológiája nem tartalmaz beköthető kapcsolatjelöltet.",
+            )
+            error.discovery=discovery
+            raise error
 
         def bind(state:GraphWorkspaceState):
-            candidate=_discover_single_cell_start_stop(state)
             result=bind_edges(
                 state,
                 BindEdgesCommand(
-                    state.stage_id,command.player_uuid,state.working_revision,(candidate,)
+                    state.stage_id,command.player_uuid,state.working_revision,candidates
                 ),
                 CK_CONTROL_PORT_CATALOG,
                 edge_id_factory=self._id_factory,
@@ -411,12 +426,17 @@ class GraphApplicationService:
             captured["result"]=result
             return result
 
-        self.stages.apply_graph_operation(
-            str(command.stage_id),_stage_payload(command),bind
-        )
+        try:
+            self.stages.apply_graph_operation(
+                str(command.stage_id),_stage_payload(command),bind
+            )
+        except GraphOperationRejected as exc:
+            exc.discovery=discovery
+            raise
         result=captured["result"]
         return ({
             "binding":{
+                "candidate_ids":[str(item.candidate_id) for item in discovery.candidates],
                 "created_edge_ids":[str(item) for item in result.created_edge_ids],
                 "reused_edge_ids":[str(item) for item in result.reused_edge_ids],
             }
@@ -586,6 +606,49 @@ def _state_dict(context:StageGraphContext)->dict[str,Any]:
                 _diagnostic_dict(item) for item in report.diagnostics
             ],
         },
+    }
+
+
+def _discovery_dict(discovery)->dict[str,Any]:
+    return {
+        "schema_version":DISCOVERY_SCHEMA_VERSION,
+        "components":[{
+            "component_id":str(component.component_id),
+            "status":component.status.value,
+            "vertices":[{
+                "position":_position_dict(vertex.position),
+                "channel":vertex.channel.value,
+            } for vertex in component.vertices],
+            "ports":[_port_ref_dict(port) for port in component.ports],
+            "open_ends":[{
+                "position":_position_dict(end.position),
+                "channel":end.channel.value,
+                "direction":end.direction.value,
+            } for end in component.open_ends],
+        } for component in discovery.components],
+        "candidates":[{
+            "candidate_id":str(candidate.candidate_id),
+            "component_id":str(candidate.component_id),
+            "source_port":_port_ref_dict(candidate.source_port),
+            "target_port":_port_ref_dict(candidate.target_port),
+            "steps":[{
+                "position":_position_dict(step.position),
+                "channel":step.channel.value,
+            } for step in candidate.steps],
+        } for candidate in discovery.candidates],
+        "diagnostics":[_discovery_diagnostic_dict(item)
+                       for item in discovery.diagnostics],
+    }
+
+
+def _discovery_diagnostic_dict(item:DiscoveryDiagnostic)->dict[str,Any]:
+    return {
+        "code":item.code.value,
+        "severity":"ERROR",
+        "message":item.message,
+        "component_id":str(item.component_id),
+        "port_refs":[_port_ref_dict(value) for value in item.port_refs],
+        "wire_positions":[_position_dict(value) for value in item.wire_positions],
     }
 
 

@@ -57,6 +57,8 @@ class GraphHttpApiTest(unittest.TestCase):
         )
         self.assertEqual(200,bind.status_code)
         self.assertEqual(1,len(bind.get_json()["state"]["edges"]))
+        self.assertEqual(1,len(bind.get_json()["binding"]["candidate_ids"]))
+        self.assertEqual(1,len(bind.get_json()["discovery"]["candidates"]))
         before=bind.get_json()["working_revision"]
         state=self.client.get(
             f"/api/v1/stages/{self.stage_id}/graph?player_uuid={self.owner}",
@@ -65,6 +67,8 @@ class GraphHttpApiTest(unittest.TestCase):
         self.assertEqual(200,state.status_code)
         self.assertEqual(before,state.get_json()["working_revision"])
         self.assertEqual(1,len(state.get_json()["state"]["wire_cells"]))
+        self.assertEqual(1,state.get_json()["discovery"]["schema_version"])
+        self.assertEqual("COMPLETE",state.get_json()["discovery"]["components"][0]["status"])
 
     def test_missing_and_invalid_transport_auth_are_rejected(self):
         path=f"/api/v1/stages/{self.stage_id}/graph/wire"

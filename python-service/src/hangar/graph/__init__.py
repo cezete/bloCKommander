@@ -38,6 +38,11 @@ from .port_catalog import (
     PORT_CATALOG_VERSION, PortCatalogIssue, PortCatalogIssueCode,
     PortCatalogLookupError, RuntimeCatalogCheck, VersionedPortCatalog,
 )
+from .discovery import (
+    DiscoveredConnection, DiscoveryDiagnostic, DiscoveryDiagnosticCode,
+    OpenWireEnd, PhysicalComponentStatus, PhysicalTopologyDiscovery,
+    PhysicalWireComponent, discover_physical_topology,
+)
 
 __all__ = [
     "CardinalDirection", "EdgeKind", "EdgeRoute", "GraphEdge", "GraphNode",
@@ -64,4 +69,7 @@ __all__ = [
     "CK_CONTROL_PORT_CATALOG", "PORT_CATALOG_VERSION", "PortCatalogIssue",
     "PortCatalogIssueCode", "PortCatalogLookupError", "RuntimeCatalogCheck",
     "VersionedPortCatalog",
+    "DiscoveredConnection", "DiscoveryDiagnostic", "DiscoveryDiagnosticCode",
+    "OpenWireEnd", "PhysicalComponentStatus", "PhysicalTopologyDiscovery",
+    "PhysicalWireComponent", "discover_physical_topology",
 ]
