@@ -10,7 +10,7 @@ from hangar.graph import (
     StageSnapshot,
 )
 from hangar.graph.model import CardinalDirection
-from hangar.repository import HallConflict, HallForbidden, LoadedStageSnapshot
+from hangar.repository import HallConflict, HallForbidden, LoadedProgram, LoadedStageSnapshot
 from hangar.stage import StageService
 
 class FakeStageRepository:
@@ -20,7 +20,9 @@ class FakeStageRepository:
             {"type_key":"START","display_name":"START","material_name":"LIME_GLAZED_TERRACOTTA","default_label":"START","default_description":"start","display_definition":{}},
             {"type_key":"STOP","display_name":"STOP","material_name":"RED_GLAZED_TERRACOTTA","default_label":"STOP","default_description":"stop","display_definition":{}},
         ]
-        self.stage={"stage_id":str(uuid.uuid4()),"hall_id":str(uuid.uuid4()),"stage_name":"alpha stage",
+        program_id=str(uuid.uuid4())
+        self.stage={"stage_id":str(uuid.uuid4()),"program_id":program_id,"stage_kind":"ROOT",
+            "hall_id":str(uuid.uuid4()),"stage_name":"alpha stage",
             "owner_uuid":str(uuid.uuid4()),"world_uuid":str(uuid.uuid4()),"hall_min_x":10,"hall_min_y":64,"hall_min_z":20,
             "origin_rel_x":1,"origin_rel_y":1,"origin_rel_z":1,"size_x":5,"size_y":4,"size_z":5,"saved_version":0,
             "graph_snapshot_version":1 if graph_aware else 0,
@@ -28,10 +30,23 @@ class FakeStageRepository:
             "blocks":[]}
         self.saved=[]
         self.full_saved=None
+        self.program={
+            "program_id":program_id,"owner_uuid":self.stage["owner_uuid"],
+            "root_stage_id":self.stage["stage_id"],"saved_version":0,
+        }
     def ensure_stage(self,hall): return copy.deepcopy({k:v for k,v in self.stage.items() if k!="blocks"})
     def load_stage(self,stage_id):
         result=copy.deepcopy(self.stage);result["blocks"]=copy.deepcopy(self.saved);return result
     def load_stage_for_hall(self,hall_id): return self.load_stage(self.stage["stage_id"])
+    def load_program(self,program_id):
+        if str(program_id)!=self.program["program_id"]: raise LookupError("missing program")
+        header=copy.deepcopy({k:v for k,v in self.stage.items() if k!="blocks"})
+        return LoadedProgram(
+            copy.deepcopy(self.program),(header,),(),
+            ({"hall_id":self.stage["hall_id"],"program_id":self.program["program_id"]},),
+        )
+    def load_program_for_hall(self,hall_id): return self.load_program(self.program["program_id"])
+    def load_program_for_stage(self,stage_id): return self.load_program(self.program["program_id"])
     def list_block_types(self): return copy.deepcopy(self.types)
     def save_stage_snapshot(self,stage_id,expected_version,blocks):
         if self.fail_save: raise RuntimeError("db unavailable")

@@ -21,6 +21,7 @@ from .repository import (
     ProgramSaveReceipt,
     ProgramStageLink,
     ProgramStageSavePlan,
+    ProgramVersionConflict,
 )
 from .stage import StageService, StageWorkspace
 
@@ -32,6 +33,13 @@ class ProgramWorkspaceState(str,Enum):
 
 class ProgramReloadRequired(HallConflict):
     pass
+
+
+@dataclass(frozen=True)
+class ChildEnsureResult:
+    workspace: StageWorkspace
+    link: ProgramStageLink
+    created: bool
 
 
 @dataclass
@@ -46,7 +54,9 @@ class ProgramWorkspace:
     stage_workspaces: dict[uuid.UUID,StageWorkspace]=field(default_factory=dict)
     new_stage_ids: set[uuid.UUID]=field(default_factory=set)
     hierarchy_dirty: bool=False
+    hierarchy_revision: int=0
     state: ProgramWorkspaceState=ProgramWorkspaceState.ACTIVE
+    workspace_epoch: uuid.UUID=field(default_factory=uuid.uuid4)
     lock: threading.RLock=field(default_factory=threading.RLock)
 
     @property
@@ -267,6 +277,16 @@ class ProgramService:
         program_block_instance_id:str|uuid.UUID,player_uuid:str,*,
         stage_name:str|None=None,
     )->StageWorkspace:
+        return self.ensure_child_result(
+            program_id,parent_stage_id,program_block_instance_id,player_uuid,
+            stage_name=stage_name,
+        ).workspace
+
+    def ensure_child_result(
+        self,program_id:str|uuid.UUID,parent_stage_id:str|uuid.UUID,
+        program_block_instance_id:str|uuid.UUID,player_uuid:str,*,
+        stage_name:str|None=None,
+    )->ChildEnsureResult:
         workspace=self.load(program_id);parent_id=uuid.UUID(str(parent_stage_id))
         block_id=uuid.UUID(str(program_block_instance_id))
         with workspace.lock:
@@ -283,7 +303,12 @@ class ProgramService:
                         candidate=tuple(replacement if item==existing else item for item in workspace.links)
                         self._validate_hierarchy(workspace,candidate)
                         workspace.links=candidate;workspace.hierarchy_dirty=True
-                    return self._load_stage_locked(workspace,existing.child_stage_id)
+                        workspace.hierarchy_revision+=1
+                        existing=replacement
+                    return ChildEnsureResult(
+                        self._load_stage_locked(workspace,existing.child_stage_id),
+                        existing,False,
+                    )
 
                 child_id=self._id_factory()
                 while child_id in workspace.stage_headers: child_id=self._id_factory()
@@ -324,7 +349,8 @@ class ProgramService:
                 candidate=(*workspace.links,link)
                 self._validate_hierarchy(workspace,candidate)
                 workspace.links=candidate;workspace.hierarchy_dirty=True
-                return child
+                workspace.hierarchy_revision+=1
+                return ChildEnsureResult(child,link,True)
 
     def link_child(
         self,program_id:str|uuid.UUID,parent_stage_id:str|uuid.UUID,
@@ -353,6 +379,7 @@ class ProgramService:
                 candidate=tuple(item for item in workspace.links if item!=same)+(link,)
                 self._validate_hierarchy(workspace,candidate)
                 workspace.links=candidate;workspace.hierarchy_dirty=True
+                workspace.hierarchy_revision+=1
 
     def _stage_block_deleted(self,stage_id:str,block_id:uuid.UUID,type_key:str)->None:
         if type_key!="PROGRAM": return
@@ -375,6 +402,7 @@ class ProgramService:
             else: links.append(link)
         if changed:
             workspace.links=tuple(links);workspace.hierarchy_dirty=True
+            workspace.hierarchy_revision+=1
         return changed
 
     def retain_child(
@@ -418,12 +446,18 @@ class ProgramService:
 
     def save(
         self,program_id:str|uuid.UUID,player_uuid:str,*,
+        expected_saved_version:int|None=None,
         target_stage_id:str|uuid.UUID|None=None,
         client_payload:dict[str,Any]|None=None,
     )->ProgramSaveReceipt:
         workspace=self.load(program_id)
         with workspace.lock:
             self._active(workspace);self._authorize(workspace,player_uuid)
+            if (expected_saved_version is not None
+                    and int(expected_saved_version)!=workspace.saved_version):
+                raise ProgramVersionConflict(
+                    "A Program mentett verziója időközben megváltozott."
+                )
             stage_workspaces={
                 stage_id:self._load_stage_locked(workspace,stage_id)
                 for stage_id in sorted(workspace.stage_headers,key=str)

@@ -1,9 +1,16 @@
 from __future__ import annotations
 import os
+import uuid
 from flask import Flask, jsonify, request
 from hangar.builder import HallValidationError, control_elements, hall_client_view
 from hangar.repository import HallConflict, HallForbidden, HallNotFound, HallRepository
 from hangar.service import HallService
+from hangar.program import ProgramService
+from hangar.program_http import (
+    PROGRAM_API_VERSION, ProgramHttpFailure, link_dto, parse_ensure_request,
+    parse_save_request, parse_uuid, program_dto, receipt_dto, stage_dto,
+    success as program_success, translate_error as translate_program_error,
+)
 from hangar.stage import StageService
 from hangar.graph_application import (
     API_VERSION, GRAPH_SECRET_ENV, GRAPH_SECRET_HEADER, GraphApplicationService, GraphCommand,
@@ -26,6 +33,7 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
     if world_driver not in ("fabric","mcpi"):
         raise RuntimeError("BLOCKCOMMANDER_WORLD_DRIVER must be fabric or mcpi")
     service=HallService(repo,minecraft,apply_world=world_driver=="mcpi"); stages=StageService(repo)
+    programs=ProgramService(repo,stages)
     graph_app=GraphApplicationService(stages)
     configured_secret=(
         graph_shared_secret if graph_shared_secret is not None
@@ -33,6 +41,7 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
     )
     graph_auth=GraphTransportAuthenticator(configured_secret)
     app.extensions["blockcommander_stage_service"]=stages
+    app.extensions["blockcommander_program_service"]=programs
     app.extensions["blockcommander_graph_application"]=graph_app
 
     def graph_authenticated():
@@ -67,6 +76,21 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
                 "message":"A graph művelet belső hiba miatt nem sikerült.",
             }],
         }),500
+
+    def program_authenticated():
+        try:
+            graph_auth.verify(request.headers.get(GRAPH_SECRET_HEADER))
+            return None
+        except GraphTransportAuthError as exc:
+            result=transport_error_response(exc);body=dict(result.body)
+            body["api_version"]=PROGRAM_API_VERSION
+            return jsonify(body),result.status_code
+
+    def program_failure(exc):
+        failure=translate_program_error(exc)
+        if failure.status_code>=500:
+            app.logger.exception("Program API művelet sikertelen",exc_info=exc)
+        return jsonify(failure.body()),failure.status_code
 
     def enrich(hall):
         bounds={k:int(hall[k]) for k in ("min_x","min_y","min_z","max_x","max_y","max_z")}
@@ -124,6 +148,129 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
     @app.get("/api/v1/worlds/<world_uuid>/halls")
     def world_halls(world_uuid):
         return jsonify(status="ok",halls=[enrich(h) for h in repo.list_world(world_uuid)])
+
+    @app.get("/api/v1/halls/<hall_id>/program")
+    def mounted_program(hall_id):
+        denied=program_authenticated()
+        if denied is not None:return denied
+        try:
+            normalized=parse_uuid(hall_id,"hall_id")
+            workspace=programs.for_hall(normalized)
+            return jsonify(program_success(
+                mount={"hall_id":normalized,"program_id":str(workspace.program_id),"current":True},
+                program=program_dto(programs,workspace),
+            ))
+        except Exception as exc:return program_failure(exc)
+
+    @app.get("/api/v1/programs/<program_id>")
+    def get_program(program_id):
+        denied=program_authenticated()
+        if denied is not None:return denied
+        try:
+            workspace=programs.load(parse_uuid(program_id,"program_id"))
+            return jsonify(program_success(program=program_dto(programs,workspace)))
+        except Exception as exc:return program_failure(exc)
+
+    @app.get("/api/v1/programs/<program_id>/stages/<stage_id>/children")
+    def get_program_children(program_id,stage_id):
+        denied=program_authenticated()
+        if denied is not None:return denied
+        try:
+            normalized_program=parse_uuid(program_id,"program_id")
+            normalized_stage=parse_uuid(stage_id,"stage_id")
+            workspace=programs.load(normalized_program)
+            with workspace.lock:
+                # The service call performs Program membership and lifecycle checks.
+                programs.children(normalized_program,normalized_stage)
+                parent_id=uuid.UUID(normalized_stage)
+                links=[item for item in workspace.links if item.parent_stage_id==parent_id]
+                children=[stage_dto(workspace,item.child_stage_id) for item in links]
+                saved_version=workspace.saved_version
+                workspace_epoch=str(workspace.workspace_epoch)
+                revision=workspace.hierarchy_revision
+            return jsonify(program_success(
+                program_id=normalized_program,parent_stage_id=normalized_stage,
+                program_saved_version=saved_version,
+                program_workspace_epoch=workspace_epoch,
+                hierarchy_revision=revision,
+                links=[link_dto(item) for item in links],children=children,
+            ))
+        except Exception as exc:return program_failure(exc)
+
+    @app.post("/api/v1/programs/<program_id>/stages/<stage_id>/children/ensure")
+    def ensure_program_child(program_id,stage_id):
+        denied=program_authenticated()
+        if denied is not None:return denied
+        try:
+            normalized_program=parse_uuid(program_id,"program_id")
+            normalized_stage=parse_uuid(stage_id,"stage_id")
+            data=parse_ensure_request(request.get_json(silent=True))
+            workspace=programs.load(normalized_program)
+            with workspace.lock:
+                result=programs.ensure_child_result(
+                    normalized_program,normalized_stage,data["program_block_instance_id"],
+                    data["player_uuid"],stage_name=data.get("stage_name"),
+                )
+                child=stage_dto(workspace,result.link.child_stage_id)
+                revision=workspace.hierarchy_revision
+                saved_version=workspace.saved_version
+                workspace_epoch=str(workspace.workspace_epoch)
+            return jsonify(program_success(
+                program_id=normalized_program,program_saved_version=saved_version,
+                program_workspace_epoch=workspace_epoch,
+                hierarchy_revision=revision,created=result.created,
+                link=link_dto(result.link),child=child,
+            )),201 if result.created else 200
+        except Exception as exc:return program_failure(exc)
+
+    @app.get("/api/v1/programs/<program_id>/status")
+    def program_status(program_id):
+        denied=program_authenticated()
+        if denied is not None:return denied
+        try:
+            normalized=parse_uuid(program_id,"program_id")
+            workspace=programs.load(normalized)
+            dirty=programs.is_dirty(normalized)
+            with workspace.lock:
+                status={
+                    "program_id":normalized,"saved_version":workspace.saved_version,
+                    "aggregate_dirty":dirty,"hierarchy_dirty":workspace.hierarchy_dirty,
+                    "hierarchy_revision":workspace.hierarchy_revision,
+                    "workspace_epoch":str(workspace.workspace_epoch),
+                    "workspace_state":workspace.state.value,
+                    "stages":[{
+                        "stage_id":str(stage_id),
+                        "saved_version":(
+                            workspace.stage_workspaces[stage_id].saved_version
+                            if stage_id in workspace.stage_workspaces
+                            else int(header["saved_version"])
+                        ),
+                        "workspace":None if stage_id not in workspace.stage_workspaces else {
+                            "epoch":str(workspace.stage_workspaces[stage_id].workspace_epoch),
+                            "working_revision":workspace.stage_workspaces[stage_id].revision,
+                            "dirty":workspace.stage_workspaces[stage_id].dirty,
+                        },
+                    } for stage_id,header in sorted(workspace.stage_headers.items(),key=lambda item:str(item[0]))],
+                }
+            return jsonify(program_success(program_status=status))
+        except Exception as exc:return program_failure(exc)
+
+    @app.post("/api/v1/programs/<program_id>/save")
+    def save_program(program_id):
+        denied=program_authenticated()
+        if denied is not None:return denied
+        try:
+            normalized=parse_uuid(program_id,"program_id")
+            data=parse_save_request(request.get_json(silent=True))
+            workspace=programs.load(normalized)
+            with workspace.lock:
+                receipt=programs.save(
+                    normalized,data["player_uuid"],
+                    expected_saved_version=data["expected_saved_version"],
+                )
+                projected=receipt_dto(receipt,workspace)
+            return jsonify(program_success(receipt=projected))
+        except Exception as exc:return program_failure(exc)
 
     @app.post("/api/v1/stages/<stage_id>/blocks")
     def place_stage_block(stage_id):
