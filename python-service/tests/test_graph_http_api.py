@@ -38,6 +38,8 @@ class GraphHttpApiTest(unittest.TestCase):
                 "cell":{"channels":[{"channel":"SINGLE",
                                        "connections":["EAST","WEST"]}]},
             }]}
+        elif operation=="WIRE_PLACE_INTENT":
+            payload={"position":{"x":2,"y":0,"z":2},"intent":"AUTO"}
         return {"schema_version":1,"request_id":str(uuid.uuid4()),
                 "stage_id":self.stage_id,"player_uuid":self.owner,
                 "workspace_epoch":str(context.workspace_epoch),
@@ -69,6 +71,19 @@ class GraphHttpApiTest(unittest.TestCase):
         self.assertEqual(1,len(state.get_json()["state"]["wire_cells"]))
         self.assertEqual(1,state.get_json()["discovery"]["schema_version"])
         self.assertEqual("COMPLETE",state.get_json()["discovery"]["components"][0]["status"])
+
+    def test_wire_place_intent_endpoint_returns_authoritative_snapshot(self):
+        response=self.client.post(
+            f"/api/v1/stages/{self.stage_id}/graph/wire/place",
+            json=self._command("WIRE_PLACE_INTENT"),headers=self._headers(),
+        )
+        body=response.get_json()
+        self.assertEqual(200,response.status_code)
+        self.assertEqual("AUTO",body["placement"]["intent"])
+        self.assertEqual(1,len(body["placement"]["affected_cells"]))
+        self.assertEqual(1,len(body["state"]["wire_cells"]))
+        self.assertEqual(1,len(body["wire_diff"]))
+        self.assertEqual([],body["state"]["edges"])
 
     def test_missing_and_invalid_transport_auth_are_rejected(self):
         path=f"/api/v1/stages/{self.stage_id}/graph/wire"

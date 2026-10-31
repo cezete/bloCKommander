@@ -75,9 +75,35 @@ class GraphApiClientTest {
         assertTrue(change["cell"].isJsonNull)
     }
 
-    private fun startServer(response: (String?, String) -> Pair<Int, String>): String {
+    @Test fun `placement intent uses authenticated wire place endpoint and strict payload`() {
+        val path = AtomicReference<String>()
+        val body = AtomicReference<String>()
+        val header = AtomicReference<String>()
+        val base = startServer(path) { requestHeader, requestBody ->
+            header.set(requestHeader); body.set(requestBody)
+            200 to successJson(requestId = REQUEST_ID)
+        }
+        val command = WirePlaceIntentCommand(
+            REQUEST_ID, STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID), EPOCH_A, 3,
+            GraphPosition(2, 0, 3), GraphPlacementIntent.CROSS,
+        )
+        val result = GraphApiClient.configured(base, "secret").send(command).get(3, TimeUnit.SECONDS)
+        assertTrue(result is GraphHttpResult.Success)
+        assertEquals("secret", header.get())
+        assertEquals("/api/v1/stages/$STAGE_ID/graph/wire/place", path.get())
+        val json = JsonParser.parseString(body.get()).asJsonObject
+        assertEquals("WIRE_PLACE_INTENT", json["operation"].asString)
+        assertEquals("CROSS", json.getAsJsonObject("payload")["intent"].asString)
+        assertEquals(2, json.getAsJsonObject("payload").size())
+    }
+
+    private fun startServer(
+        pathCapture: AtomicReference<String>? = null,
+        response: (String?, String) -> Pair<Int, String>,
+    ): String {
         val created = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         created.createContext("/") { exchange ->
+            pathCapture?.set(exchange.requestURI.path)
             val requestBody = exchange.requestBody.readAllBytes().toString(StandardCharsets.UTF_8)
             val (status, body) = response(exchange.requestHeaders.getFirst(GRAPH_SECRET_HEADER), requestBody)
             val bytes = body.toByteArray(StandardCharsets.UTF_8)

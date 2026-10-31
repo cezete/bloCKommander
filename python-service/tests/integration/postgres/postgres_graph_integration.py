@@ -62,6 +62,7 @@ OWNER_ID = UUID("00000000-0000-0000-0000-000000007010")
 HALL_ID = UUID("00000000-0000-0000-0000-000000007011")
 WORLD_ID = UUID("00000000-0000-0000-0000-000000007012")
 REQUEST_ID = UUID("00000000-0000-0000-0000-000000007013")
+PROGRAM_ID = UUID("00000000-0000-0000-0000-000000007014")
 
 
 def require_explicit_target() -> str:
@@ -178,12 +179,37 @@ def create_stage(*, with_legacy_block: bool = False) -> None:
             (str(HALL_ID), str(REQUEST_ID), str(OWNER_ID), str(WORLD_ID)),
         )
         cur.execute(
-            """INSERT INTO blockcommander.stages(
-                   stage_id,hall_id,stage_name,origin_rel_x,origin_rel_y,origin_rel_z,
-                   size_x,size_y,size_z)
-               VALUES(%s,%s,'B2T stage',0,0,0,20,20,20)""",
-            (str(STAGE_ID), str(HALL_ID)),
+            """SELECT count(*) FROM information_schema.columns
+                WHERE table_schema='blockcommander' AND table_name='stages'
+                  AND column_name='program_id'"""
         )
+        if cur.fetchone()[0]:
+            cur.execute(
+                """INSERT INTO blockcommander.programs(
+                       program_id,owner_uuid,program_name,root_stage_id)
+                   VALUES(%s,%s,'B2T program',%s)""",
+                (str(PROGRAM_ID), str(OWNER_ID), str(STAGE_ID)),
+            )
+            cur.execute(
+                """INSERT INTO blockcommander.stages(
+                       stage_id,program_id,stage_kind,hall_id,stage_name,
+                       origin_rel_x,origin_rel_y,origin_rel_z,size_x,size_y,size_z)
+                   VALUES(%s,%s,'ROOT',%s,'B2T stage',0,0,0,20,20,20)""",
+                (str(STAGE_ID), str(PROGRAM_ID), str(HALL_ID)),
+            )
+            cur.execute(
+                """INSERT INTO blockcommander.hall_program_mounts(hall_id,program_id)
+                   VALUES(%s,%s)""",
+                (str(HALL_ID), str(PROGRAM_ID)),
+            )
+        else:
+            cur.execute(
+                """INSERT INTO blockcommander.stages(
+                       stage_id,hall_id,stage_name,origin_rel_x,origin_rel_y,origin_rel_z,
+                       size_x,size_y,size_z)
+                   VALUES(%s,%s,'B2T stage',0,0,0,20,20,20)""",
+                (str(STAGE_ID), str(HALL_ID)),
+            )
         if with_legacy_block:
             cur.execute(
                 """INSERT INTO blockcommander.stage_blocks(

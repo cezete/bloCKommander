@@ -30,10 +30,13 @@ from .graph import (
     WireCell,
     WireChannel,
     WireChannelState,
+    WirePlacementError,
+    WirePlacementIntent,
     WireStep,
     bind_edges,
     discover_physical_topology,
     port_connection_position,
+    place_wire_intent,
     replace_content,
 )
 from .repository import HallConflict, HallForbidden, HallNotFound
@@ -115,12 +118,19 @@ class GraphCommand:
     expected_working_revision: int
     operation: str
     wire_changes: tuple[WireChange,...]=()
+    placement_position: GridPos|None=None
+    placement_intent: WirePlacementIntent|None=None
 
     def canonical(self)->dict[str,Any]:
-        payload=(
-            {"changes":[item.canonical() for item in self.wire_changes]}
-            if self.operation=="WIRE_LAYOUT" else {}
-        )
+        if self.operation=="WIRE_LAYOUT":
+            payload={"changes":[item.canonical() for item in self.wire_changes]}
+        elif self.operation=="WIRE_PLACE_INTENT":
+            payload={
+                "position":_position_dict(self.placement_position),
+                "intent":self.placement_intent.value,
+            }
+        else:
+            payload={}
         return {
             "schema_version":self.schema_version,
             "request_id":str(self.request_id),
@@ -208,6 +218,8 @@ def parse_graph_command(
         )
     payload=_object(data["payload"],"payload")
     changes:tuple[WireChange,...]=()
+    placement_position:GridPos|None=None
+    placement_intent:WirePlacementIntent|None=None
     if operation=="WIRE_LAYOUT":
         _keys(payload,{"changes"},{"changes"},"payload")
         raw_changes=payload["changes"]
@@ -223,6 +235,16 @@ def parse_graph_command(
                 "DUPLICATE_WIRE_POSITION","Egy parancs ugyanazt a wire pozíciót csak egyszer adhatja meg.",
                 status_code=422,field_name="payload.changes",
             )
+    elif operation=="WIRE_PLACE_INTENT":
+        _keys(payload,{"position","intent"},{"position","intent"},"payload")
+        placement_position=_position(payload["position"],"payload.position")
+        try:
+            placement_intent=WirePlacementIntent(payload["intent"])
+        except (TypeError,ValueError) as exc:
+            raise GraphRequestError(
+                "UNSUPPORTED_INTENT","Nem támogatott CK Wire placement intent.",
+                status_code=422,field_name="payload.intent",
+            ) from exc
     else:
         _keys(payload,set(),set(),"payload")
     return GraphCommand(
@@ -234,6 +256,8 @@ def parse_graph_command(
         revision,
         operation,
         changes,
+        placement_position,
+        placement_intent,
     )
 
 
@@ -299,6 +323,11 @@ class GraphApplicationService:
         if command.operation!="BIND_EDGES":
             raise ValueError("bind_edges requires a BIND_EDGES command")
         return self._execute(command,self._bind_edges)
+
+    def place_wire(self,command:GraphCommand)->GraphApplicationResponse:
+        if command.operation!="WIRE_PLACE_INTENT":
+            raise ValueError("place_wire requires a WIRE_PLACE_INTENT command")
+        return self._execute(command,self._place_wire)
 
     def _execute(self,command:GraphCommand,operation)->GraphApplicationResponse:
         # The application lock is always acquired before the Stage RLock. StageService
@@ -390,6 +419,41 @@ class GraphApplicationService:
             str(command.stage_id),_stage_payload(command),mutate
         )
         return ({},(),(change.canonical(),))
+
+    def _place_wire(self,command:GraphCommand,context:StageGraphContext):
+        position=command.placement_position
+        intent=command.placement_intent
+        if position is None or intent is None:
+            raise GraphApplicationError(
+                "UNSUPPORTED_INTENT","A placement intent nem teljes.",
+            )
+        captured={}
+
+        def mutate(state:GraphWorkspaceState)->GraphWorkspaceState:
+            try:
+                result=place_wire_intent(
+                    state,position,intent,context.size,CK_CONTROL_PORT_CATALOG
+                )
+            except WirePlacementError as exc:
+                raise GraphApplicationError(
+                    exc.code.value,str(exc),wire_positions=exc.positions
+                ) from exc
+            captured["result"]=result
+            return result.state
+
+        self.stages.apply_graph_operation(
+            str(command.stage_id),_stage_payload(command),mutate
+        )
+        result=captured["result"]
+        affected=tuple(WireChange(cell.position,cell).canonical()
+                       for cell in result.affected_cells)
+        return ({
+            "placement":{
+                "intent":intent.value,
+                "affected_cells":[_wire_cell_dict(cell)
+                                  for cell in result.affected_cells],
+            }
+        },(),affected)
 
     def _bind_edges(self,command:GraphCommand,context:StageGraphContext):
         captured={}

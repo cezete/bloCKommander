@@ -1,5 +1,6 @@
 package me.buciqua.blockommander.runtime.wire
 
+import me.buciqua.blockommander.CkWireGeometry
 import me.buciqua.blockommander.runtime.graph.*
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
@@ -14,6 +15,13 @@ class WireInteractionCoordinatorTest {
     private val target = GraphPosition(11, 20, 30)
     private val player = ServerPlayerIdentity.trustedForTest(PLAYER_ID)
 
+    @Test fun `automatic mutual neighbor placement uses authoritative intent contract`() {
+        assertEquals(
+            "SUPPORTED_WIRE_PLACE_INTENT",
+            WireInteractionCoordinator.AUTOMATIC_NEIGHBOR_PLACEMENT_STATUS,
+        )
+    }
+
     @Test fun `stale projection reconciles before placement and uses stable server identity request`() {
         val store = syncedStore(0)
         store.legacyStageUpdated(STAGE_ID, EPOCH_A, 1)
@@ -27,7 +35,9 @@ class WireInteractionCoordinatorTest {
         assertEquals(1, gateway.reconcileCalls)
         assertEquals(fixedRequest, gateway.commands.single().requestId)
         assertEquals(PLAYER_ID, gateway.commands.single().player.uuid)
-        assertEquals(GraphPosition(1, 0, 0), (gateway.commands.single() as WireLayoutCommand).changes.single().position)
+        val command = gateway.commands.single() as WirePlaceIntentCommand
+        assertEquals(GraphPosition(1, 0, 0), command.position)
+        assertEquals(GraphPlacementIntent.AUTO, command.intent)
         assertEquals(WireActionStatus.SUCCESS, result.status)
         assertEquals(WireWorldCell.CK_WIRE_UNBOUND, world.cell(target))
     }
@@ -52,6 +62,115 @@ class WireInteractionCoordinatorTest {
         assertEquals(WireActionStatus.REJECTED, result.status)
         assertEquals(0, world.setCalls)
         assertEquals(1, world.correctCalls)
+    }
+
+    @Test fun `authoritative placement updates target and reciprocal neighbor blockstates`() {
+        val store = syncedStore(0)
+        val targetCell = GraphWireCell(GraphPosition(1, 0, 0), listOf(
+            GraphWireChannel("SINGLE", listOf("EAST")),
+        ))
+        val neighborCell = GraphWireCell(GraphPosition(2, 0, 0), listOf(
+            GraphWireChannel("SINGLE", listOf("WEST")),
+        ))
+        val gateway = FakeGraphGateway(store).apply {
+            sendSnapshot = wireSnapshot(1).copy(wireCells = listOf(targetCell, neighborCell))
+        }
+        val world = FakeWireWorld()
+
+        val result = coordinator(store, gateway).place(stage, player, target, world).get(3, TimeUnit.SECONDS)
+
+        assertEquals(WireActionStatus.SUCCESS, result.status)
+        assertEquals(2, world.setCalls)
+        assertEquals(CkWireGeometry.EAST, world.geometry(target))
+        assertEquals(CkWireGeometry.WEST, world.geometry(GraphPosition(12, 20, 30)))
+    }
+
+    @Test fun `authoritative AUTO snapshots render straight and corner without local topology logic`() {
+        val geometries = listOf(
+            listOf("EAST", "WEST") to CkWireGeometry.EAST_WEST,
+            listOf("NORTH", "EAST") to CkWireGeometry.NORTH_EAST,
+        )
+        geometries.forEach { (connections, expected) ->
+            val store = syncedStore(0)
+            val gateway = FakeGraphGateway(store).apply {
+                sendSnapshot = wireSnapshot(1).copy(wireCells = listOf(
+                    GraphWireCell(GraphPosition(1, 0, 0), listOf(GraphWireChannel("SINGLE", connections))),
+                ))
+            }
+            val world = FakeWireWorld()
+            val result = coordinator(store, gateway).place(stage, player, target, world).get(3, TimeUnit.SECONDS)
+            assertEquals(WireActionStatus.SUCCESS, result.status)
+            assertEquals(expected, world.geometry(target))
+            assertEquals(GraphPlacementIntent.AUTO, (gateway.commands.single() as WirePlaceIntentCommand).intent)
+        }
+    }
+
+    @Test fun `three or four neighbor ambiguity rejection leaves world unchanged and never requests CROSS`() {
+        repeat(2) {
+            val store = syncedStore(0)
+            val gateway = FakeGraphGateway(store).apply {
+                rejectStatus = 422
+                rejectErrorCode = "AMBIGUOUS_PLACEMENT"
+            }
+            val world = FakeWireWorld()
+            val result = coordinator(store, gateway).place(stage, player, target, world).get(3, TimeUnit.SECONDS)
+            assertEquals(WireActionStatus.REJECTED, result.status)
+            assertEquals(0, world.setCalls)
+            assertEquals(GraphPlacementIntent.AUTO, (gateway.commands.single() as WirePlaceIntentCommand).intent)
+        }
+    }
+
+    @Test fun `explicit CROSS sends distinct intent and renders independent cross geometry`() {
+        val store = syncedStore(0)
+        val cross = GraphWireCell(GraphPosition(1, 0, 0), listOf(
+            GraphWireChannel("NS", listOf("NORTH", "SOUTH")),
+            GraphWireChannel("EW", listOf("EAST", "WEST")),
+        ))
+        val gateway = FakeGraphGateway(store).apply {
+            sendSnapshot = wireSnapshot(1).copy(wireCells = listOf(cross))
+        }
+        val world = FakeWireWorld()
+
+        val result = coordinator(store, gateway).place(
+            stage, player, target, world, GraphPlacementIntent.CROSS,
+        ).get(3, TimeUnit.SECONDS)
+
+        assertEquals(WireActionStatus.SUCCESS, result.status)
+        assertEquals(GraphPlacementIntent.CROSS, (gateway.commands.single() as WirePlaceIntentCommand).intent)
+        assertEquals(CkWireGeometry.CROSS, world.geometry(target))
+    }
+
+    @Test fun `rejected explicit CROSS never mutates world`() {
+        val store = syncedStore(0)
+        val gateway = FakeGraphGateway(store).apply {
+            rejectStatus = 422
+            rejectErrorCode = "INVALID_CONNECTION"
+        }
+        val world = FakeWireWorld()
+
+        val result = coordinator(store, gateway).place(
+            stage, player, target, world, GraphPlacementIntent.CROSS,
+        ).get(3, TimeUnit.SECONDS)
+
+        assertEquals(WireActionStatus.REJECTED, result.status)
+        assertEquals(0, world.setCalls)
+        assertEquals(1, world.correctCalls)
+    }
+
+    @Test fun `same request id replay remains idempotent in world projection`() {
+        val store = syncedStore(0)
+        val authoritative = wireSnapshot(1)
+        val gateway = FakeGraphGateway(store).apply {
+            sendSnapshots.add(authoritative)
+            sendSnapshots.add(authoritative)
+        }
+        val world = FakeWireWorld()
+        val coordinator = coordinator(store, gateway, REQUEST_ID)
+
+        assertEquals(WireActionStatus.SUCCESS, coordinator.place(stage, player, target, world).get(3, TimeUnit.SECONDS).status)
+        assertEquals(WireActionStatus.SUCCESS, coordinator.place(stage, player, target, world).get(3, TimeUnit.SECONDS).status)
+        assertEquals(1, world.setCalls)
+        assertEquals(listOf(REQUEST_ID, REQUEST_ID), gateway.commands.map(GraphCommand::requestId))
     }
 
     @Test fun `HTTP reject detail includes diagnostic field path`() {
@@ -113,7 +232,8 @@ class WireInteractionCoordinatorTest {
             private var wire = false
             override fun ckWirePositions(stage: WireStageContext) = if (wire) setOf(target) else emptySet()
             override fun cell(position: GraphPosition) = if (wire) WireWorldCell.CK_WIRE_UNBOUND else WireWorldCell.REPLACEABLE
-            override fun setEastWestWire(position: GraphPosition, visualState: WireVisualState) { wroteOnMain = onMain; wire = true }
+            override fun geometry(position: GraphPosition) = if (wire) CkWireGeometry.EAST_WEST else null
+            override fun setWire(position: GraphPosition, geometry: CkWireGeometry, visualState: WireVisualState) { wroteOnMain = onMain; wire = true }
             override fun removeWire(position: GraphPosition) { wroteOnMain = onMain; wire = false }
             override fun correct(position: GraphPosition) = Unit
         }
@@ -199,6 +319,22 @@ class WireInteractionCoordinatorTest {
         assertEquals(WireWorldCell.CK_WIRE_UNBOUND, world.cell(target))
     }
 
+    @Test fun `discovery diagnostics remain separate from bind domain rejection`() {
+        val store = syncedStore(1, withWire = true)
+        val discoveryDiagnostic = GraphDiscoveryDiagnostic(
+            "OPEN_WIRE", "ERROR", "open", UUID.fromString("10101010-1010-1010-1010-101010101010"),
+            emptyList(), listOf(GraphPosition(1, 0, 0)),
+        )
+        val gateway = FakeGraphGateway(store).apply {
+            rejectStatus = 422
+            rejectErrorCode = "NO_BINDABLE_CONNECTIONS"
+            discovery = GraphDiscovery(1, emptyList(), emptyList(), listOf(discoveryDiagnostic))
+        }
+        val result = coordinator(store, gateway).bind(stage, player, FakeWireWorld()).get(3, TimeUnit.SECONDS)
+        assertEquals("NO_BINDABLE_CONNECTIONS", result.detail)
+        assertEquals(listOf(discoveryDiagnostic), result.discoveryDiagnostics)
+    }
+
     @Test fun `bind conflict reconciles and remains non-green`() {
         val store = syncedStore(1, withWire = true)
         val gateway = FakeGraphGateway(store).apply {
@@ -233,6 +369,7 @@ private class FakeGraphGateway(private val store: GraphProjectionStore) : GraphG
     var rejectStatus: Int? = null
     var rejectErrorCode = "REJECTED"
     var rejectDiagnostics: List<GraphDiagnostic> = emptyList()
+    var discovery: GraphDiscovery? = null
     var afterSend: () -> Unit = {}
 
     override fun reconcile(stageId: UUID, player: ServerPlayerIdentity): CompletableFuture<ReconciliationOutcome> {
@@ -249,7 +386,7 @@ private class FakeGraphGateway(private val store: GraphProjectionStore) : GraphG
             val error = GraphErrorResponse(
                 GRAPH_API_VERSION, "error", status, command.requestId, command.stageId,
                 command.workspaceEpoch, command.expectedWorkingRevision, false,
-                rejectErrorCode, "rejected", rejectDiagnostics,
+                rejectErrorCode, "rejected", rejectDiagnostics, discovery,
             )
             val transport = GraphHttpResult.ApiError(error)
             return if (status == 409 || status >= 500) reconcile(command.stageId, command.player).thenApply {
@@ -266,6 +403,6 @@ private class FakeGraphGateway(private val store: GraphProjectionStore) : GraphG
 
     private fun success(snapshot: GraphStateSnapshot, requestId: UUID?) = GraphSuccessResponse(
         GRAPH_API_VERSION, "ok", requestId, snapshot.stageId, snapshot.workspaceEpoch,
-        snapshot.workingRevision, true, emptyList(), emptyList(), null, snapshot,
+        snapshot.workingRevision, true, emptyList(), emptyList(), null, snapshot, discovery,
     )
 }

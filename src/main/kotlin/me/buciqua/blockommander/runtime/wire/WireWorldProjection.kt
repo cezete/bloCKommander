@@ -1,12 +1,12 @@
 package me.buciqua.blockommander.runtime.wire
 
 import me.buciqua.blockommander.CkWireBlock
+import me.buciqua.blockommander.CkWireGeometry
 import me.buciqua.blockommander.CkWireVisualVariant
 import me.buciqua.blockommander.ModContent
 import me.buciqua.blockommander.runtime.graph.GraphPosition
 import me.buciqua.blockommander.runtime.graph.GraphStateSnapshot
 import net.minecraft.core.BlockPos
-import net.minecraft.core.Direction
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.level.block.Block
 import net.minecraft.world.level.block.Blocks
@@ -33,7 +33,8 @@ enum class WireWorldCell {
 interface WireWorldAccess {
     fun ckWirePositions(stage: WireStageContext): Set<GraphPosition>
     fun cell(position: GraphPosition): WireWorldCell
-    fun setEastWestWire(position: GraphPosition, visualState: WireVisualState)
+    fun geometry(position: GraphPosition): CkWireGeometry?
+    fun setWire(position: GraphPosition, geometry: CkWireGeometry, visualState: WireVisualState)
     fun removeWire(position: GraphPosition)
     fun correct(position: GraphPosition)
 }
@@ -62,42 +63,54 @@ class WireWorldProjector {
         }
 
         val issues = mutableListOf<WireProjectionIssue>()
-        val desired = linkedMapOf<GraphPosition, WireVisualState>()
+        val desired = linkedMapOf<GraphPosition, DesiredWire>()
         val visualStates = WireVisualProjection.states(snapshot)
         snapshot.wireCells.forEach { cell ->
             val relative = cell.position
             val inside = relative.x in 0 until stage.size.x && relative.y in 0 until stage.size.y &&
                 relative.z in 0 until stage.size.z
-            val supported = cell.channels.size == 1 && cell.channels.single().channel == "SINGLE" &&
-                cell.channels.single().connections.toSet() == setOf("EAST", "WEST")
+            val geometry = cell.geometry()
             val absolute = relative + stage.origin
             when {
                 !inside -> issues += WireProjectionIssue(
                     "WIRE_OUTSIDE_STAGE", absolute, "A wire snapshot cella a Stage területén kívül van.",
                 )
-                !supported -> issues += WireProjectionIssue(
-                    "UNSUPPORTED_WIRE_GEOMETRY", absolute, "Csak a SINGLE E–W CK Wire jeleníthető meg B3-ban.",
+                geometry == null -> issues += WireProjectionIssue(
+                    "UNSUPPORTED_WIRE_GEOMETRY", absolute,
+                    "A WireCell csatornái nem képeznek támogatott SINGLE vagy elkülönített CROSS geometriát.",
                 )
-                else -> desired[absolute] = visualStates[relative] ?: WireVisualState.UNKNOWN
+                desired.containsKey(absolute) -> issues += WireProjectionIssue(
+                    "DUPLICATE_WIRE_POSITION", absolute, "A snapshot ugyanazt a WireCell pozíciót többször tartalmazza.",
+                )
+                else -> desired[absolute] = DesiredWire(geometry, visualStates[relative] ?: WireVisualState.UNKNOWN)
             }
         }
 
-        val rendered = linkedSetOf<GraphPosition>()
-        desired.forEach { (position, visualState) ->
-            val expected = visualState.worldCell()
-            when (world.cell(position)) {
-                expected -> rendered += position
-                WireWorldCell.REPLACEABLE -> {
-                    world.setEastWestWire(position, visualState)
-                    rendered += position
-                }
-                WireWorldCell.FOREIGN -> issues += WireProjectionIssue(
+        desired.keys.forEach { position ->
+            if (world.cell(position) == WireWorldCell.FOREIGN) {
+                issues += WireProjectionIssue(
                     "FOREIGN_BLOCK_AT_WIRE_POSITION", position, "A CK Wire nem írhat felül idegen blokkot.",
                 )
-                else -> {
-                    world.setEastWestWire(position, visualState)
+            }
+        }
+        // A teljes snapshot preflightja megelőz minden világírást, így hibás geometriából vagy
+        // idegen blokkal ütköző snapshotból nem maradhat részlegesen frissített projekció.
+        if (issues.isNotEmpty()) return WireProjectionResult(emptySet(), emptySet(), issues)
+
+        val rendered = linkedSetOf<GraphPosition>()
+        desired.forEach { (position, desiredWire) ->
+            val expected = desiredWire.visual.worldCell()
+            when {
+                world.cell(position) == expected && world.geometry(position) == desiredWire.geometry -> rendered += position
+                world.cell(position) == WireWorldCell.REPLACEABLE -> {
+                    world.setWire(position, desiredWire.geometry, desiredWire.visual)
                     rendered += position
                 }
+                world.cell(position).isCkWire -> {
+                    world.setWire(position, desiredWire.geometry, desiredWire.visual)
+                    rendered += position
+                }
+                else -> error("A preflight után nem jelenhet meg idegen blokk a célpozíción.")
             }
         }
 
@@ -123,8 +136,6 @@ class MinecraftWireWorldAccess(private val level: ServerLevel) : WireWorldAccess
     override fun cell(position: GraphPosition): WireWorldCell {
         val state = level.getBlockState(position.blockPos())
         return when {
-            state.block === ModContent.CK_WIRE && state.getValue(CkWireBlock.AXIS) != Direction.Axis.X ->
-                WireWorldCell.CK_WIRE_GEOMETRY_MISMATCH
             state.block === ModContent.CK_WIRE -> when (state.getValue(CkWireBlock.VISUAL)) {
                 CkWireVisualVariant.CYAN -> WireWorldCell.CK_WIRE_UNBOUND
                 CkWireVisualVariant.GREEN -> WireWorldCell.CK_WIRE_BOUND_VALID
@@ -135,7 +146,12 @@ class MinecraftWireWorldAccess(private val level: ServerLevel) : WireWorldAccess
         }
     }
 
-    override fun setEastWestWire(position: GraphPosition, visualState: WireVisualState) {
+    override fun geometry(position: GraphPosition): CkWireGeometry? {
+        val state = level.getBlockState(position.blockPos())
+        return if (state.block === ModContent.CK_WIRE) state.getValue(CkWireBlock.GEOMETRY) else null
+    }
+
+    override fun setWire(position: GraphPosition, geometry: CkWireGeometry, visualState: WireVisualState) {
         val variant = when (visualState) {
             WireVisualState.UNBOUND -> CkWireVisualVariant.CYAN
             WireVisualState.BOUND_VALID -> CkWireVisualVariant.GREEN
@@ -143,7 +159,7 @@ class MinecraftWireWorldAccess(private val level: ServerLevel) : WireWorldAccess
         }
         val changed = level.setBlockAndUpdate(
             position.blockPos(), ModContent.CK_WIRE.defaultBlockState()
-                .setValue(CkWireBlock.AXIS, Direction.Axis.X)
+                .setValue(CkWireBlock.GEOMETRY, geometry)
                 .setValue(CkWireBlock.VISUAL, variant),
         )
         check(changed) { "A CK Wire világvetítés nem írható ki." }
@@ -172,4 +188,34 @@ private fun WireVisualState.worldCell(): WireWorldCell = when (this) {
     WireVisualState.BOUND_VALID -> WireWorldCell.CK_WIRE_BOUND_VALID
     WireVisualState.BOUND_NEEDS_REPAIR -> WireWorldCell.CK_WIRE_BOUND_NEEDS_REPAIR
     WireVisualState.UNKNOWN -> WireWorldCell.CK_WIRE_BOUND_NEEDS_REPAIR
+}
+
+private data class DesiredWire(val geometry: CkWireGeometry, val visual: WireVisualState)
+
+private fun me.buciqua.blockommander.runtime.graph.GraphWireCell.geometry(): CkWireGeometry? {
+    if (channels.size == 1 && channels.single().channel == "SINGLE") {
+        val connections = channels.single().connections
+        if (connections.size != connections.toSet().size || connections.size > 2) return null
+        return when (connections.toSet()) {
+            emptySet<String>() -> CkWireGeometry.NONE
+            setOf("NORTH") -> CkWireGeometry.NORTH
+            setOf("EAST") -> CkWireGeometry.EAST
+            setOf("SOUTH") -> CkWireGeometry.SOUTH
+            setOf("WEST") -> CkWireGeometry.WEST
+            setOf("NORTH", "SOUTH") -> CkWireGeometry.NORTH_SOUTH
+            setOf("EAST", "WEST") -> CkWireGeometry.EAST_WEST
+            setOf("NORTH", "EAST") -> CkWireGeometry.NORTH_EAST
+            setOf("EAST", "SOUTH") -> CkWireGeometry.EAST_SOUTH
+            setOf("SOUTH", "WEST") -> CkWireGeometry.SOUTH_WEST
+            setOf("WEST", "NORTH") -> CkWireGeometry.WEST_NORTH
+            else -> null
+        }
+    }
+    if (channels.size == 2 && channels.map { it.channel }.toSet() == setOf("NS", "EW")) {
+        val ns = channels.single { it.channel == "NS" }.connections
+        val ew = channels.single { it.channel == "EW" }.connections
+        if (ns.size == 2 && ns.toSet() == setOf("NORTH", "SOUTH") &&
+            ew.size == 2 && ew.toSet() == setOf("EAST", "WEST")) return CkWireGeometry.CROSS
+    }
+    return null
 }

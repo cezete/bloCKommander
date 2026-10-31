@@ -48,7 +48,7 @@ def port(key, direction, side, ordinal=0, branch_label=None):
 PORT_CATALOG = {
     "START": (port("out", PortDirection.OUT, LocalSide.FRONT),),
     "IF": (
-        port("in", PortDirection.IN, LocalSide.BACK),
+        port("in", PortDirection.IN, LocalSide.FRONT),
         port("true", PortDirection.OUT, LocalSide.RIGHT, branch_label="1"),
         port("false", PortDirection.OUT, LocalSide.LEFT, branch_label="0"),
     ),

@@ -6,6 +6,7 @@ from hangar.graph.model import (
     PortDirection, PortKind,
 )
 from hangar.graph.orientation import adjacent_position, port_connection_position, world_side
+from hangar.graph.port_catalog import CK_CONTROL_PORT_CATALOG
 
 
 NODE_ID = UUID("00000000-0000-0000-0000-000000000101")
@@ -82,6 +83,29 @@ class GraphOrientationTest(unittest.TestCase):
             with self.subTest(facing=facing):
                 self.assertEqual(port_connection_position(node, definition), result)
 
+    def test_start_and_stop_placement_orientations_put_both_ports_toward_player(self):
+        opposite = {
+            CardinalDirection.NORTH: CardinalDirection.SOUTH,
+            CardinalDirection.EAST: CardinalDirection.WEST,
+            CardinalDirection.SOUTH: CardinalDirection.NORTH,
+            CardinalDirection.WEST: CardinalDirection.EAST,
+        }
+        position = GridPos(10, 20, 30)
+        start_port = CK_CONTROL_PORT_CATALOG["START"][0]
+        stop_port = CK_CONTROL_PORT_CATALOG["STOP"][0]
+        for player_direction in CardinalDirection:
+            player_side = opposite[player_direction]
+            start = GraphNode(
+                NODE_ID, STAGE_ID, "START", position, opposite[player_direction],
+            )
+            stop = GraphNode(
+                NODE_ID, STAGE_ID, "STOP", position, player_direction,
+            )
+            expected = adjacent_position(position, player_side)
+            with self.subTest(player_direction=player_direction):
+                self.assertEqual(port_connection_position(start, start_port), expected)
+                self.assertEqual(port_connection_position(stop, stop_port), expected)
+
     def test_if_true_port_key_is_stable_across_rotations(self):
         definition = self._port_definition()
         for facing in CardinalDirection:
@@ -89,6 +113,31 @@ class GraphOrientationTest(unittest.TestCase):
             with self.subTest(facing=facing):
                 port_connection_position(node, definition)
                 self.assertEqual(definition.port_key, "true_branch")
+
+    def test_if_ports_follow_front_left_right_and_leave_back_unused(self):
+        ports = {item.port_key: item for item in CK_CONTROL_PORT_CATALOG["IF"]}
+        position = GridPos(10, 20, 30)
+        expected_sides = {
+            "in": LocalSide.FRONT,
+            "false": LocalSide.LEFT,
+            "true": LocalSide.RIGHT,
+        }
+        for facing in CardinalDirection:
+            node = GraphNode(NODE_ID, STAGE_ID, "IF", position, facing)
+            actual_positions = {
+                key: port_connection_position(node, ports[key])
+                for key in expected_sides
+            }
+            expected_positions = {
+                key: adjacent_position(position, world_side(facing, side))
+                for key, side in expected_sides.items()
+            }
+            back_position = adjacent_position(
+                position, world_side(facing, LocalSide.BACK)
+            )
+            with self.subTest(facing=facing):
+                self.assertEqual(expected_positions, actual_positions)
+                self.assertNotIn(back_position, actual_positions.values())
 
     def test_transforms_do_not_mutate_inputs(self):
         position = GridPos(10, 20, 30)

@@ -22,8 +22,10 @@ class HallNotFound(LookupError): pass
 class HallConflict(RuntimeError): pass
 class HallForbidden(PermissionError): pass
 class StageVersionConflict(HallConflict): pass
+class ProgramVersionConflict(HallConflict): pass
 class SnapshotStorageError(ValueError): pass
 class SnapshotCompatibilityError(HallConflict): pass
+class ProgramSavePlanError(ValueError): pass
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,67 @@ class SnapshotRows:
     steps: tuple[tuple[Any,...],...]
     wire_cells: tuple[tuple[Any,...],...]
     wire_channels: tuple[tuple[Any,...],...]
+
+
+@dataclass(frozen=True)
+class NewStageHeader:
+    stage_name: str
+    stage_kind: str
+    origin_rel_x: int
+    origin_rel_y: int
+    origin_rel_z: int
+    size_x: int
+    size_y: int
+    size_z: int
+    legacy_hall_id: uuid.UUID|None = None
+
+
+@dataclass(frozen=True)
+class ProgramStageSavePlan:
+    stage_id: uuid.UUID
+    expected_saved_version: int|None
+    snapshot: StageSnapshot|None = None
+    new_stage: NewStageHeader|None = None
+
+
+@dataclass(frozen=True)
+class ProgramStageLink:
+    parent_stage_id: uuid.UUID
+    program_block_instance_id: uuid.UUID
+    child_stage_id: uuid.UUID
+    link_state: str = "ACTIVE"
+
+
+@dataclass(frozen=True)
+class ProgramSavePlan:
+    program_id: uuid.UUID
+    expected_saved_version: int
+    root_stage_id: uuid.UUID
+    stages: tuple[ProgramStageSavePlan,...]
+    links: tuple[ProgramStageLink,...]
+
+
+@dataclass(frozen=True)
+class StageSaveReceipt:
+    stage_id: uuid.UUID
+    saved_version: int
+    changed: bool
+
+
+@dataclass(frozen=True)
+class ProgramSaveReceipt:
+    program_id: uuid.UUID
+    saved_version: int
+    changed: bool
+    stages: tuple[StageSaveReceipt,...]
+
+
+@dataclass(frozen=True)
+class LoadedProgram:
+    program: Mapping[str,Any]
+    stages: tuple[Mapping[str,Any],...]
+    links: tuple[ProgramStageLink,...]
+    mounts: tuple[Mapping[str,Any],...]
 
 
 _DIRECTION_BITS={
@@ -228,6 +291,144 @@ def _snapshot_from_rows(
         ProgramValidationStatus.NOT_CHECKED,stage.get("port_catalog_version"),
     )
 
+
+def _replace_stage_snapshot_rows(
+    cur,stage_id:str,current_version:int,snapshot:StageSnapshot,rows:SnapshotRows
+)->int:
+    """Replace one locked Stage snapshot using the caller's transaction/cursor."""
+    for table in (
+        "route_steps","edge_routes","graph_edges","wire_channels",
+        "wire_cells","stage_blocks",
+    ):
+        cur.execute(f"DELETE FROM blockcommander.{table} WHERE stage_id=%s",(stage_id,))
+    for values in rows.blocks:
+        cur.execute("""INSERT INTO blockcommander.stage_blocks
+            (instance_id,stage_id,type_key,rel_x,rel_y,rel_z,
+             orientation,label,description)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)""",values)
+    for values in rows.edges:
+        cur.execute("""INSERT INTO blockcommander.graph_edges
+            (edge_id,stage_id,source_instance_id,source_port_key,
+             target_instance_id,target_port_key,edge_kind)
+            VALUES(%s,%s,%s,%s,%s,%s,%s)""",values)
+    for values in rows.routes:
+        cur.execute("""INSERT INTO blockcommander.edge_routes
+            (route_id,stage_id,edge_id,source_instance_id,source_port_key,
+             target_instance_id,target_port_key,route_status)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s)""",values)
+    for values in rows.steps:
+        cur.execute("""INSERT INTO blockcommander.route_steps
+            (route_id,stage_id,step_index,rel_x,rel_y,rel_z,channel)
+            VALUES(%s,%s,%s,%s,%s,%s,%s)""",values)
+    for values in rows.wire_cells:
+        cur.execute("""INSERT INTO blockcommander.wire_cells
+            (stage_id,rel_x,rel_y,rel_z,cell_kind)
+            VALUES(%s,%s,%s,%s,%s)""",values)
+    for values in rows.wire_channels:
+        cur.execute("""INSERT INTO blockcommander.wire_channels
+            (stage_id,rel_x,rel_y,rel_z,channel,connections_mask)
+            VALUES(%s,%s,%s,%s,%s,%s)""",values)
+    new_version=int(current_version)+1
+    cur.execute("""UPDATE blockcommander.stages
+        SET saved_version=%s,graph_snapshot_version=%s,
+            port_catalog_version=%s,updated_at=now()
+        WHERE stage_id=%s""",
+        (new_version,GRAPH_SNAPSHOT_VERSION,PORT_CATALOG_VERSION,stage_id))
+    return new_version
+
+
+def _validate_program_plan(plan:ProgramSavePlan)->dict[uuid.UUID,ProgramStageSavePlan]:
+    if not isinstance(plan,ProgramSavePlan):
+        raise ProgramSavePlanError("ProgramSavePlan is required")
+    if not isinstance(plan.program_id,uuid.UUID) or not isinstance(plan.root_stage_id,uuid.UUID):
+        raise ProgramSavePlanError("Program and root Stage IDs must be UUID values")
+    if (not isinstance(plan.expected_saved_version,int)
+            or isinstance(plan.expected_saved_version,bool)
+            or plan.expected_saved_version<0):
+        raise ProgramSavePlanError("Program saved version must be a non-negative integer")
+    if not isinstance(plan.stages,tuple) or not isinstance(plan.links,tuple):
+        raise ProgramSavePlanError("Program Stage and link collections must be immutable tuples")
+
+    stages:dict[uuid.UUID,ProgramStageSavePlan]={}
+    for item in plan.stages:
+        if not isinstance(item,ProgramStageSavePlan) or not isinstance(item.stage_id,uuid.UUID):
+            raise ProgramSavePlanError("Invalid Program Stage plan")
+        if item.stage_id in stages:
+            raise ProgramSavePlanError("Duplicate Stage in Program save plan")
+        if item.expected_saved_version is None:
+            if item.new_stage is None or item.snapshot is None:
+                raise ProgramSavePlanError("A new Stage requires a header and a snapshot")
+        else:
+            if (not isinstance(item.expected_saved_version,int)
+                    or isinstance(item.expected_saved_version,bool)
+                    or item.expected_saved_version<0):
+                raise ProgramSavePlanError("Invalid expected Stage saved version")
+            if item.new_stage is not None:
+                raise ProgramSavePlanError("An existing Stage cannot carry a new-Stage header")
+        if item.snapshot is not None:
+            if item.snapshot.stage_id!=item.stage_id:
+                raise ProgramSavePlanError("Stage snapshot belongs to another Stage")
+            if item.snapshot.port_catalog_version!=PORT_CATALOG_VERSION:
+                raise SnapshotCompatibilityError(
+                    "A snapshot portkatalógus-verziója nem támogatott mentéshez."
+                )
+        if item.new_stage is not None:
+            header=item.new_stage
+            if not header.stage_name or len(header.stage_name)>96:
+                raise ProgramSavePlanError("Invalid new Stage name")
+            if header.stage_kind not in ("ROOT","PROGRAM_BODY"):
+                raise ProgramSavePlanError("Invalid new Stage kind")
+            if any(
+                not isinstance(value,int) or isinstance(value,bool) or value<=0
+                for value in (header.size_x,header.size_y,header.size_z)
+            ):
+                raise ProgramSavePlanError("New Stage sizes must be positive integers")
+        stages[item.stage_id]=item
+
+    if plan.root_stage_id not in stages:
+        raise ProgramSavePlanError("Program root Stage is absent from the save plan")
+
+    primary_keys:set[tuple[uuid.UUID,uuid.UUID,uuid.UUID]] = set()
+    active_blocks:set[tuple[uuid.UUID,uuid.UUID]] = set()
+    active_children:set[uuid.UUID] = set()
+    active_adjacency:dict[uuid.UUID,list[uuid.UUID]]={stage_id:[] for stage_id in stages}
+    for link in plan.links:
+        if not isinstance(link,ProgramStageLink):
+            raise ProgramSavePlanError("Invalid Program Stage link")
+        if link.link_state not in ("ACTIVE","RETAINED"):
+            raise ProgramSavePlanError("Invalid Program Stage link state")
+        if link.parent_stage_id not in stages or link.child_stage_id not in stages:
+            raise ProgramSavePlanError("Program Stage link references an absent Stage")
+        if link.parent_stage_id==link.child_stage_id:
+            raise ProgramSavePlanError("A Stage cannot be its own child")
+        if link.child_stage_id==plan.root_stage_id:
+            raise ProgramSavePlanError("The Program root Stage cannot be a child")
+        key=(link.parent_stage_id,link.program_block_instance_id,link.child_stage_id)
+        if key in primary_keys:
+            raise ProgramSavePlanError("Duplicate Program Stage link")
+        primary_keys.add(key)
+        if link.link_state=="ACTIVE":
+            block_key=(link.parent_stage_id,link.program_block_instance_id)
+            if block_key in active_blocks:
+                raise ProgramSavePlanError("A PROGRAM block has multiple active child links")
+            if link.child_stage_id in active_children:
+                raise ProgramSavePlanError("A child Stage has multiple active parents")
+            active_blocks.add(block_key)
+            active_children.add(link.child_stage_id)
+            active_adjacency[link.parent_stage_id].append(link.child_stage_id)
+
+    visiting:set[uuid.UUID]=set();visited:set[uuid.UUID]=set()
+    def visit(stage_id:uuid.UUID)->None:
+        if stage_id in visiting:
+            raise ProgramSavePlanError("Active Program Stage hierarchy contains a cycle")
+        if stage_id in visited:
+            return
+        visiting.add(stage_id)
+        for child_id in active_adjacency[stage_id]: visit(child_id)
+        visiting.remove(stage_id);visited.add(stage_id)
+    for stage_id in sorted(stages,key=str): visit(stage_id)
+    return stages
+
 class HallRepository:
     def __init__(self, connect=None): self._connect = connect or self._connect_from_env
 
@@ -351,24 +552,39 @@ class HallRepository:
         return self.get(hall_id)
 
     def ensure_stage(self,hall:dict[str,Any])->dict[str,Any]:
-        """Create the hall's one stable stage if it predates the stage migration."""
+        """Return the mounted Program root, creating the Program aggregate if absent."""
         with self._connect() as conn,conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM blockcommander.stages WHERE hall_id=%s",(hall["hall_id"],))
+            cur.execute("""SELECT s.*
+                FROM blockcommander.hall_program_mounts m
+                JOIN blockcommander.programs p ON p.program_id=m.program_id
+                JOIN blockcommander.stages s
+                  ON s.program_id=p.program_id AND s.stage_id=p.root_stage_id
+                WHERE m.hall_id=%s""",(hall["hall_id"],))
             stage=cur.fetchone()
             if not stage:
                 stage_id=str(uuid.uuid4())
+                program_id=str(uuid.uuid4())
                 # Keep a one-block inner service aisle so program blocks can never
                 # overwrite the door-side SAVE/DESTROY controls.
                 size_x=max(1,int(hall["max_x"])-int(hall["min_x"])-3)
                 size_y=max(1,int(hall["max_y"])-int(hall["min_y"])-1)
                 size_z=max(1,int(hall["max_z"])-int(hall["min_z"])-3)
+                cur.execute("""INSERT INTO blockcommander.programs
+                    (program_id,owner_uuid,program_name,root_stage_id)
+                    VALUES(%s,%s,%s,%s)""",
+                    (program_id,hall["owner_uuid"],hall["hall_name"],stage_id))
                 cur.execute("""INSERT INTO blockcommander.stages
-                    (stage_id,hall_id,stage_name,origin_rel_x,origin_rel_y,origin_rel_z,
-                     size_x,size_y,size_z,graph_snapshot_version,port_catalog_version)
-                    VALUES(%s,%s,%s,2,1,2,%s,%s,%s,%s,%s) RETURNING *""",
-                    (stage_id,hall["hall_id"],f"{hall['hall_name']} stage",
+                    (stage_id,program_id,stage_kind,hall_id,stage_name,
+                     origin_rel_x,origin_rel_y,origin_rel_z,size_x,size_y,size_z,
+                     graph_snapshot_version,port_catalog_version)
+                    VALUES(%s,%s,'ROOT',%s,%s,2,1,2,%s,%s,%s,%s,%s)
+                    RETURNING *""",
+                    (stage_id,program_id,hall["hall_id"],f"{hall['hall_name']} stage",
                      size_x,size_y,size_z,GRAPH_SNAPSHOT_VERSION,PORT_CATALOG_VERSION))
                 stage=cur.fetchone()
+                cur.execute("""INSERT INTO blockcommander.hall_program_mounts
+                    (hall_id,program_id) VALUES(%s,%s)""",
+                    (hall["hall_id"],program_id))
             result=dict(stage)
             result.update({
                 "owner_uuid":hall["owner_uuid"],"world_uuid":hall["world_uuid"],
@@ -378,8 +594,11 @@ class HallRepository:
 
     def load_stage(self,stage_id:str)->dict[str,Any]:
         with self._connect() as conn,conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""SELECT s.*,h.owner_uuid,h.world_uuid,h.min_x hall_min_x,h.min_y hall_min_y,h.min_z hall_min_z
-                FROM blockcommander.stages s JOIN blockcommander.halls h ON h.hall_id=s.hall_id
+            cur.execute("""SELECT s.*,p.owner_uuid,h.world_uuid,h.min_x hall_min_x,
+                    h.min_y hall_min_y,h.min_z hall_min_z
+                FROM blockcommander.stages s
+                JOIN blockcommander.programs p ON p.program_id=s.program_id
+                LEFT JOIN blockcommander.halls h ON h.hall_id=s.hall_id
                 WHERE s.stage_id=%s""",(stage_id,))
             stage=self._row(cur.fetchone())
             if not stage: raise HallNotFound("Nincs ilyen stage.")
@@ -393,10 +612,11 @@ class HallRepository:
     def load_full_stage_snapshot(self,stage_id:str)->LoadedStageSnapshot:
         """Load the complete persisted Stage without restoring process-local state."""
         with self._connect() as conn,conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""SELECT s.*,h.owner_uuid,h.world_uuid,h.min_x hall_min_x,
+            cur.execute("""SELECT s.*,p.owner_uuid,h.world_uuid,h.min_x hall_min_x,
                     h.min_y hall_min_y,h.min_z hall_min_z
                 FROM blockcommander.stages s
-                JOIN blockcommander.halls h ON h.hall_id=s.hall_id
+                JOIN blockcommander.programs p ON p.program_id=s.program_id
+                LEFT JOIN blockcommander.halls h ON h.hall_id=s.hall_id
                 WHERE s.stage_id=%s""",(stage_id,))
             stage=self._row(cur.fetchone())
             if not stage: raise HallNotFound("Nincs ilyen stage.")
@@ -457,9 +677,45 @@ class HallRepository:
 
     def load_stage_for_hall(self,hall_id:str)->dict[str,Any]:
         with self._connect() as conn,conn.cursor() as cur:
-            cur.execute("SELECT stage_id FROM blockcommander.stages WHERE hall_id=%s",(hall_id,)); row=cur.fetchone()
+            cur.execute("""SELECT p.root_stage_id
+                FROM blockcommander.hall_program_mounts m
+                JOIN blockcommander.programs p ON p.program_id=m.program_id
+                WHERE m.hall_id=%s""",(hall_id,)); row=cur.fetchone()
         if not row: raise HallNotFound("A csarnokhoz még nincs stage.")
         return self.load_stage(str(row[0]))
+
+    def load_program(self,program_id:str)->LoadedProgram:
+        """Load Program metadata, every Stage header, hierarchy link and mount."""
+        with self._connect() as conn,conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM blockcommander.programs WHERE program_id=%s",(program_id,))
+            program=self._row(cur.fetchone())
+            if not program: raise HallNotFound("Nincs ilyen program.")
+            cur.execute("""SELECT * FROM blockcommander.stages
+                WHERE program_id=%s ORDER BY stage_id""",(program_id,))
+            stages=tuple(MappingProxyType(self._row(row)) for row in cur.fetchall())
+            cur.execute("""SELECT parent_stage_id,program_block_instance_id,
+                    child_stage_id,link_state
+                FROM blockcommander.program_stage_links
+                WHERE program_id=%s
+                ORDER BY parent_stage_id,program_block_instance_id,child_stage_id""",
+                (program_id,))
+            links=tuple(ProgramStageLink(
+                uuid.UUID(str(row["parent_stage_id"])),
+                uuid.UUID(str(row["program_block_instance_id"])),
+                uuid.UUID(str(row["child_stage_id"])),str(row["link_state"]),
+            ) for row in cur.fetchall())
+            cur.execute("""SELECT hall_id,program_id,created_at,updated_at
+                FROM blockcommander.hall_program_mounts
+                WHERE program_id=%s ORDER BY hall_id""",(program_id,))
+            mounts=tuple(MappingProxyType(self._row(row)) for row in cur.fetchall())
+        return LoadedProgram(MappingProxyType(program),stages,links,mounts)
+
+    def load_program_for_hall(self,hall_id:str)->LoadedProgram:
+        with self._connect() as conn,conn.cursor() as cur:
+            cur.execute("""SELECT program_id FROM blockcommander.hall_program_mounts
+                WHERE hall_id=%s""",(hall_id,));row=cur.fetchone()
+        if not row: raise HallNotFound("A csarnokhoz nincs program mountolva.")
+        return self.load_program(str(row[0]))
 
     def list_block_types(self)->list[dict[str,Any]]:
         with self._connect() as conn,conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -490,46 +746,191 @@ class HallRepository:
                 raise SnapshotCompatibilityError(
                     f"Ismeretlen graph snapshot verzió: {current[1]}"
                 )
+            return _replace_stage_snapshot_rows(
+                cur,stage_id,int(current[0]),snapshot,rows
+            )
 
-            for table in (
-                "route_steps","edge_routes","graph_edges","wire_channels",
-                "wire_cells","stage_blocks",
-            ):
-                cur.execute(f"DELETE FROM blockcommander.{table} WHERE stage_id=%s",(stage_id,))
-            for values in rows.blocks:
-                cur.execute("""INSERT INTO blockcommander.stage_blocks
-                    (instance_id,stage_id,type_key,rel_x,rel_y,rel_z,
-                     orientation,label,description)
-                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)""",values)
-            for values in rows.edges:
-                cur.execute("""INSERT INTO blockcommander.graph_edges
-                    (edge_id,stage_id,source_instance_id,source_port_key,
-                     target_instance_id,target_port_key,edge_kind)
-                    VALUES(%s,%s,%s,%s,%s,%s,%s)""",values)
-            for values in rows.routes:
-                cur.execute("""INSERT INTO blockcommander.edge_routes
-                    (route_id,stage_id,edge_id,source_instance_id,source_port_key,
-                     target_instance_id,target_port_key,route_status)
-                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s)""",values)
-            for values in rows.steps:
-                cur.execute("""INSERT INTO blockcommander.route_steps
-                    (route_id,stage_id,step_index,rel_x,rel_y,rel_z,channel)
-                    VALUES(%s,%s,%s,%s,%s,%s,%s)""",values)
-            for values in rows.wire_cells:
-                cur.execute("""INSERT INTO blockcommander.wire_cells
-                    (stage_id,rel_x,rel_y,rel_z,cell_kind)
-                    VALUES(%s,%s,%s,%s,%s)""",values)
-            for values in rows.wire_channels:
-                cur.execute("""INSERT INTO blockcommander.wire_channels
-                    (stage_id,rel_x,rel_y,rel_z,channel,connections_mask)
-                    VALUES(%s,%s,%s,%s,%s,%s)""",values)
-            new_version=int(current[0])+1
-            cur.execute("""UPDATE blockcommander.stages
-                SET saved_version=%s,graph_snapshot_version=%s,
-                    port_catalog_version=%s,updated_at=now()
-                WHERE stage_id=%s""",
-                (new_version,GRAPH_SNAPSHOT_VERSION,PORT_CATALOG_VERSION,stage_id))
-            return new_version
+    def save_program_snapshot(self,plan:ProgramSavePlan)->ProgramSaveReceipt:
+        """Atomically save a complete Program tree under Program and Stage CAS."""
+        stage_plans=_validate_program_plan(plan)
+        prepared_rows={
+            stage_id:_snapshot_rows(item.snapshot)
+            for stage_id,item in stage_plans.items()
+            if item.snapshot is not None
+        }
+        program_id=str(plan.program_id)
+        with self._connect() as conn,conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""SELECT program_id,root_stage_id,saved_version
+                FROM blockcommander.programs
+                WHERE program_id=%s FOR UPDATE""",(program_id,))
+            program=cur.fetchone()
+            if not program: raise HallNotFound("Nincs ilyen program.")
+            if int(program["saved_version"])!=plan.expected_saved_version:
+                raise ProgramVersionConflict(
+                    "A program mentett változata közben megváltozott."
+                )
+            if uuid.UUID(str(program["root_stage_id"]))!=plan.root_stage_id:
+                raise ProgramSavePlanError("Program root Stage mismatch")
+
+            cur.execute("""SELECT stage_id,stage_kind,saved_version,
+                    graph_snapshot_version
+                FROM blockcommander.stages
+                WHERE program_id=%s ORDER BY stage_id FOR UPDATE""",(program_id,))
+            persisted_rows=cur.fetchall()
+            persisted={uuid.UUID(str(row["stage_id"])):row for row in persisted_rows}
+            existing_plan_ids={
+                stage_id for stage_id,item in stage_plans.items()
+                if item.expected_saved_version is not None
+            }
+            new_plan_ids=set(stage_plans)-existing_plan_ids
+            if set(persisted)!=existing_plan_ids:
+                raise ProgramSavePlanError(
+                    "The save plan must contain every persisted Program Stage exactly once"
+                )
+            for stage_id in sorted(existing_plan_ids,key=str):
+                expected=stage_plans[stage_id].expected_saved_version
+                current=int(persisted[stage_id]["saved_version"])
+                if current!=expected:
+                    raise StageVersionConflict(
+                        f"A Stage mentett változata közben megváltozott: {stage_id}"
+                    )
+                if (stage_plans[stage_id].snapshot is not None
+                        and int(persisted[stage_id]["graph_snapshot_version"])
+                            not in (0,GRAPH_SNAPSHOT_VERSION)):
+                    raise SnapshotCompatibilityError(
+                        "Ismeretlen graph snapshot verzió: "
+                        f"{persisted[stage_id]['graph_snapshot_version']}"
+                    )
+            for stage_id in new_plan_ids:
+                if stage_plans[stage_id].new_stage.stage_kind!="PROGRAM_BODY":
+                    raise ProgramSavePlanError(
+                        "A persisted Program already has its only ROOT Stage"
+                    )
+
+            stage_kinds={
+                stage_id:str(row["stage_kind"])
+                for stage_id,row in persisted.items()
+            }
+            stage_kinds.update({
+                stage_id:item.new_stage.stage_kind
+                for stage_id,item in stage_plans.items()
+                if item.new_stage is not None
+            })
+            if stage_kinds.get(plan.root_stage_id)!="ROOT":
+                raise ProgramSavePlanError("Program root must have ROOT Stage kind")
+            for link in plan.links:
+                if stage_kinds[link.child_stage_id]!="PROGRAM_BODY":
+                    raise ProgramSavePlanError("A linked child must be PROGRAM_BODY")
+
+            clean_stage_ids=[
+                str(stage_id) for stage_id,item in stage_plans.items()
+                if item.snapshot is None
+            ]
+            block_types:dict[uuid.UUID,dict[uuid.UUID,str]]={}
+            if clean_stage_ids:
+                cur.execute("""SELECT stage_id,instance_id,type_key
+                    FROM blockcommander.stage_blocks
+                    WHERE stage_id=ANY(%s::uuid[])""",(clean_stage_ids,))
+                for row in cur.fetchall():
+                    stage_id=uuid.UUID(str(row["stage_id"]));instance_id=uuid.UUID(str(row["instance_id"]))
+                    block_types.setdefault(stage_id,{})[instance_id]=str(row["type_key"])
+            for stage_id,item in stage_plans.items():
+                if item.snapshot is not None:
+                    block_types[stage_id]={
+                        block.instance_id:block.type_key for block in item.snapshot.blocks
+                    }
+            for link in plan.links:
+                if block_types.get(link.parent_stage_id,{}).get(
+                    link.program_block_instance_id
+                )!="PROGRAM":
+                    raise ProgramSavePlanError(
+                        "Program Stage link has no matching PROGRAM block in its parent"
+                    )
+
+            cur.execute("""SELECT parent_stage_id,program_block_instance_id,
+                    child_stage_id,link_state
+                FROM blockcommander.program_stage_links
+                WHERE program_id=%s
+                ORDER BY parent_stage_id,program_block_instance_id,child_stage_id""",
+                (program_id,))
+            current_links=tuple(
+                (
+                    uuid.UUID(str(row["parent_stage_id"])),
+                    uuid.UUID(str(row["program_block_instance_id"])),
+                    uuid.UUID(str(row["child_stage_id"])),
+                    str(row["link_state"]),
+                ) for row in cur.fetchall()
+            )
+            desired_links=tuple(sorted((
+                (
+                    link.parent_stage_id,link.program_block_instance_id,
+                    link.child_stage_id,link.link_state,
+                ) for link in plan.links
+            ),key=lambda item:tuple(str(value) for value in item)))
+            links_changed=current_links!=desired_links
+            changed=bool(new_plan_ids or prepared_rows or links_changed)
+            if not changed:
+                return ProgramSaveReceipt(
+                    plan.program_id,int(program["saved_version"]),False,
+                    tuple(StageSaveReceipt(
+                        stage_id,int(persisted[stage_id]["saved_version"]),False
+                    ) for stage_id in sorted(persisted,key=str)),
+                )
+
+            for stage_id in sorted(new_plan_ids,key=str):
+                header=stage_plans[stage_id].new_stage
+                cur.execute("""INSERT INTO blockcommander.stages(
+                        stage_id,program_id,stage_kind,hall_id,stage_name,
+                        origin_rel_x,origin_rel_y,origin_rel_z,size_x,size_y,size_z,
+                        saved_version,graph_snapshot_version,port_catalog_version)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0,NULL)""",
+                    (
+                        str(stage_id),program_id,header.stage_kind,
+                        None if header.legacy_hall_id is None else str(header.legacy_hall_id),
+                        header.stage_name,header.origin_rel_x,header.origin_rel_y,
+                        header.origin_rel_z,header.size_x,header.size_y,header.size_z,
+                    ))
+
+            versions={
+                stage_id:int(row["saved_version"])
+                for stage_id,row in persisted.items()
+            }
+            changed_stages:set[uuid.UUID]=set()
+            for stage_id in sorted(prepared_rows,key=str):
+                item=stage_plans[stage_id]
+                current_version=versions.get(stage_id,0)
+                versions[stage_id]=_replace_stage_snapshot_rows(
+                    cur,str(stage_id),current_version,item.snapshot,
+                    prepared_rows[stage_id],
+                )
+                changed_stages.add(stage_id)
+
+            if links_changed:
+                cur.execute("DELETE FROM blockcommander.program_stage_links WHERE program_id=%s",(program_id,))
+                for parent_id,block_id,child_id,state in desired_links:
+                    cur.execute("""INSERT INTO blockcommander.program_stage_links(
+                            program_id,parent_stage_id,program_block_instance_id,
+                            child_stage_id,link_state)
+                        VALUES(%s,%s,%s,%s,%s)""",
+                        (program_id,str(parent_id),str(block_id),str(child_id),state))
+
+            new_program_version=int(program["saved_version"])+1
+            cur.execute("""UPDATE blockcommander.programs
+                SET saved_version=%s,updated_at=now()
+                WHERE program_id=%s AND saved_version=%s
+                RETURNING saved_version""",
+                (new_program_version,program_id,plan.expected_saved_version))
+            updated=cur.fetchone()
+            if not updated:
+                raise ProgramVersionConflict(
+                    "A program mentett változata közben megváltozott."
+                )
+            return ProgramSaveReceipt(
+                plan.program_id,int(updated["saved_version"]),True,
+                tuple(StageSaveReceipt(
+                    stage_id,versions[stage_id],stage_id in changed_stages
+                ) for stage_id in sorted(versions,key=str)),
+            )
 
     def save_stage_snapshot(self,stage_id:str,expected_version:int,blocks:list[dict[str,Any]])->int:
         """Atomically replace the canonical block set using optimistic versioning."""

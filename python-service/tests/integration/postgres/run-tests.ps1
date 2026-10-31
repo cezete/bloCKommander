@@ -35,6 +35,12 @@ try {
     $env:BLOCKCOMMANDER_TEST_CONTAINER_ID = $state.containerId
     & $python $testFile -v
     if ($LASTEXITCODE -ne 0) { throw "PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
+    $programModelTestFile = Join-Path $PSScriptRoot 'postgres_program_model_integration.py'
+    & $python $programModelTestFile -v
+    if ($LASTEXITCODE -ne 0) { throw "Program model PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
+    $programSaveTestFile = Join-Path $PSScriptRoot 'postgres_program_save_integration.py'
+    & $python $programSaveTestFile -v
+    if ($LASTEXITCODE -ne 0) { throw "Program SAVE PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
     $stageServiceTestFile = Join-Path $PSScriptRoot 'postgres_stage_service_integration.py'
     & $python $stageServiceTestFile -v
     if ($LASTEXITCODE -ne 0) { throw "StageService PostgreSQL integration suite failed with exit code $LASTEXITCODE." }

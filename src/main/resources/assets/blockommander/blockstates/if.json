@@ -1,1 +1,12 @@
-{"variants":{"facing=north":{"model":"blockommander:block/if"},"facing=east":{"model":"blockommander:block/if","y":90},"facing=south":{"model":"blockommander:block/if","y":180},"facing=west":{"model":"blockommander:block/if","y":270}}}
+{
+  "multipart": [
+    {"when":{"facing":"north"},"apply":{"model":"blockommander:block/if"}},
+    {"when":{"facing":"east"},"apply":{"model":"blockommander:block/if","y":90}},
+    {"when":{"facing":"south"},"apply":{"model":"blockommander:block/if","y":180}},
+    {"when":{"facing":"west"},"apply":{"model":"blockommander:block/if","y":270}},
+    {"when":{"facing":"north"},"apply":{"model":"blockommander:block/if_ports"}},
+    {"when":{"facing":"east"},"apply":{"model":"blockommander:block/if_ports","y":90}},
+    {"when":{"facing":"south"},"apply":{"model":"blockommander:block/if_ports","y":180}},
+    {"when":{"facing":"west"},"apply":{"model":"blockommander:block/if_ports","y":270}}
+  ]
+}

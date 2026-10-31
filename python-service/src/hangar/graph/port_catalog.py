@@ -10,7 +10,7 @@ from types import MappingProxyType
 from .model import LocalSide, PortDefinition, PortDirection, PortKind
 
 
-PORT_CATALOG_VERSION = "ck-control-v1"
+PORT_CATALOG_VERSION = "ck-control-v2"
 
 
 class BlockPortStatus(str, Enum):
@@ -179,7 +179,7 @@ CK_CONTROL_PORT_CATALOG = VersionedPortCatalog(
             "IF",
             BlockPortStatus.SPECIFIED,
             (
-                _port("in", PortDirection.IN, LocalSide.BACK),
+                _port("in", PortDirection.IN, LocalSide.FRONT),
                 _port(
                     "true",
                     PortDirection.OUT,

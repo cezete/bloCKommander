@@ -15,6 +15,7 @@ class ServerPlayerIdentity private constructor(val uuid: UUID) {
 
 data class GraphWireCellInput(val channels: List<GraphWireChannel>)
 data class GraphWireChangeInput(val position: GraphPosition, val cell: GraphWireCellInput?)
+enum class GraphPlacementIntent { AUTO, CROSS }
 
 sealed class GraphCommand(
     val requestId: UUID,
@@ -79,6 +80,21 @@ class BindEdgesCommand(
     expectedWorkingRevision: Long,
 ) : GraphCommand(requestId, stageId, player, workspaceEpoch, expectedWorkingRevision, "BIND_EDGES") {
     override fun payload() = JsonObject()
+}
+
+class WirePlaceIntentCommand(
+    requestId: UUID,
+    stageId: UUID,
+    player: ServerPlayerIdentity,
+    workspaceEpoch: UUID,
+    expectedWorkingRevision: Long,
+    val position: GraphPosition,
+    val intent: GraphPlacementIntent,
+) : GraphCommand(requestId, stageId, player, workspaceEpoch, expectedWorkingRevision, "WIRE_PLACE_INTENT") {
+    override fun payload() = JsonObject().apply {
+        add("position", position.toJson())
+        addProperty("intent", intent.name)
+    }
 }
 
 private fun GraphPosition.toJson() = JsonObject().apply {

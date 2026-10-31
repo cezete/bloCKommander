@@ -6,6 +6,7 @@ import me.buciqua.blockommander.ModContent
 import me.buciqua.blockommander.network.OpenFormPayload
 import me.buciqua.blockommander.network.SubmitFormPayload
 import me.buciqua.blockommander.runtime.graph.GraphPosition
+import me.buciqua.blockommander.runtime.graph.GraphPlacementIntent
 import me.buciqua.blockommander.runtime.graph.ServerPlayerIdentity
 import me.buciqua.blockommander.runtime.wire.*
 import net.fabricmc.fabric.api.event.player.AttackBlockCallback
@@ -71,7 +72,8 @@ class Interactions(
             val held = player.getItemInHand(hand)
             if (held.item === ModContent.CK_WIRE_ITEM) {
                 val target = hit.blockPos.relative(hit.direction)
-                placeWire(serverPlayer, serverLevel, worldUuid, target, held)
+                val intent = if (player.isShiftKeyDown) GraphPlacementIntent.CROSS else GraphPlacementIntent.AUTO
+                placeWire(serverPlayer, serverLevel, worldUuid, target, held, intent)
                 return@register InteractionResult.SUCCESS
             }
             if (held.item === ModContent.HANGAR_SWORD) {
@@ -218,7 +220,7 @@ class Interactions(
     }
 
     private fun placeWire(player: ServerPlayer, level: ServerLevel, worldUuid: String, target: BlockPos,
-                          held: net.minecraft.world.item.ItemStack) {
+                          held: net.minecraft.world.item.ItemStack, intent: GraphPlacementIntent) {
         val stage = registry.stageAt(worldUuid, target)
         val coordinator = wireCoordinator()
         if (stage == null || coordinator == null) {
@@ -234,7 +236,7 @@ class Interactions(
             return
         }
         coordinator.place(stage.wireContext(), ServerPlayerIdentity.from(player), target.graphPosition(),
-            MinecraftWireWorldAccess(level)).thenAccept { result ->
+            MinecraftWireWorldAccess(level), intent).thenAccept { result ->
             if ((result.status == WireActionStatus.SUCCESS || result.status == WireActionStatus.RECOVERED) && !alreadyWire &&
                 !player.abilities.instabuild) held.shrink(1)
             refreshSaveSign(level, stage.id)
@@ -322,6 +324,9 @@ class Interactions(
             WireActionStatus.REJECTED -> "§c[CK] A Python elutasította a CK Wire műveletet: ${result.detail ?: "ismeretlen hiba"}."
         }
         player.sendSystemMessage(Component.literal(message))
+        result.discoveryDiagnostics.forEach { diagnostic ->
+            player.sendSystemMessage(Component.literal("§e[CK] ${diagnostic.code}: ${diagnostic.message}"))
+        }
     }
 
     private fun correct(level: ServerLevel, position: BlockPos) {
@@ -353,7 +358,7 @@ class Interactions(
         if (stage == null) { player.sendSystemMessage(Component.literal("§c[CK] CK-blokk csak a saját stage területére helyezhető.")); return }
         val payload = playerPayload(player, level).apply {
             addProperty("type_key", type); addProperty("x", target.x); addProperty("y", target.y); addProperty("z", target.z)
-            addProperty("orientation", player.direction.name)
+            addProperty("orientation", ModContent.placementFacing(type, player.direction).name)
         }
         val fence = registry.stageUpdateFence(stage.id) ?: return
         api.post(player, "/api/v1/stages/${stage.id}/blocks", payload) { response ->
@@ -371,7 +376,14 @@ class Interactions(
             }
             "SAVE_BUTTON" -> registry.stageUpdateFenceForHall(control.hallId)?.let { fence ->
                 api.post(player, "/api/v1/halls/save-button", payload) { response ->
-                    registry.updateStage(response.getAsJsonObject("stage"), fence)?.let { WorldRenderer.renderStage(level, it) }
+                    registry.updateStageAfterSave(response.getAsJsonObject("stage"), fence)?.let { hall ->
+                        WorldRenderer.renderStage(level, hall)
+                        hall.stage?.let { savedStage ->
+                            reconcileGraphAndWire(player, level, savedStage).thenAccept {
+                                refreshSaveSign(level, savedStage.id)
+                            }
+                        }
+                    }
                 }
             }
         }

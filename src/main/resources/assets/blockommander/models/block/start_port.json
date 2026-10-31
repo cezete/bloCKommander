@@ -1,0 +1,17 @@
+{
+  "textures": {
+    "port": "minecraft:block/cyan_concrete"
+  },
+  "elements": [
+    {"from":[6,1,-0.5],"to":[10,3,0],"faces":{"down":{"texture":"#port"},"up":{"texture":"#port"},"north":{"texture":"#port"},"west":{"texture":"#port"},"east":{"texture":"#port"}}},
+    {"from":[11.5,4.5,-0.5],"to":[12.1,8.5,-0.25],"faces":{"north":{"texture":"#port"}}},
+    {"from":[13.9,4.5,-0.5],"to":[14.5,8.5,-0.25],"faces":{"north":{"texture":"#port"}}},
+    {"from":[11.5,7.9,-0.5],"to":[14.5,8.5,-0.25],"faces":{"north":{"texture":"#port"}}},
+    {"from":[11.5,4.5,-0.5],"to":[14.5,5.1,-0.25],"faces":{"north":{"texture":"#port"}}},
+    {"from":[7,4.5,-0.5],"to":[7.6,8.5,-0.25],"faces":{"north":{"texture":"#port"}}},
+    {"from":[9.4,4.5,-0.5],"to":[10,8.5,-0.25],"faces":{"north":{"texture":"#port"}}},
+    {"from":[7,4.5,-0.5],"to":[10,5.1,-0.25],"faces":{"north":{"texture":"#port"}}},
+    {"from":[1.5,7.9,-0.5],"to":[5.5,8.5,-0.25],"faces":{"north":{"texture":"#port"}}},
+    {"from":[3.2,4.5,-0.5],"to":[3.8,8.5,-0.25],"faces":{"north":{"texture":"#port"}}}
+  ]
+}

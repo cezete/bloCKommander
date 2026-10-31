@@ -1,6 +1,7 @@
 package me.buciqua.blockommander
 
 import net.fabricmc.fabric.api.creativetab.v1.FabricCreativeModeTab
+import net.minecraft.core.Direction
 import net.minecraft.core.Registry
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.network.chat.Component
@@ -14,11 +15,18 @@ import net.minecraft.world.level.block.SoundType
 import net.minecraft.world.level.block.state.BlockBehaviour
 
 object ModContent {
-    private fun programBlock(path: String, sound: SoundType): Block {
+    private fun programBlock(
+        path: String,
+        sound: SoundType,
+        dominantPortFace: CkProgramPortFace = CkProgramPortFace.NONE,
+    ): Block {
         val blockKey = ResourceKey.create(BuiltInRegistries.BLOCK.key(), BlockCommanderMod.id(path))
         val itemKey = ResourceKey.create(BuiltInRegistries.ITEM.key(), BlockCommanderMod.id(path))
         val block = Registry.register(BuiltInRegistries.BLOCK, blockKey,
-            CkProgramBlock(BlockBehaviour.Properties.of().strength(1.5f).sound(sound).setId(blockKey)))
+            CkProgramBlock(
+                BlockBehaviour.Properties.of().strength(1.5f).sound(sound).setId(blockKey),
+                dominantPortFace,
+            ))
         Registry.register(BuiltInRegistries.ITEM, itemKey,
             BlockItem(block, Item.Properties().useBlockDescriptionPrefix().setId(itemKey)))
         return block
@@ -40,9 +48,9 @@ object ModContent {
         return Registry.register(BuiltInRegistries.ITEM, key, Item(Item.Properties().stacksTo(1).setId(key)))
     }
 
-    val START: Block = programBlock("start", SoundType.GLASS)
-    val STOP: Block = programBlock("stop", SoundType.GLASS)
-    val IF: Block = programBlock("if", SoundType.GLASS)
+    val START: Block = programBlock("start", SoundType.GLASS, CkProgramPortFace.FRONT)
+    val STOP: Block = programBlock("stop", SoundType.GLASS, CkProgramPortFace.BACK)
+    val IF: Block = programBlock("if", SoundType.GLASS, CkProgramPortFace.FRONT)
     val FOR: Block = programBlock("for", SoundType.GLASS)
     val FUN: Block = programBlock("fun", SoundType.GLASS)
     private val wireContent = wire()
@@ -63,5 +71,12 @@ object ModContent {
 
     fun typeOf(block: Block): String? = when (block) {
         START -> "START"; STOP -> "STOP"; IF -> "IF"; FOR -> "FOR"; FUN -> "FUN"; else -> null
+    }
+
+    fun placementFacing(type: String, playerDirection: Direction): Direction = when (type) {
+        "START" -> (START as CkProgramBlock).facingForPlacement(playerDirection)
+        "STOP" -> (STOP as CkProgramBlock).facingForPlacement(playerDirection)
+        "IF" -> (IF as CkProgramBlock).facingForPlacement(playerDirection)
+        else -> playerDirection
     }
 }

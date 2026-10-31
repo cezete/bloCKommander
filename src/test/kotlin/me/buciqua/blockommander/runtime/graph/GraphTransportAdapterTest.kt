@@ -31,8 +31,9 @@ class GraphTransportAdapterTest {
             GraphApiClient.configured(base, "secret"), store,
             Executor { task -> mainExecutions.incrementAndGet(); task.run() },
         )
-        val command = BindEdgesCommand(
+        val command = WirePlaceIntentCommand(
             REQUEST_ID, STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID), EPOCH_A, 3,
+            GraphPosition(1, 0, 0), GraphPlacementIntent.AUTO,
         )
         val outcome = adapter.send(command).get(5, TimeUnit.SECONDS)
         assertTrue(outcome.transport is GraphHttpResult.ProtocolFailure)
@@ -42,6 +43,34 @@ class GraphTransportAdapterTest {
         assertEquals(4, store.view(STAGE_ID)!!.snapshot!!.workingRevision)
         assertEquals(GraphSyncStatus.SYNCED, store.view(STAGE_ID)!!.status)
         assertTrue(mainExecutions.get() >= 2)
+    }
+
+    @Test fun `placement conflict reconciles once and never retries semantic command`() {
+        val postHits = AtomicInteger()
+        val getHits = AtomicInteger()
+        val base = startServer { method ->
+            if (method == "POST") {
+                postHits.incrementAndGet(); 409 to errorJson("STALE_WORKING_REVISION")
+            } else {
+                getHits.incrementAndGet(); 200 to successJson(revision = 4)
+            }
+        }
+        val store = seededStore()
+        val adapter = GraphTransportAdapter(
+            GraphApiClient.configured(base, "secret"), store, Executor(Runnable::run),
+        )
+        val command = WirePlaceIntentCommand(
+            REQUEST_ID, STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID), EPOCH_A, 3,
+            GraphPosition(1, 0, 0), GraphPlacementIntent.AUTO,
+        )
+
+        val outcome = adapter.send(command).get(5, TimeUnit.SECONDS)
+
+        assertTrue(outcome.transport is GraphHttpResult.ApiError)
+        assertNotNull(outcome.reconciliation)
+        assertEquals(1, postHits.get())
+        assertEquals(1, getHits.get())
+        assertEquals(4, store.view(STAGE_ID)!!.snapshot!!.workingRevision)
     }
 
     @Test fun `graph response only updates projection and has no world mutation dependency`() {

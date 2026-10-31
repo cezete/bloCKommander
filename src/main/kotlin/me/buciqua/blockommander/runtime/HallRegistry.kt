@@ -26,6 +26,8 @@ data class Hall(val id: String, val name: String, val ownerUuid: String, val own
 }
 
 class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionStore()) {
+    private enum class StageResponseKind { LEGACY_MUTATION, SAVE }
+
     private val halls = ConcurrentHashMap<String, Hall>()
 
     @Synchronized
@@ -110,7 +112,14 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
     }
 
     @Synchronized
-    fun updateStage(stageJson: JsonObject, fence: StageUpdateFence): Hall? {
+    fun updateStage(stageJson: JsonObject, fence: StageUpdateFence): Hall? =
+        updateStage(stageJson, fence, StageResponseKind.LEGACY_MUTATION)
+
+    @Synchronized
+    fun updateStageAfterSave(stageJson: JsonObject, fence: StageUpdateFence): Hall? =
+        updateStage(stageJson, fence, StageResponseKind.SAVE)
+
+    private fun updateStage(stageJson: JsonObject, fence: StageUpdateFence, kind: StageResponseKind): Hall? {
         val stage = parseStage(stageJson)
         val hallId = stageJson["hall_id"].asString
         if (hallId != fence.hallId || stage.id != fence.stageId) return null
@@ -139,7 +148,13 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
 
         val updated = hall.copy(stage = stage)
         halls[updated.id] = updated
-        graphProjections.legacyStageUpdated(stageUuid, stage.workspaceEpoch, stage.workingRevision)
+        if (kind == StageResponseKind.SAVE) {
+            graphProjections.authoritativeStageReconciliation(
+                stageUuid, stage.workspaceEpoch, stage.workingRevision,
+            )
+        } else {
+            graphProjections.legacyStageUpdated(stageUuid, stage.workspaceEpoch, stage.workingRevision)
+        }
         return updated
     }
 

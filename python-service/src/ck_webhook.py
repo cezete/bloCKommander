@@ -179,6 +179,14 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
         except Exception as exc:return graph_internal_error(exc)
         return jsonify(result.body),result.status_code
 
+    @app.post("/api/v1/stages/<stage_id>/graph/wire/place")
+    def graph_wire_place(stage_id):
+        command=graph_command(stage_id,"WIRE_PLACE_INTENT")
+        if not isinstance(command,GraphCommand):return command
+        try:result=graph_app.place_wire(command)
+        except Exception as exc:return graph_internal_error(exc)
+        return jsonify(result.body),result.status_code
+
     @app.post("/api/v1/halls/save-button")
     def save_button():
         data=request.get_json(silent=True) or {}

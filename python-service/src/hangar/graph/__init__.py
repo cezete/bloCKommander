@@ -43,6 +43,10 @@ from .discovery import (
     OpenWireEnd, PhysicalComponentStatus, PhysicalTopologyDiscovery,
     PhysicalWireComponent, discover_physical_topology,
 )
+from .placement import (
+    WirePlacementError, WirePlacementErrorCode, WirePlacementIntent,
+    WirePlacementResult, place_wire_intent,
+)
 
 __all__ = [
     "CardinalDirection", "EdgeKind", "EdgeRoute", "GraphEdge", "GraphNode",
@@ -72,4 +76,6 @@ __all__ = [
     "DiscoveredConnection", "DiscoveryDiagnostic", "DiscoveryDiagnosticCode",
     "OpenWireEnd", "PhysicalComponentStatus", "PhysicalTopologyDiscovery",
     "PhysicalWireComponent", "discover_physical_topology",
+    "WirePlacementError", "WirePlacementErrorCode", "WirePlacementIntent",
+    "WirePlacementResult", "place_wire_intent",
 ]

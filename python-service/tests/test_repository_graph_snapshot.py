@@ -227,16 +227,22 @@ class EnsureStageCursor:
     def execute(self, sql, params=None):
         normalized = " ".join(sql.split())
         self.calls.append((normalized, params))
-        if normalized.startswith("SELECT * FROM blockcommander.stages"):
+        if normalized.startswith("SELECT s.*"):
+            self.current = None
+        elif normalized.startswith("INSERT INTO blockcommander.programs"):
             self.current = None
         elif normalized.startswith("INSERT INTO blockcommander.stages"):
             self.current = {
                 "stage_id": params[0],
-                "hall_id": params[1],
-                "stage_name": params[2],
+                "program_id": params[1],
+                "stage_kind": "ROOT",
+                "hall_id": params[2],
+                "stage_name": params[3],
                 "graph_snapshot_version": params[-2],
                 "port_catalog_version": params[-1],
             }
+        elif normalized.startswith("INSERT INTO blockcommander.hall_program_mounts"):
+            self.current = None
         else:
             raise AssertionError(normalized)
 
@@ -318,6 +324,17 @@ class RepositoryGraphSnapshotUnitTest(unittest.TestCase):
         )
         self.assertIn("graph_snapshot_version,port_catalog_version", insert_sql)
         self.assertEqual((GRAPH_SNAPSHOT_VERSION, PORT_CATALOG_VERSION), insert_params[-2:])
+        program_insert = next(
+            call for call in cursor.calls
+            if call[0].startswith("INSERT INTO blockcommander.programs")
+        )
+        mount_insert = next(
+            call for call in cursor.calls
+            if call[0].startswith("INSERT INTO blockcommander.hall_program_mounts")
+        )
+        self.assertEqual(stage["program_id"], program_insert[1][0])
+        self.assertEqual((hall["hall_id"], stage["program_id"]), mount_insert[1])
+        self.assertEqual("ROOT", stage["stage_kind"])
         self.assertEqual(GRAPH_SNAPSHOT_VERSION, stage["graph_snapshot_version"])
         self.assertEqual(PORT_CATALOG_VERSION, stage["port_catalog_version"])
 

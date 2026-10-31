@@ -9,6 +9,7 @@ import java.util.UUID
 
 const val GRAPH_API_VERSION = "ck-graph-v1"
 const val GRAPH_SCHEMA_VERSION = 1
+const val GRAPH_DISCOVERY_SCHEMA_VERSION = 1
 
 data class GraphPosition(val x: Int, val y: Int, val z: Int)
 data class GraphPortRef(val instanceId: UUID, val portKey: String)
@@ -74,6 +75,37 @@ data class GraphStateSnapshot(
 )
 data class GraphWireDiff(val position: GraphPosition, val cell: GraphWireCell?)
 data class GraphBinding(val createdEdgeIds: List<UUID>, val reusedEdgeIds: List<UUID>)
+data class GraphPlacement(val intent: GraphPlacementIntent, val affectedCells: List<GraphWireCell>)
+data class GraphDiscoveryVertex(val position: GraphPosition, val channel: String)
+data class GraphDiscoveryOpenEnd(val position: GraphPosition, val channel: String, val direction: String)
+data class GraphDiscoveryComponent(
+    val componentId: UUID,
+    val status: String,
+    val vertices: List<GraphDiscoveryVertex>,
+    val ports: List<GraphPortRef>,
+    val openEnds: List<GraphDiscoveryOpenEnd>,
+)
+data class GraphDiscoveryCandidate(
+    val candidateId: UUID,
+    val componentId: UUID,
+    val sourcePort: GraphPortRef,
+    val targetPort: GraphPortRef,
+    val steps: List<GraphRouteStep>,
+)
+data class GraphDiscoveryDiagnostic(
+    val code: String,
+    val severity: String,
+    val message: String,
+    val componentId: UUID,
+    val portRefs: List<GraphPortRef>,
+    val wirePositions: List<GraphPosition>,
+)
+data class GraphDiscovery(
+    val schemaVersion: Int,
+    val components: List<GraphDiscoveryComponent>,
+    val candidates: List<GraphDiscoveryCandidate>,
+    val diagnostics: List<GraphDiscoveryDiagnostic>,
+)
 
 sealed interface GraphApiResponse {
     val apiVersion: String
@@ -93,6 +125,8 @@ data class GraphSuccessResponse(
     val wireDiff: List<GraphWireDiff>,
     val binding: GraphBinding?,
     val state: GraphStateSnapshot,
+    val discovery: GraphDiscovery? = null,
+    val placement: GraphPlacement? = null,
 ) : GraphApiResponse
 
 data class GraphErrorResponse(
@@ -107,6 +141,7 @@ data class GraphErrorResponse(
     val errorCode: String,
     val message: String,
     override val diagnostics: List<GraphDiagnostic>,
+    val discovery: GraphDiscovery? = null,
 ) : GraphApiResponse
 
 class GraphProtocolException(message: String) : RuntimeException(message)
@@ -140,6 +175,8 @@ object GraphResponseParser {
             root.requiredBoolean("modified"), parseDiagnostics(root.requiredArray("diagnostics")),
             root.optionalArray("wire_diff")?.mapObjects(::parseWireDiff) ?: emptyList(),
             root.optionalObject("binding")?.let(::parseBinding), state,
+            root.optionalObject("discovery")?.let(::parseDiscovery),
+            root.optionalObject("placement")?.let(::parsePlacement),
         )
     }
 
@@ -147,8 +184,65 @@ object GraphResponseParser {
         version, status, httpStatus, root.optionalUuid("request_id"), root.optionalUuid("stage_id"),
         root.optionalUuid("workspace_epoch"), root.optionalLong("working_revision"),
         root.optionalBoolean("modified"), root.requiredString("error_code"), root.requiredString("message"),
-        parseDiagnostics(root.requiredArray("diagnostics")),
+        parseDiagnostics(root.requiredArray("diagnostics")), root.optionalObject("discovery")?.let(::parseDiscovery),
     )
+
+    private fun parseDiscovery(obj: JsonObject): GraphDiscovery {
+        val schemaVersion = obj.requiredInt("schema_version")
+        if (schemaVersion != GRAPH_DISCOVERY_SCHEMA_VERSION) {
+            throw GraphProtocolException("Nem támogatott graph discovery-verzió: $schemaVersion")
+        }
+        return GraphDiscovery(
+            schemaVersion,
+            obj.requiredArray("components").mapObjects { component ->
+                GraphDiscoveryComponent(
+                    component.requiredUuid("component_id"), component.requiredString("status"),
+                    component.requiredArray("vertices").mapObjects { vertex ->
+                        GraphDiscoveryVertex(
+                            parsePosition(vertex.requiredObject("position")), vertex.requiredString("channel"),
+                        )
+                    },
+                    component.requiredArray("ports").mapObjects(::parsePortRef),
+                    component.requiredArray("open_ends").mapObjects { end ->
+                        GraphDiscoveryOpenEnd(
+                            parsePosition(end.requiredObject("position")), end.requiredString("channel"),
+                            end.requiredString("direction"),
+                        )
+                    },
+                )
+            },
+            obj.requiredArray("candidates").mapObjects { candidate ->
+                GraphDiscoveryCandidate(
+                    candidate.requiredUuid("candidate_id"), candidate.requiredUuid("component_id"),
+                    parsePortRef(candidate.requiredObject("source_port")),
+                    parsePortRef(candidate.requiredObject("target_port")),
+                    candidate.requiredArray("steps").mapObjects { step ->
+                        GraphRouteStep(parsePosition(step.requiredObject("position")), step.requiredString("channel"))
+                    },
+                )
+            },
+            obj.requiredArray("diagnostics").mapObjects { diagnostic ->
+                GraphDiscoveryDiagnostic(
+                    diagnostic.requiredString("code"), diagnostic.requiredString("severity"),
+                    diagnostic.requiredString("message"), diagnostic.requiredUuid("component_id"),
+                    diagnostic.requiredArray("port_refs").mapObjects(::parsePortRef),
+                    diagnostic.requiredArray("wire_positions").mapObjects(::parsePosition),
+                )
+            },
+        )
+    }
+
+    private fun parsePlacement(obj: JsonObject): GraphPlacement {
+        val intent = try {
+            GraphPlacementIntent.valueOf(obj.requiredString("intent"))
+        } catch (_: IllegalArgumentException) {
+            throw GraphProtocolException("Nem támogatott placement intent a graph válaszban.")
+        }
+        return GraphPlacement(
+            intent,
+            obj.requiredArray("affected_cells").mapObjects(::parseWireCell),
+        )
+    }
 
     private fun parseState(obj: JsonObject) = GraphStateSnapshot(
         obj.requiredUuid("stage_id"), obj.requiredUuid("hall_id"), obj.requiredUuid("world_uuid"),

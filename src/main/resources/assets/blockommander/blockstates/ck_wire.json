@@ -1,10 +1,22 @@
 {
-  "variants": {
-    "axis=x,visual=cyan": {"model": "blockommander:block/ck_wire"},
-    "axis=z,visual=cyan": {"model": "blockommander:block/ck_wire", "y": 90},
-    "axis=x,visual=green": {"model": "blockommander:block/ck_wire_green"},
-    "axis=z,visual=green": {"model": "blockommander:block/ck_wire_green", "y": 90},
-    "axis=x,visual=orange": {"model": "blockommander:block/ck_wire_orange"},
-    "axis=z,visual=orange": {"model": "blockommander:block/ck_wire_orange", "y": 90}
-  }
+  "multipart": [
+    {"when":{"visual":"cyan"},"apply":{"model":"blockommander:block/ck_wire_center"}},
+    {"when":{"visual":"green"},"apply":{"model":"blockommander:block/ck_wire_center_green"}},
+    {"when":{"visual":"orange"},"apply":{"model":"blockommander:block/ck_wire_center_orange"}},
+    {"when":{"geometry":"north|north_south|north_east|west_north","visual":"cyan"},"apply":{"model":"blockommander:block/ck_wire_arm"}},
+    {"when":{"geometry":"north|north_south|north_east|west_north","visual":"green"},"apply":{"model":"blockommander:block/ck_wire_arm_green"}},
+    {"when":{"geometry":"north|north_south|north_east|west_north","visual":"orange"},"apply":{"model":"blockommander:block/ck_wire_arm_orange"}},
+    {"when":{"geometry":"east|east_west|north_east|east_south|cross","visual":"cyan"},"apply":{"model":"blockommander:block/ck_wire_arm","y":90}},
+    {"when":{"geometry":"east|east_west|north_east|east_south|cross","visual":"green"},"apply":{"model":"blockommander:block/ck_wire_arm_green","y":90}},
+    {"when":{"geometry":"east|east_west|north_east|east_south|cross","visual":"orange"},"apply":{"model":"blockommander:block/ck_wire_arm_orange","y":90}},
+    {"when":{"geometry":"south|north_south|east_south|south_west","visual":"cyan"},"apply":{"model":"blockommander:block/ck_wire_arm","y":180}},
+    {"when":{"geometry":"south|north_south|east_south|south_west","visual":"green"},"apply":{"model":"blockommander:block/ck_wire_arm_green","y":180}},
+    {"when":{"geometry":"south|north_south|east_south|south_west","visual":"orange"},"apply":{"model":"blockommander:block/ck_wire_arm_orange","y":180}},
+    {"when":{"geometry":"west|east_west|south_west|west_north|cross","visual":"cyan"},"apply":{"model":"blockommander:block/ck_wire_arm","y":270}},
+    {"when":{"geometry":"west|east_west|south_west|west_north|cross","visual":"green"},"apply":{"model":"blockommander:block/ck_wire_arm_green","y":270}},
+    {"when":{"geometry":"west|east_west|south_west|west_north|cross","visual":"orange"},"apply":{"model":"blockommander:block/ck_wire_arm_orange","y":270}},
+    {"when":{"geometry":"cross","visual":"cyan"},"apply":{"model":"blockommander:block/ck_wire_cross_ns"}},
+    {"when":{"geometry":"cross","visual":"green"},"apply":{"model":"blockommander:block/ck_wire_cross_ns_green"}},
+    {"when":{"geometry":"cross","visual":"orange"},"apply":{"model":"blockommander:block/ck_wire_cross_ns_orange"}}
+  ]
 }

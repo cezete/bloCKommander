@@ -1,0 +1,26 @@
+{
+  "textures": {
+    "in": "minecraft:block/orange_concrete",
+    "out": "minecraft:block/cyan_concrete"
+  },
+  "elements": [
+    {"name":"front_in_socket","from":[6,1,-0.5],"to":[10,3,0],"faces":{"down":{"texture":"#in"},"up":{"texture":"#in"},"north":{"texture":"#in"},"west":{"texture":"#in"},"east":{"texture":"#in"}}},
+    {"name":"front_i_top","from":[10.5,7.9,-0.5],"to":[14,8.5,-0.25],"faces":{"north":{"texture":"#in"}}},
+    {"name":"front_i_stem","from":[11.95,4.5,-0.5],"to":[12.55,8.5,-0.25],"faces":{"north":{"texture":"#in"}}},
+    {"name":"front_i_bottom","from":[10.5,4.5,-0.5],"to":[14,5.1,-0.25],"faces":{"north":{"texture":"#in"}}},
+    {"name":"front_n_left","from":[3,4.5,-0.5],"to":[3.6,8.5,-0.25],"faces":{"north":{"texture":"#in"}}},
+    {"name":"front_n_right","from":[7,4.5,-0.5],"to":[7.6,8.5,-0.25],"faces":{"north":{"texture":"#in"}}},
+    {"name":"front_n_diagonal","from":[4.7,4.5,-0.5],"to":[5.3,8.5,-0.25],"rotation":{"origin":[5,6.5,-0.25],"axis":"z","angle":-45,"rescale":true},"faces":{"north":{"texture":"#in"}}},
+
+    {"name":"left_0_socket","from":[-0.5,1,6],"to":[0,3,10],"faces":{"down":{"texture":"#out"},"up":{"texture":"#out"},"north":{"texture":"#out"},"south":{"texture":"#out"},"west":{"texture":"#out"}}},
+    {"name":"left_0_top","from":[-0.5,7.9,5.5],"to":[-0.25,8.5,10.5],"faces":{"west":{"texture":"#out"}}},
+    {"name":"left_0_bottom","from":[-0.5,4.5,5.5],"to":[-0.25,5.1,10.5],"faces":{"west":{"texture":"#out"}}},
+    {"name":"left_0_left","from":[-0.5,4.5,5.5],"to":[-0.25,8.5,6.1],"faces":{"west":{"texture":"#out"}}},
+    {"name":"left_0_right","from":[-0.5,4.5,9.9],"to":[-0.25,8.5,10.5],"faces":{"west":{"texture":"#out"}}},
+
+    {"name":"right_1_socket","from":[16,1,6],"to":[16.5,3,10],"faces":{"down":{"texture":"#out"},"up":{"texture":"#out"},"north":{"texture":"#out"},"south":{"texture":"#out"},"east":{"texture":"#out"}}},
+    {"name":"right_1_stem","from":[16.25,4.5,7.7],"to":[16.5,8.5,8.3],"faces":{"east":{"texture":"#out"}}},
+    {"name":"right_1_top","from":[16.25,7.9,6.8],"to":[16.5,8.5,8.3],"faces":{"east":{"texture":"#out"}}},
+    {"name":"right_1_bottom","from":[16.25,4.5,6.8],"to":[16.5,5.1,9.2],"faces":{"east":{"texture":"#out"}}}
+  ]
+}

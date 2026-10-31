@@ -14,7 +14,7 @@ from hangar.graph import (
 
 class PortCatalogTest(unittest.TestCase):
     def test_catalog_version_is_explicit(self):
-        self.assertEqual(PORT_CATALOG_VERSION, "ck-control-v1")
+        self.assertEqual(PORT_CATALOG_VERSION, "ck-control-v2")
         self.assertEqual(CK_CONTROL_PORT_CATALOG.version, PORT_CATALOG_VERSION)
 
     def test_start_stop_and_if_ports_match_contract(self):
@@ -27,7 +27,7 @@ class PortCatalogTest(unittest.TestCase):
         self.assertEqual(
             actual["IF"],
             (
-                ("in", PortDirection.IN, LocalSide.BACK),
+                ("in", PortDirection.IN, LocalSide.FRONT),
                 ("true", PortDirection.OUT, LocalSide.RIGHT),
                 ("false", PortDirection.OUT, LocalSide.LEFT),
             ),
@@ -38,6 +38,23 @@ class PortCatalogTest(unittest.TestCase):
             for port in CK_CONTROL_PORT_CATALOG[type_key]:
                 self.assertEqual((port.min_edges, port.max_edges), (1, 1))
                 self.assertEqual(port.port_kind.value, "CONTROL")
+
+    def test_if_branch_labels_and_directions_match_the_physical_markers(self):
+        ports = {item.port_key: item for item in CK_CONTROL_PORT_CATALOG["IF"]}
+        self.assertEqual(
+            (ports["in"].direction, ports["in"].branch_label),
+            (PortDirection.IN, None),
+        )
+        self.assertEqual(
+            (ports["false"].local_side, ports["false"].direction,
+             ports["false"].branch_label),
+            (LocalSide.LEFT, PortDirection.OUT, "0"),
+        )
+        self.assertEqual(
+            (ports["true"].local_side, ports["true"].direction,
+             ports["true"].branch_label),
+            (LocalSide.RIGHT, PortDirection.OUT, "1"),
+        )
 
     def test_for_and_fun_are_unspecified_without_invented_ports(self):
         for type_key in ("FOR", "FUN"):

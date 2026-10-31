@@ -46,6 +46,7 @@ class GraphApiClient private constructor(
     fun send(command: GraphCommand): CompletableFuture<GraphHttpResult> {
         val suffix = when (command) {
             is WireLayoutCommand -> "wire"
+            is WirePlaceIntentCommand -> "wire/place"
             is BindEdgesCommand -> "bind"
         }
         return request("POST", "/api/v1/stages/${command.stageId}/graph/$suffix", gson.toJson(command.toJson()))

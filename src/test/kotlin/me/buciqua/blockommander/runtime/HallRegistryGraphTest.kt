@@ -169,6 +169,35 @@ class HallRegistryGraphTest {
         assertFalse(registry.saveDirty(STAGE_ID.toString())!!)
     }
 
+    @Test fun `SAVE response permits same revision clean graph reconciliation`() {
+        val registry = HallRegistry()
+        registry.install(JsonParser.parseString(hallJson(EPOCH_A, 4, dirty = true)).asJsonObject)
+        val store = registry.graphProjections
+        store.apply(
+            store.begin(STAGE_ID, GraphRequestKind.RECONCILIATION),
+            snapshot(epoch = EPOCH_A, revision = 4, dirty = true),
+        )
+        val fence = registry.stageUpdateFenceForHall(HALL_ID.toString())!!
+
+        val saved = registry.updateStageAfterSave(
+            JsonParser.parseString(stageJson(EPOCH_A, 4, dirty = false)).asJsonObject,
+            fence,
+        )
+
+        assertNotNull(saved)
+        assertFalse(saved!!.stage!!.dirty)
+        assertEquals(GraphSyncStatus.NOT_REQUESTED, registry.graph(STAGE_ID.toString())!!.status)
+        assertNull(registry.graph(STAGE_ID.toString())!!.snapshot)
+
+        val applied = store.apply(
+            store.begin(STAGE_ID, GraphRequestKind.RECONCILIATION),
+            snapshot(epoch = EPOCH_A, revision = 4, dirty = false),
+        )
+        assertInstanceOf(GraphApplyResult.Applied::class.java, applied)
+        assertEquals(GraphSyncStatus.SYNCED, registry.graph(STAGE_ID.toString())!!.status)
+        assertFalse(registry.saveDirty(STAGE_ID.toString())!!)
+    }
+
     @Test fun `HallRegistry resolves the Hall owning a Stage for graph status projection`() {
         val registry = HallRegistry()
         val installed = registry.install(JsonParser.parseString(hallJson(EPOCH_A, 0)).asJsonObject)
