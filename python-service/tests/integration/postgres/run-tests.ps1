@@ -41,6 +41,9 @@ try {
     $programSaveTestFile = Join-Path $PSScriptRoot 'postgres_program_save_integration.py'
     & $python $programSaveTestFile -v
     if ($LASTEXITCODE -ne 0) { throw "Program SAVE PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
+    $programServiceTestFile = Join-Path $PSScriptRoot 'postgres_program_service_integration.py'
+    & $python $programServiceTestFile -v
+    if ($LASTEXITCODE -ne 0) { throw "ProgramService PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
     $stageServiceTestFile = Join-Path $PSScriptRoot 'postgres_stage_service_integration.py'
     & $python $stageServiceTestFile -v
     if ($LASTEXITCODE -ne 0) { throw "StageService PostgreSQL integration suite failed with exit code $LASTEXITCODE." }

@@ -23,6 +23,7 @@ class HallConflict(RuntimeError): pass
 class HallForbidden(PermissionError): pass
 class StageVersionConflict(HallConflict): pass
 class ProgramVersionConflict(HallConflict): pass
+class LegacyStageSaveBlocked(HallConflict): pass
 class SnapshotStorageError(ValueError): pass
 class SnapshotCompatibilityError(HallConflict): pass
 class ProgramSavePlanError(ValueError): pass
@@ -335,6 +336,34 @@ def _replace_stage_snapshot_rows(
         WHERE stage_id=%s""",
         (new_version,GRAPH_SNAPSHOT_VERSION,PORT_CATALOG_VERSION,stage_id))
     return new_version
+
+
+def _lock_legacy_stage_save(cur,stage_id:str)->tuple[int,int]:
+    """Fence direct Stage SAVE after the Program aggregate becomes authoritative."""
+    cur.execute("SELECT to_regclass('blockcommander.programs')")
+    if cur.fetchone()[0] is None:
+        cur.execute("""SELECT saved_version,graph_snapshot_version
+            FROM blockcommander.stages WHERE stage_id=%s FOR UPDATE""",(stage_id,))
+        current=cur.fetchone()
+        if not current: raise HallNotFound("Nincs ilyen stage.")
+        return int(current[0]),int(current[1])
+    cur.execute("SELECT program_id FROM blockcommander.stages WHERE stage_id=%s",
+        (stage_id,))
+    stage_owner=cur.fetchone()
+    if not stage_owner: raise HallNotFound("Nincs ilyen stage.")
+    cur.execute("SELECT saved_version FROM blockcommander.programs WHERE program_id=%s FOR UPDATE",
+        (stage_owner[0],))
+    program=cur.fetchone()
+    if not program: raise HallNotFound("A Stage Programja hiányzik.")
+    if int(program[0])>0:
+        raise LegacyStageSaveBlocked(
+            "A Program már aggregate SAVE-kezelés alatt áll; közvetlen Stage-SAVE tiltott."
+        )
+    cur.execute("""SELECT saved_version,graph_snapshot_version
+        FROM blockcommander.stages WHERE stage_id=%s FOR UPDATE""",(stage_id,))
+    current=cur.fetchone()
+    if not current: raise HallNotFound("Nincs ilyen stage.")
+    return int(current[0]),int(current[1])
 
 
 def _validate_program_plan(plan:ProgramSavePlan)->dict[uuid.UUID,ProgramStageSavePlan]:
@@ -717,6 +746,13 @@ class HallRepository:
         if not row: raise HallNotFound("A csarnokhoz nincs program mountolva.")
         return self.load_program(str(row[0]))
 
+    def load_program_for_stage(self,stage_id:str)->LoadedProgram:
+        with self._connect() as conn,conn.cursor() as cur:
+            cur.execute("SELECT program_id FROM blockcommander.stages WHERE stage_id=%s",
+                (stage_id,));row=cur.fetchone()
+        if not row: raise HallNotFound("A Stage nincs Programhoz rendelve.")
+        return self.load_program(str(row[0]))
+
     def list_block_types(self)->list[dict[str,Any]]:
         with self._connect() as conn,conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT type_key,display_name,material_name,default_label,default_description,display_definition FROM blockcommander.program_block_types ORDER BY type_key")
@@ -734,20 +770,17 @@ class HallRepository:
             )
         rows=_snapshot_rows(snapshot)
         with self._connect() as conn,conn.cursor() as cur:
-            cur.execute("""SELECT saved_version,graph_snapshot_version
-                FROM blockcommander.stages WHERE stage_id=%s FOR UPDATE""",(stage_id,))
-            current=cur.fetchone()
-            if not current: raise HallNotFound("Nincs ilyen stage.")
-            if int(current[0])!=int(expected_version):
+            current_version,graph_version=_lock_legacy_stage_save(cur,stage_id)
+            if current_version!=int(expected_version):
                 raise StageVersionConflict(
                     "A stage mentett változata közben megváltozott; építsd vissza mentés előtt."
                 )
-            if int(current[1]) not in (0,GRAPH_SNAPSHOT_VERSION):
+            if graph_version not in (0,GRAPH_SNAPSHOT_VERSION):
                 raise SnapshotCompatibilityError(
-                    f"Ismeretlen graph snapshot verzió: {current[1]}"
+                    f"Ismeretlen graph snapshot verzió: {graph_version}"
                 )
             return _replace_stage_snapshot_rows(
-                cur,stage_id,int(current[0]),snapshot,rows
+                cur,stage_id,current_version,snapshot,rows
             )
 
     def save_program_snapshot(self,plan:ProgramSavePlan)->ProgramSaveReceipt:
@@ -840,9 +873,11 @@ class HallRepository:
                         block.instance_id:block.type_key for block in item.snapshot.blocks
                     }
             for link in plan.links:
-                if block_types.get(link.parent_stage_id,{}).get(
+                if (link.link_state=="ACTIVE" and block_types.get(
+                    link.parent_stage_id,{}
+                ).get(
                     link.program_block_instance_id
-                )!="PROGRAM":
+                )!="PROGRAM"):
                     raise ProgramSavePlanError(
                         "Program Stage link has no matching PROGRAM block in its parent"
                     )
@@ -935,11 +970,10 @@ class HallRepository:
     def save_stage_snapshot(self,stage_id:str,expected_version:int,blocks:list[dict[str,Any]])->int:
         """Atomically replace the canonical block set using optimistic versioning."""
         with self._connect() as conn,conn.cursor() as cur:
-            cur.execute("SELECT saved_version,graph_snapshot_version FROM blockcommander.stages WHERE stage_id=%s FOR UPDATE",(stage_id,)); row=cur.fetchone()
-            if not row: raise HallNotFound("Nincs ilyen stage.")
-            if int(row[0])!=int(expected_version):
+            current_version,graph_version=_lock_legacy_stage_save(cur,stage_id)
+            if current_version!=int(expected_version):
                 raise StageVersionConflict("A stage mentett változata közben megváltozott; építsd vissza mentés előtt.")
-            if int(row[1])!=0:
+            if graph_version!=0:
                 raise SnapshotCompatibilityError(
                     "A legacy blokkmentés nem írhat felül graph-aware snapshotot."
                 )
@@ -949,6 +983,6 @@ class HallRepository:
                     (instance_id,stage_id,type_key,rel_x,rel_y,rel_z,orientation,label,description)
                     VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (b["instance_id"],stage_id,b["type_key"],b["rel_x"],b["rel_y"],b["rel_z"],b["orientation"],b["label"],b.get("description")))
-            new_version=int(row[0])+1
+            new_version=current_version+1
             cur.execute("UPDATE blockcommander.stages SET saved_version=%s,updated_at=now() WHERE stage_id=%s",(new_version,stage_id))
             return new_version

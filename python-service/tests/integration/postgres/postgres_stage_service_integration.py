@@ -4,10 +4,12 @@ from __future__ import annotations
 import unittest
 
 from hangar.graph import ProgramValidationStatus, RouteStatus
-from hangar.repository import HallRepository, StageVersionConflict
+from hangar.program import ProgramService, ProgramWorkspaceState
+from hangar.repository import HallRepository, LegacyStageSaveBlocked, StageVersionConflict
 from hangar.stage import StageService
 from postgres_graph_integration import (
     OWNER_ID,
+    PROGRAM_ID,
     STAGE_ID,
     assert_database_identity,
     connect,
@@ -126,6 +128,40 @@ class StageServicePostgreSQLIntegrationTest(unittest.TestCase):
         persisted = repository().load_full_stage_snapshot(str(STAGE_ID))
         self.assertEqual(persisted.saved_version, 2)
         self.assertEqual(persisted.snapshot.blocks[0].label, "EXTERNAL WINNER")
+
+    def test_legacy_stage_save_delegates_to_program_save_when_workspace_is_managed(self):
+        programs = ProgramService(self.service.repository, self.service)
+        program = programs.load(str(PROGRAM_ID))
+        start = self.workspace.snapshot.blocks[0]
+        self.service.update(
+            str(STAGE_ID),
+            str(start.instance_id),
+            {"player_uuid": self.owner, "label": "PROGRAM DELEGATED"},
+        )
+        saved = self.service.save(
+            str(STAGE_ID), self.versioned_payload()
+        )
+        self.assertEqual(saved["saved_version"], 2)
+        self.assertFalse(saved["dirty"])
+        self.assertEqual(program.saved_version, 1)
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT saved_version FROM blockcommander.programs WHERE program_id=%s",
+                (str(PROGRAM_ID),),
+            )
+            self.assertEqual(cur.fetchone()[0], 1)
+
+        with self.assertRaises(LegacyStageSaveBlocked):
+            self.service.repository.save_full_stage_snapshot(
+                str(STAGE_ID), 2, full_snapshot(label="EXTERNAL LEGACY")
+            )
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE blockcommander.stages SET saved_version=saved_version+1 WHERE stage_id=%s",
+                (str(STAGE_ID),),
+            )
+        self.assertTrue(programs.is_dirty(str(PROGRAM_ID)))
+        self.assertEqual(program.state, ProgramWorkspaceState.RELOAD_REQUIRED)
 
 
 if __name__ == "__main__":

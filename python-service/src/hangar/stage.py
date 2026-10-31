@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from .builder import HallValidationError
 from .graph.adapter import (
@@ -145,6 +146,50 @@ class StageService:
         self.repository=repository
         self._workspaces:dict[str,StageWorkspace]={}
         self._guard=threading.RLock()
+        self._program_lock_resolver:Callable[[str],threading.RLock|None]|None=None
+        self._program_save_delegate:Callable[[str,dict[str,Any]],dict[str,Any]|None]|None=None
+        self._program_block_deleted:Callable[[str,uuid.UUID,str],None]|None=None
+        self._program_block_policy:Callable[[str,str],None]|None=None
+        self._program_stage_guard:Callable[[str],None]|None=None
+
+    def attach_program_coordinator(
+        self,*,lock_resolver:Callable[[str],threading.RLock|None],
+        save_delegate:Callable[[str,dict[str,Any]],dict[str,Any]|None],
+        block_deleted:Callable[[str,uuid.UUID,str],None],
+        block_policy:Callable[[str,str],None],
+        stage_guard:Callable[[str],None],
+    )->None:
+        """Attach the sole Program coordinator without changing standalone behavior."""
+        with self._guard:
+            if self._program_lock_resolver is not None:
+                raise RuntimeError("A Program coordinator is already attached")
+            self._program_lock_resolver=lock_resolver
+            self._program_save_delegate=save_delegate
+            self._program_block_deleted=block_deleted
+            self._program_block_policy=block_policy
+            self._program_stage_guard=stage_guard
+
+    @contextmanager
+    def _locked_workspace(self,stage_id:str,ws:StageWorkspace)->Iterator[None]:
+        program_lock=(
+            None if self._program_lock_resolver is None
+            else self._program_lock_resolver(str(stage_id))
+        )
+        if program_lock is None:
+            with ws.lock: yield
+        else:
+            with program_lock:
+                if self._program_stage_guard is not None:
+                    self._program_stage_guard(str(stage_id))
+                with ws.lock: yield
+
+    def _register_workspace(self,workspace:StageWorkspace)->None:
+        stage_id=str(workspace.snapshot.stage_id)
+        with self._guard:
+            existing=self._workspaces.get(stage_id)
+            if existing is not None and existing is not workspace:
+                raise HallConflict("A Stage munkapéldánya már létezik.")
+            self._workspaces[stage_id]=workspace
 
     def ensure(self,hall:dict[str,Any])->dict[str,Any]:
         stage=self.repository.ensure_stage(hall)
@@ -254,11 +299,13 @@ class StageService:
 
     def place(self,stage_id:str,payload:dict[str,Any])->dict[str,Any]:
         ws=self._workspace(stage_id)
-        with ws.lock:
+        with self._locked_workspace(stage_id,ws):
             self._authorize(ws,str(payload["player_uuid"]))
             type_key=str(payload.get("type_key","")).upper()
             types={str(t["type_key"]):t for t in self.repository.list_block_types()}
             if type_key not in types: raise HallValidationError("Ismeretlen CK-elemtípus.")
+            if self._program_block_policy is not None:
+                self._program_block_policy(str(stage_id),type_key)
             rel=self._relative(ws.stage,int(payload["x"]),int(payload["y"]),int(payload["z"]))
             if any((b.position.x,b.position.y,b.position.z)==rel for b in ws.snapshot.blocks):
                 raise HallConflict("Ezen a stage-pozíción már van programelem.")
@@ -276,7 +323,7 @@ class StageService:
 
     def update(self,stage_id:str,instance_id:str,payload:dict[str,Any])->dict[str,Any]:
         ws=self._workspace(stage_id)
-        with ws.lock:
+        with self._locked_workspace(stage_id,ws):
             self._authorize(ws,str(payload["player_uuid"]));block=self._find(ws,instance_id)
             updated=block
             if "label" in payload:
@@ -296,7 +343,7 @@ class StageService:
 
     def delete(self,stage_id:str,instance_id:str,payload:dict[str,Any])->dict[str,Any]:
         ws=self._workspace(stage_id)
-        with ws.lock:
+        with self._locked_workspace(stage_id,ws):
             self._authorize(ws,str(payload["player_uuid"]));block=self._find(ws,instance_id)
             removed_edges=tuple(
                 edge for edge in ws.snapshot.edges
@@ -311,6 +358,8 @@ class StageService:
                     and (route.target_port is None or route.target_port.instance_id!=block.instance_id)
                 )
             )
+            if self._program_block_deleted is not None:
+                self._program_block_deleted(str(stage_id),block.instance_id,block.type_key)
             ws.snapshot=ws.snapshot.with_content_change(
                 blocks=tuple(item for item in ws.snapshot.blocks if item.instance_id!=block.instance_id),
                 edges=removed_edges,routes=removed_routes,
@@ -319,8 +368,12 @@ class StageService:
             return self.view(ws)
 
     def save(self,stage_id:str,payload:dict[str,Any])->dict[str,Any]:
+        if self._program_save_delegate is not None:
+            delegated=self._program_save_delegate(str(stage_id),payload)
+            if delegated is not None:
+                return delegated
         ws=self._workspace(stage_id)
-        with ws.lock:
+        with self._locked_workspace(stage_id,ws):
             self._authorize(ws,str(payload["player_uuid"]))
             self._check_client_version(ws,payload)
             if ws.graph_snapshot_version==0:
@@ -345,7 +398,7 @@ class StageService:
 
     def rebuild(self,stage_id:str,payload:dict[str,Any])->dict[str,Any]:
         ws=self._workspace(stage_id)
-        with ws.lock:
+        with self._locked_workspace(stage_id,ws):
             self._authorize(ws,str(payload["player_uuid"]))
             self._check_client_version(ws,payload)
             if ws.dirty and not bool(payload.get("confirm_discard")):
@@ -376,7 +429,7 @@ class StageService:
     )->dict[str,Any]:
         """Execute one domain operation and atomically swap the resulting snapshot."""
         ws=self._workspace(stage_id)
-        with ws.lock:
+        with self._locked_workspace(stage_id,ws):
             self._authorize(ws,str(payload["player_uuid"]))
             if not ws.compatible_for_graph_mutation:
                 raise SnapshotCompatibilityError(
@@ -424,7 +477,7 @@ class StageService:
     def read_graph_context(self,stage_id:str,player_uuid:str)->StageGraphContext:
         """Return an immutable graph snapshot without changing workspace content."""
         ws=self._workspace(stage_id)
-        with ws.lock:
+        with self._locked_workspace(stage_id,ws):
             self._authorize(ws,str(player_uuid))
             snapshot=ws.snapshot
             ox,oy,oz=self._origin(ws.stage)

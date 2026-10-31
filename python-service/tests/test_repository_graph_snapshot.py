@@ -22,6 +22,7 @@ from hangar.graph import (
 )
 from hangar.repository import (
     HallRepository,
+    LegacyStageSaveBlocked,
     SnapshotCompatibilityError,
     SnapshotStorageError,
     StageVersionConflict,
@@ -174,10 +175,12 @@ def persisted_stage(port_version=PORT_CATALOG_VERSION):
 
 
 class RecordingCursor:
-    def __init__(self, select_row=(4, 0), fail_on=None):
+    def __init__(self, select_row=(4, 0), fail_on=None, program_version=0):
         self.select_row = select_row
         self.fail_on = fail_on
+        self.program_version = program_version
         self.calls = []
+        self.current = select_row
 
     def __enter__(self):
         return self
@@ -188,11 +191,19 @@ class RecordingCursor:
     def execute(self, sql, params=None):
         normalized = " ".join(sql.split())
         self.calls.append((normalized, params))
+        if normalized.startswith("SELECT to_regclass"):
+            self.current = ("blockcommander.programs",)
+        elif normalized.startswith("SELECT program_id FROM blockcommander.stages"):
+            self.current = ("00000000-0000-0000-0000-000000007099",)
+        elif normalized.startswith("SELECT saved_version FROM blockcommander.programs"):
+            self.current = (self.program_version,)
+        else:
+            self.current = self.select_row
         if self.fail_on and self.fail_on in normalized:
             raise RuntimeError("injected unit-test failure")
 
     def fetchone(self):
-        return self.select_row
+        return self.current
 
 
 class RecordingConnection:
@@ -433,6 +444,13 @@ class RepositoryGraphSnapshotUnitTest(unittest.TestCase):
         cursor = RecordingCursor((5, 1))
         repository = HallRepository(connect=lambda: RecordingConnection(cursor))
         with self.assertRaises(StageVersionConflict):
+            repository.save_full_stage_snapshot(str(STAGE_ID), 4, full_snapshot())
+        self.assertFalse(any(call[0].startswith("DELETE") for call in cursor.calls))
+
+    def test_direct_stage_save_is_fenced_after_first_program_save(self):
+        cursor = RecordingCursor((4, 1), program_version=1)
+        repository = HallRepository(connect=lambda: RecordingConnection(cursor))
+        with self.assertRaises(LegacyStageSaveBlocked):
             repository.save_full_stage_snapshot(str(STAGE_ID), 4, full_snapshot())
         self.assertFalse(any(call[0].startswith("DELETE") for call in cursor.calls))
 
