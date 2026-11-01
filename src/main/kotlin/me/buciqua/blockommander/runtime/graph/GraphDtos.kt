@@ -54,8 +54,8 @@ data class GraphStatuses(
 data class GraphValidation(val revision: Long?, val diagnostics: List<GraphDiagnostic>)
 data class GraphStateSnapshot(
     val stageId: UUID,
-    val hallId: UUID,
-    val worldUuid: UUID,
+    val hallId: UUID?,
+    val worldUuid: UUID?,
     val origin: GraphPosition,
     val size: GraphPosition,
     val workspaceEpoch: UUID,
@@ -245,7 +245,7 @@ object GraphResponseParser {
     }
 
     private fun parseState(obj: JsonObject) = GraphStateSnapshot(
-        obj.requiredUuid("stage_id"), obj.requiredUuid("hall_id"), obj.requiredUuid("world_uuid"),
+        obj.requiredUuid("stage_id"), obj.optionalUuid("hall_id"), obj.optionalUuid("world_uuid"),
         parsePosition(obj.requiredObject("origin")), parsePosition(obj.requiredObject("size")),
         obj.requiredUuid("workspace_epoch"), obj.requiredLong("working_revision"), obj.requiredLong("saved_version"),
         obj.requiredBoolean("dirty"), obj.requiredLong("graph_snapshot_version"),

@@ -8,6 +8,10 @@ import me.buciqua.blockommander.network.SubmitFormPayload
 import me.buciqua.blockommander.runtime.graph.GraphPosition
 import me.buciqua.blockommander.runtime.graph.GraphPlacementIntent
 import me.buciqua.blockommander.runtime.graph.ServerPlayerIdentity
+import me.buciqua.blockommander.runtime.program.MinecraftStageSwitchCommitter
+import me.buciqua.blockommander.runtime.program.NavigationResult
+import me.buciqua.blockommander.runtime.program.NavigationStatus
+import me.buciqua.blockommander.runtime.program.StageNavigationCoordinator
 import me.buciqua.blockommander.runtime.wire.*
 import net.fabricmc.fabric.api.event.player.AttackBlockCallback
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents
@@ -33,6 +37,7 @@ class Interactions(
     private val api: ApiClient,
     private val registry: HallRegistry,
     private val wireCoordinator: () -> WireInteractionCoordinator? = { null },
+    private val stageNavigation: () -> StageNavigationCoordinator? = { null },
 ) {
     private data class Selection(val first: BlockPos, val material: String)
     private val selections = ConcurrentHashMap<UUID, Selection>()
@@ -43,6 +48,11 @@ class Interactions(
                 .requires { source -> source.permissions().hasPermission(Permissions.COMMANDS_ADMIN) }
                 .executes { context ->
                     bindCurrentStage(context.source.playerOrException)
+                    1
+                })
+            dispatcher.register(Commands.literal("ckback")
+                .executes { context ->
+                    navigateBack(context.source.playerOrException)
                     1
                 })
         }
@@ -88,6 +98,10 @@ class Interactions(
                 return@register InteractionResult.SUCCESS
             }
             registry.stageBlockAt(worldUuid, hit.blockPos)?.let { (stage, block) ->
+                if (block.type == "PROGRAM") {
+                    enterProgramBlock(serverPlayer, serverLevel, stage, block)
+                    return@register InteractionResult.SUCCESS
+                }
                 ServerPlayNetworking.send(serverPlayer, OpenFormPayload("block", "${stage.id}|${block.instanceId}", block.label, block.description))
                 return@register InteractionResult.SUCCESS
             }
@@ -111,7 +125,8 @@ class Interactions(
                 val fence = registry.stageUpdateFence(stage.id) ?: return@let
                 val payload = playerPayload(serverPlayer, serverLevel)
                 api.post(serverPlayer, "/api/v1/stages/${stage.id}/blocks/${block.instanceId}/delete", payload) { response ->
-                    registry.updateStage(response.getAsJsonObject("stage"), fence)?.let { WorldRenderer.renderStage(serverLevel, it) }
+                    registry.updateStageFromDomainResponse(response.getAsJsonObject("stage"), fence)
+                        ?.let { WorldRenderer.renderStage(serverLevel, it) }
                 }
                 return@register false
             }
@@ -140,7 +155,8 @@ class Interactions(
                 val body = playerPayload(player, level).apply { addProperty("label", payload.value1); addProperty("description", payload.value2) }
                 val fence = registry.stageUpdateFence(ids[0]) ?: return
                 api.post(player, "/api/v1/stages/${ids[0]}/blocks/${ids[1]}", body) { response ->
-                    registry.updateStage(response.getAsJsonObject("stage"), fence)?.let { WorldRenderer.renderStage(level, it) }
+                    registry.updateStageFromDomainResponse(response.getAsJsonObject("stage"), fence)
+                        ?.let { WorldRenderer.renderStage(level, it) }
                 }
             }
         }
@@ -303,6 +319,56 @@ class Interactions(
         }
     }
 
+    private fun enterProgramBlock(
+        player: ServerPlayer, level: ServerLevel, stage: Stage, block: StageBlock,
+    ) {
+        val hall = registry.hallForStage(stage.id)
+        val navigation = stageNavigation()
+        if (hall == null || navigation == null) {
+            player.sendSystemMessage(Component.literal("§c[CK] A Program-navigáció jelenleg nem érhető el."))
+            return
+        }
+        val blockId = runCatching { UUID.fromString(block.instanceId) }.getOrNull()
+        if (blockId == null) {
+            player.sendSystemMessage(Component.literal("§c[CK] A PROGRAM blokk azonosítója hibás."))
+            return
+        }
+        player.sendSystemMessage(Component.literal("§e[CK] Belépés a gyermek Stage-be…"))
+        navigation.enter(
+            UUID.fromString(hall.id), blockId, ServerPlayerIdentity.from(player),
+            MinecraftStageSwitchCommitter(level, registry),
+        ).thenAccept { result -> level.server.execute { navigationFeedback(player, result) } }
+    }
+
+    private fun navigateBack(player: ServerPlayer) {
+        val level = player.level()
+        val worldUuid = WorldIdentity.uuid(level).toString()
+        val hall = registry.stageAt(worldUuid, player.blockPosition())
+            ?.let { registry.hallForStage(it.id) }
+        val navigation = stageNavigation()
+        if (hall == null || navigation == null) {
+            player.sendSystemMessage(Component.literal("§c[CK] A visszalépéshez állj az aktív Stage területére."))
+            return
+        }
+        navigation.back(
+            UUID.fromString(hall.id), ServerPlayerIdentity.from(player),
+            MinecraftStageSwitchCommitter(level, registry),
+        ).thenAccept { result -> level.server.execute { navigationFeedback(player, result) } }
+    }
+
+    private fun navigationFeedback(player: ServerPlayer, result: NavigationResult) {
+        val message = when (result.status) {
+            NavigationStatus.SUCCESS -> "§a[CK] Stage-váltás kész."
+            NavigationStatus.NO_OP -> "§e[CK] Már a Program root Stage-ében vagy."
+            NavigationStatus.FORBIDDEN -> "§c[CK] Csak a csarnok tulajdonosa navigálhat."
+            NavigationStatus.STALE -> "§e[CK] Egy újabb Stage-váltás megelőzte ezt a kérést."
+            NavigationStatus.UNAVAILABLE -> "§c[CK] A Program szolgáltatás nem érhető el."
+            NavigationStatus.PROJECTION_FAILED -> "§c[CK] A cél-Stage világvetítése nem sikerült; a korábbi Stage maradt aktív."
+            NavigationStatus.REJECTED -> "§c[CK] A Stage-váltás elutasítva: ${result.detail ?: "ismeretlen hiba"}."
+        }
+        player.sendSystemMessage(Component.literal(message))
+    }
+
     private fun refreshSaveSign(level: ServerLevel, stageId: String) {
         level.server.execute {
             val hall = registry.hallForStage(stageId) ?: return@execute
@@ -321,6 +387,7 @@ class Interactions(
             else "§a[CK] A CK Wire állapota reconciliation után helyreállt."
             WireActionStatus.NEEDS_REPAIR -> "§c[CK] A graph mentve, de a világvetítés helyreállítást igényel."
             WireActionStatus.NOT_SYNCED, WireActionStatus.STALE -> "§e[CK] A Stage graph állapota nem aktuális; próbáld újra."
+            WireActionStatus.FORBIDDEN -> "§c[CK] Ezt a Stage-et csak a csarnok tulajdonosa szerkesztheti vagy mentheti."
             WireActionStatus.REJECTED -> "§c[CK] A Python elutasította a CK Wire műveletet: ${result.detail ?: "ismeretlen hiba"}."
         }
         player.sendSystemMessage(Component.literal(message))
@@ -357,12 +424,15 @@ class Interactions(
         val stage = registry.stageAt(worldUuid, target)
         if (stage == null) { player.sendSystemMessage(Component.literal("§c[CK] CK-blokk csak a saját stage területére helyezhető.")); return }
         val payload = playerPayload(player, level).apply {
-            addProperty("type_key", type); addProperty("x", target.x); addProperty("y", target.y); addProperty("z", target.z)
+            addProperty("type_key",type);addProperty("coordinate_space","STAGE_RELATIVE")
+            addProperty("x",target.x-stage.origin.x);addProperty("y",target.y-stage.origin.y)
+            addProperty("z",target.z-stage.origin.z)
             addProperty("orientation", ModContent.placementFacing(type, player.direction).name)
         }
         val fence = registry.stageUpdateFence(stage.id) ?: return
         api.post(player, "/api/v1/stages/${stage.id}/blocks", payload) { response ->
-            registry.updateStage(response.getAsJsonObject("stage"), fence)?.let { WorldRenderer.renderStage(level, it) }
+            registry.updateStageFromDomainResponse(response.getAsJsonObject("stage"), fence)
+                ?.let { WorldRenderer.renderStage(level, it) }
         }
     }
 

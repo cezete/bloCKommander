@@ -25,6 +25,7 @@ felülírást, de az A4 nem vezet be elosztott workspace-koordinációt. A jelen
 | `GET` | `/api/v1/halls/{hall_id}/program` | Aktuális Hall mount és a teljes Program-nézet |
 | `GET` | `/api/v1/programs/{program_id}` | Program identity, root, Stage-ek, linkek, mountok és aggregate állapot |
 | `GET` | `/api/v1/programs/{program_id}/stages/{stage_id}/children` | ACTIVE és RETAINED child-linkek, valamint a child Stage-ek |
+| `GET` | `/api/v1/programs/{program_id}/stages/{stage_id}` | Authoritative relatív Stage-projekció blokkokkal |
 | `POST` | `/api/v1/programs/{program_id}/stages/{stage_id}/children/ensure` | Idempotens child ensure egy PROGRAM blokkhoz |
 | `GET` | `/api/v1/programs/{program_id}/status` | Aggregate dirty, lifecycle, Program- és Stage-verziók |
 | `POST` | `/api/v1/programs/{program_id}/save` | Tulajdonosi, atomi Program-SAVE receipt |
@@ -85,3 +86,11 @@ Az error body mindig tartalmaz `api_version`, `status`, `error_code`, `message`
 Az A4 nem kapcsol Stage-et másik fizikai Hall-területre, nem végez Minecraft
 világprojekciót, és nem valósít meg `switchGeneration` fencinget; ezek az A6/A7
 runtime feladatai.
+
+## A6 kiegészítés: relatív blokklerakás
+
+A Hallhoz közvetlenül nem kötött `PROGRAM_BODY` Stage blokklerakása az explicit
+`coordinate_space: "STAGE_RELATIVE"` mezővel Stage-relatív `x/y/z` értékeket
+fogad. A régi, mező nélküli kérés továbbra is a korábbi világkoordináta-szerződést
+használja. A válasz `rel_x/rel_y/rel_z` mezői hiteles domain-koordináták; a Fabric
+ezeket az aktív Hall fizikai origójára vetíti, a Python-koordináták átírása nélkül.

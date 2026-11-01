@@ -25,11 +25,6 @@ class ProgramHttpPostgreSQLIntegrationTest(unittest.TestCase):
 
     def setUp(self):
         reset_schema();repository().migrate();create_stage()
-        with connect() as conn,conn.cursor() as cur:
-            cur.execute("""INSERT INTO blockcommander.program_block_types(
-                    type_key,display_name,material_name,default_label,
-                    default_description,display_definition)
-                VALUES('PROGRAM','PROGRAM','TEST_MATERIAL','PROGRAM',NULL,'{}'::jsonb)""")
         repository().save_full_stage_snapshot(
             str(STAGE_ID),0,stage_snapshot(STAGE_ID,"root-v1",with_program_block=True),
         )
@@ -73,6 +68,12 @@ class ProgramHttpPostgreSQLIntegrationTest(unittest.TestCase):
         )
         self.assertEqual(ensure.status_code,201)
         child_id=ensure.get_json()["child"]["stage_id"]
+        child_graph=self.client.get(
+            f"/api/v1/stages/{child_id}/graph?player_uuid={OWNER_ID}",
+            headers=self.headers,
+        )
+        self.assertEqual(child_graph.status_code,200)
+        self.assertIsNone(child_graph.get_json()["state"]["hall_id"])
         with connect() as conn,conn.cursor() as cur:
             cur.execute("SELECT count(*) FROM blockcommander.stages WHERE program_id=%s",(str(PROGRAM_ID),))
             self.assertEqual(cur.fetchone()[0],1)
@@ -92,6 +93,31 @@ class ProgramHttpPostgreSQLIntegrationTest(unittest.TestCase):
             cur.execute("""SELECT link_state FROM blockcommander.program_stage_links
                 WHERE program_id=%s AND child_stage_id=%s""",(str(PROGRAM_ID),child_id))
             self.assertEqual(cur.fetchone()[0],"ACTIVE")
+
+        reloaded=create_app(
+            repository=HallRepository(connect=connect),migrate=False,
+            graph_shared_secret=self.SECRET,
+        ).test_client()
+        persisted_graph=reloaded.get(
+            f"/api/v1/stages/{child_id}/graph?player_uuid={OWNER_ID}",
+            headers=self.headers,
+        )
+        self.assertEqual(persisted_graph.status_code,200)
+        state=persisted_graph.get_json()["state"]
+        self.assertEqual(child_id,state["stage_id"])
+        self.assertIsNone(state["hall_id"])
+        self.assertEqual({"x":0,"y":0,"z":0},state["origin"])
+        placed=reloaded.post(
+            f"/api/v1/stages/{child_id}/blocks",
+            json={
+                "player_uuid":str(OWNER_ID),"type_key":"START",
+                "coordinate_space":"STAGE_RELATIVE","x":1,"y":0,"z":1,
+                "orientation":"EAST",
+            },
+        )
+        self.assertEqual(placed.status_code,201)
+        block=placed.get_json()["stage"]["blocks"][0]
+        self.assertEqual((1,0,1),(block["rel_x"],block["rel_y"],block["rel_z"]))
 
 
 if __name__=="__main__":

@@ -325,9 +325,9 @@ class ProgramService:
                     "size_z":int(parent_stage["size_z"]),
                     "saved_version":0,"owner_uuid":workspace.owner_uuid,
                     "world_uuid":parent_stage.get("world_uuid"),
-                    "hall_min_x":parent_stage.get("hall_min_x",0) or 0,
-                    "hall_min_y":parent_stage.get("hall_min_y",0) or 0,
-                    "hall_min_z":parent_stage.get("hall_min_z",0) or 0,
+                    "hall_min_x":None,
+                    "hall_min_y":None,
+                    "hall_min_z":None,
                     "graph_snapshot_version":GRAPH_SNAPSHOT_VERSION,
                     "port_catalog_version":PORT_CATALOG_VERSION,
                 }

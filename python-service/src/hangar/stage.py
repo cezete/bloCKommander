@@ -129,8 +129,8 @@ class StageGraphContext:
     """Immutable, authorized read model for graph application adapters."""
 
     stage_id: uuid.UUID
-    hall_id: str
-    world_uuid: str
+    hall_id: str|None
+    world_uuid: str|None
     origin: GridPos
     size: GridPos
     workspace_epoch: uuid.UUID
@@ -297,6 +297,25 @@ class StageService:
             raise HallValidationError("A programelem csak a stage kijelölt belső területére helyezhető.")
         return rel
 
+    @classmethod
+    def _placement_relative(cls,stage:dict[str,Any],payload:dict[str,Any])->tuple[int,int,int]:
+        coordinate_space=payload.get("coordinate_space")
+        if coordinate_space is None:
+            if stage.get("hall_id") is None:
+                rel=(int(payload["x"]),int(payload["y"]),int(payload["z"]))
+                if not (0<=rel[0]<int(stage["size_x"]) and 0<=rel[1]<int(stage["size_y"])
+                        and 0<=rel[2]<int(stage["size_z"])):
+                    raise HallValidationError("A programelem csak a stage kijelölt belső területére helyezhető.")
+                return rel
+            return cls._relative(stage,int(payload["x"]),int(payload["y"]),int(payload["z"]))
+        if coordinate_space!="STAGE_RELATIVE":
+            raise HallValidationError("Ismeretlen blokk-koordinátatér.")
+        rel=(int(payload["x"]),int(payload["y"]),int(payload["z"]))
+        if not (0<=rel[0]<int(stage["size_x"]) and 0<=rel[1]<int(stage["size_y"])
+                and 0<=rel[2]<int(stage["size_z"])):
+            raise HallValidationError("A programelem csak a stage kijelölt belső területére helyezhető.")
+        return rel
+
     def place(self,stage_id:str,payload:dict[str,Any])->dict[str,Any]:
         ws=self._workspace(stage_id)
         with self._locked_workspace(stage_id,ws):
@@ -306,7 +325,7 @@ class StageService:
             if type_key not in types: raise HallValidationError("Ismeretlen CK-elemtípus.")
             if self._program_block_policy is not None:
                 self._program_block_policy(str(stage_id),type_key)
-            rel=self._relative(ws.stage,int(payload["x"]),int(payload["y"]),int(payload["z"]))
+            rel=self._placement_relative(ws.stage,payload)
             if any((b.position.x,b.position.y,b.position.z)==rel for b in ws.snapshot.blocks):
                 raise HallConflict("Ezen a stage-pozíción már van programelem.")
             orientation=str(payload.get("orientation","SOUTH")).upper()
@@ -480,7 +499,16 @@ class StageService:
         with self._locked_workspace(stage_id,ws):
             self._authorize(ws,str(player_uuid))
             snapshot=ws.snapshot
-            ox,oy,oz=self._origin(ws.stage)
+            mounted=(ws.stage.get("hall_id") is not None,
+                     ws.stage.get("hall_min_x"),ws.stage.get("hall_min_y"),ws.stage.get("hall_min_z"))
+            if mounted[0] and all(value is not None for value in mounted[1:]):
+                ox,oy,oz=self._origin(ws.stage)
+            else:
+                ox,oy,oz=(
+                    int(ws.stage.get("origin_rel_x",0)),
+                    int(ws.stage.get("origin_rel_y",0)),
+                    int(ws.stage.get("origin_rel_z",0)),
+                )
             state=GraphWorkspaceState(
                 stage_id=snapshot.stage_id,
                 nodes=snapshot.graph_nodes(),
@@ -495,8 +523,8 @@ class StageService:
             )
             return StageGraphContext(
                 stage_id=snapshot.stage_id,
-                hall_id=str(ws.stage["hall_id"]),
-                world_uuid=str(ws.stage["world_uuid"]),
+                hall_id=None if ws.stage.get("hall_id") is None else str(ws.stage["hall_id"]),
+                world_uuid=None if ws.stage.get("world_uuid") is None else str(ws.stage["world_uuid"]),
                 origin=GridPos(ox,oy,oz),
                 size=GridPos(
                     int(ws.stage["size_x"]),
@@ -536,7 +564,10 @@ class StageService:
     @classmethod
     def view(cls,ws:StageWorkspace)->dict[str,Any]:
         with ws.lock:
-            s=ws.stage;ox,oy,oz=cls._origin(s)
+            s=ws.stage
+            mounted=(s.get("hall_id") is not None,s.get("hall_min_x"),s.get("hall_min_y"),s.get("hall_min_z"))
+            if mounted[0] and all(value is not None for value in mounted[1:]): ox,oy,oz=cls._origin(s)
+            else: ox,oy,oz=(int(s.get("origin_rel_x",0)),int(s.get("origin_rel_y",0)),int(s.get("origin_rel_z",0)))
             blocks=[]
             for raw in ws.snapshot.blocks:
                 b=raw.as_legacy_dict(ws.snapshot.stage_id)
@@ -548,8 +579,10 @@ class StageService:
                 persistence="FULL"
             else:
                 persistence="READ_ONLY_INCOMPATIBLE"
-            return {"stage_id":str(s["stage_id"]),"hall_id":str(s["hall_id"]),"stage_name":s["stage_name"],
-                    "world_uuid":str(s["world_uuid"]),"origin":{"x":ox,"y":oy,"z":oz},
+            return {"stage_id":str(s["stage_id"]),
+                    "hall_id":None if s.get("hall_id") is None else str(s["hall_id"]),"stage_name":s["stage_name"],
+                    "world_uuid":None if s.get("world_uuid") is None else str(s["world_uuid"]),
+                    "origin":{"x":ox,"y":oy,"z":oz},
                     "size":{"x":int(s["size_x"]),"y":int(s["size_y"]),"z":int(s["size_z"])},
                     "saved_version":ws.saved_version,"working_revision":ws.revision,"dirty":ws.dirty,
                     "workspace_epoch":str(ws.workspace_epoch),"port_catalog_version":ws.snapshot.port_catalog_version,

@@ -176,11 +176,6 @@ class PauseProgramConnection:
 class ProgramSaveIntegrationTest(unittest.TestCase):
     def setUp(self):
         reset_schema();repository().migrate();create_stage()
-        with connect() as conn,conn.cursor() as cur:
-            cur.execute("""INSERT INTO blockcommander.program_block_types(
-                    type_key,display_name,material_name,default_label,
-                    default_description,display_definition)
-                VALUES('PROGRAM','PROGRAM','TEST_MATERIAL','PROGRAM',NULL,'{}'::jsonb)""")
         repository().save_full_stage_snapshot(
             str(STAGE_ID),0,stage_snapshot(STAGE_ID,"root-v1",with_program_block=True)
         )

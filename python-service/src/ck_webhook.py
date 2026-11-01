@@ -9,7 +9,8 @@ from hangar.program import ProgramService
 from hangar.program_http import (
     PROGRAM_API_VERSION, ProgramHttpFailure, link_dto, parse_ensure_request,
     parse_save_request, parse_uuid, program_dto, receipt_dto, stage_dto,
-    success as program_success, translate_error as translate_program_error,
+    stage_projection_dto, success as program_success,
+    translate_error as translate_program_error,
 )
 from hangar.stage import StageService
 from hangar.graph_application import (
@@ -194,6 +195,31 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
                 program_workspace_epoch=workspace_epoch,
                 hierarchy_revision=revision,
                 links=[link_dto(item) for item in links],children=children,
+            ))
+        except Exception as exc:return program_failure(exc)
+
+    @app.get("/api/v1/programs/<program_id>/stages/<stage_id>")
+    def get_program_stage(program_id,stage_id):
+        denied=program_authenticated()
+        if denied is not None:return denied
+        try:
+            normalized_program=parse_uuid(program_id,"program_id")
+            normalized_stage=parse_uuid(stage_id,"stage_id")
+            workspace=programs.load(normalized_program)
+            with workspace.lock:
+                stage_workspace=programs.stage(normalized_program,normalized_stage)
+                projected=stage_projection_dto(
+                    workspace,uuid.UUID(normalized_stage),stage_workspace,
+                )
+                program_epoch=str(workspace.workspace_epoch)
+                program_version=workspace.saved_version
+                hierarchy_revision=workspace.hierarchy_revision
+            return jsonify(program_success(
+                program_id=normalized_program,
+                program_saved_version=program_version,
+                program_workspace_epoch=program_epoch,
+                hierarchy_revision=hierarchy_revision,
+                stage=projected,
             ))
         except Exception as exc:return program_failure(exc)
 

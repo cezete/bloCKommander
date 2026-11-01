@@ -50,6 +50,9 @@ try {
     $programHttpTestFile = Join-Path $PSScriptRoot 'postgres_program_http_integration.py'
     & $python $programHttpTestFile -v
     if ($LASTEXITCODE -ne 0) { throw "Program HTTP PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
+    $programBlockTestFile = Join-Path $PSScriptRoot 'postgres_program_block_integration.py'
+    & $python $programBlockTestFile -v
+    if ($LASTEXITCODE -ne 0) { throw "PROGRAM block PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
 } finally {
     $env:PYTHONPATH = $oldPythonPath
     Remove-Item Env:BLOCKCOMMANDER_TEST_DB_DSN -ErrorAction SilentlyContinue

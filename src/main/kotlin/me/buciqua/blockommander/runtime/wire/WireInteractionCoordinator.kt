@@ -7,7 +7,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
 
 enum class WireAction { PLACE, REMOVE, BIND }
-enum class WireActionStatus { SUCCESS, RECOVERED, REJECTED, NOT_SYNCED, STALE, NEEDS_REPAIR }
+enum class WireActionStatus { SUCCESS, RECOVERED, REJECTED, FORBIDDEN, NOT_SYNCED, STALE, NEEDS_REPAIR }
 enum class WireWorldStatus { SYNCED, NEEDS_REPAIR }
 
 data class WireActionResult(
@@ -24,6 +24,7 @@ class WireInteractionCoordinator(
     private val gateway: GraphGateway,
     private val projector: WireWorldProjector,
     private val mainThread: Executor,
+    private val projectionFence: (WireStageContext) -> Boolean = { true },
     private val requestIdFactory: () -> UUID = UUID::randomUUID,
 ) {
     companion object {
@@ -70,9 +71,15 @@ class WireInteractionCoordinator(
         world: WireWorldAccess,
     ): CompletableFuture<WireActionResult> {
         val requestId = requestIdFactory()
-        return ensureSynced(stage, player).thenCompose { view ->
+        return ensureSynced(stage, player).thenCompose { sync ->
+            val view=sync.view
             if (view == null) return@thenCompose CompletableFuture.completedFuture(
-                WireActionResult(WireAction.BIND, WireActionStatus.NOT_SYNCED, requestId, detail = "GRAPH_NOT_SYNCED"),
+                WireActionResult(
+                    WireAction.BIND,
+                    if (sync.forbidden) WireActionStatus.FORBIDDEN else WireActionStatus.NOT_SYNCED,
+                    requestId,
+                    detail = if (sync.forbidden) "FORBIDDEN" else "GRAPH_NOT_SYNCED",
+                ),
             )
             val command = BindEdgesCommand(
                 requestId, stage.stageId, player, view.stageEpoch, view.stageRevision,
@@ -83,7 +90,7 @@ class WireInteractionCoordinator(
                     outcome.reconciliation?.application is GraphApplyResult.Applied
                 if (!authoritative) {
                     CompletableFuture.completedFuture(WireActionResult(
-                        WireAction.BIND, WireActionStatus.REJECTED, requestId,
+                        WireAction.BIND, if (outcome.transport.isForbidden()) WireActionStatus.FORBIDDEN else WireActionStatus.REJECTED, requestId,
                         detail = transportDetail(outcome.transport), discoveryDiagnostics = discoveryDiagnostics,
                     ))
                 } else {
@@ -123,11 +130,17 @@ class WireInteractionCoordinator(
                 WireActionResult(action, WireActionStatus.REJECTED, requestId, detail = "WIRE_OUTSIDE_STAGE"),
             )
         }
-        return ensureSynced(stage, player).thenCompose { view ->
+        return ensureSynced(stage, player).thenCompose { sync ->
+            val view=sync.view
             if (view == null) {
                 return@thenCompose CompletableFuture.supplyAsync({
                     world.correct(absolutePosition)
-                    WireActionResult(action, WireActionStatus.NOT_SYNCED, requestId, detail = "GRAPH_NOT_SYNCED")
+                    WireActionResult(
+                        action,
+                        if (sync.forbidden) WireActionStatus.FORBIDDEN else WireActionStatus.NOT_SYNCED,
+                        requestId,
+                        detail = if (sync.forbidden) "FORBIDDEN" else "GRAPH_NOT_SYNCED",
+                    )
                 }, mainThread)
             }
             val command = when (action) {
@@ -149,7 +162,7 @@ class WireInteractionCoordinator(
                     CompletableFuture.supplyAsync({
                         world.correct(absolutePosition)
                         WireActionResult(
-                            action, WireActionStatus.REJECTED, requestId,
+                            action, if (outcome.transport.isForbidden()) WireActionStatus.FORBIDDEN else WireActionStatus.REJECTED, requestId,
                             detail = transportDetail(outcome.transport), discoveryDiagnostics = discoveryDiagnostics,
                         )
                     }, mainThread)
@@ -178,12 +191,18 @@ class WireInteractionCoordinator(
         }
     }
 
+    private data class SyncCheck(val view:StageGraphView?,val forbidden:Boolean=false)
+
     private fun ensureSynced(
         stage: WireStageContext,
         player: ServerPlayerIdentity,
-    ): CompletableFuture<StageGraphView?> {
-        current(stage)?.let { return CompletableFuture.completedFuture(it) }
-        return gateway.reconcile(stage.stageId, player).thenApply { current(stage) }
+    ): CompletableFuture<SyncCheck> {
+        current(stage)?.let { return CompletableFuture.completedFuture(SyncCheck(it)) }
+        return gateway.reconcile(stage.stageId, player).thenApply { outcome ->
+            val forbidden=outcome.transport is GraphHttpResult.ApiError &&
+                outcome.transport.response.httpStatus in setOf(401,403)
+            SyncCheck(current(stage),forbidden)
+        }
     }
 
     private fun current(stage: WireStageContext): StageGraphView? = projections.view(stage.stageId)?.takeIf {
@@ -200,6 +219,9 @@ class WireInteractionCoordinator(
         forceRejected: Boolean = false,
         discoveryDiagnostics: List<GraphDiscoveryDiagnostic> = emptyList(),
     ): CompletableFuture<WireActionResult> = CompletableFuture.supplyAsync({
+        if (!projectionFence(stage)) return@supplyAsync WireActionResult(
+            action, WireActionStatus.STALE, requestId, detail = "STAGE_NOT_ACTIVE",
+        )
         val view = current(stage) ?: return@supplyAsync WireActionResult(
             action, WireActionStatus.STALE, requestId, detail = "STAGE_LIFECYCLE_CHANGED",
         )
@@ -248,6 +270,9 @@ class WireInteractionCoordinator(
         is GraphHttpResult.Unavailable -> "TRANSPORT_UNAVAILABLE"
         is GraphHttpResult.Success -> "PROJECTION_REJECTED"
     }
+
+    private fun GraphHttpResult.isForbidden()=this is GraphHttpResult.ApiError &&
+        response.httpStatus in setOf(401,403)
 
     private fun discoveryDiagnostics(result: GraphHttpResult): List<GraphDiscoveryDiagnostic> = when (result) {
         is GraphHttpResult.Success -> result.response.discovery?.diagnostics.orEmpty()

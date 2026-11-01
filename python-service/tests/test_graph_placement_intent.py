@@ -196,6 +196,16 @@ class GraphPlacementIntentTest(unittest.TestCase):
         )
         self.assertEqual((), harness.context().state.edges)
 
+    def test_structural_program_block_is_never_a_wire_endpoint(self):
+        harness = DiscoveryApplicationHarness((("PROGRAM", 0, 0, "EAST"),), ())
+
+        result = place(harness, GridPos(1, 0, 0))
+
+        self.assertEqual(200,result.status_code)
+        self.assertEqual(set(),connections(harness.context().state,GridPos(1,0,0)))
+        self.assertEqual([],result.body["discovery"]["candidates"])
+        self.assertEqual("INCOMPLETE",result.body["discovery"]["components"][0]["status"])
+
     def test_if_three_ports_accept_wire_and_bind_three_control_routes(self):
         harness = DiscoveryApplicationHarness(
             (

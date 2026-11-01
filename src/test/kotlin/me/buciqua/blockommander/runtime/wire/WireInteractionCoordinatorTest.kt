@@ -255,6 +255,24 @@ class WireInteractionCoordinatorTest {
         assertEquals(0, world.setCalls)
     }
 
+    @Test fun `late reconciliation for a no longer active Stage cannot redraw old wire`() {
+        val store = syncedStore(0)
+        val gateway = FakeGraphGateway(store).apply { reconcileSnapshot = wireSnapshot(1) }
+        val world = FakeWireWorld()
+        var active = true
+        val coordinator = WireInteractionCoordinator(
+            store, gateway, WireWorldProjector(), direct,
+            requestIdFactory = { REQUEST_ID }, projectionFence = { active },
+        )
+        active = false
+
+        val result = coordinator.reconcileAndRender(stage, player, world).get(3, TimeUnit.SECONDS)
+
+        assertEquals(WireActionStatus.STALE, result.status)
+        assertEquals("STAGE_NOT_ACTIVE", result.detail)
+        assertEquals(0, world.setCalls)
+    }
+
     @Test fun `break reject preserves wire and success removes it without bind command`() {
         val rejectStore = syncedStore(1, withWire = true)
         val rejecting = FakeGraphGateway(rejectStore).apply { rejectStatus = 422 }

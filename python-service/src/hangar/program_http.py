@@ -140,6 +140,30 @@ def stage_dto(workspace:ProgramWorkspace,stage_id:uuid.UUID)->dict[str,Any]:
     }
 
 
+def stage_projection_dto(
+    workspace:ProgramWorkspace,stage_id:uuid.UUID,stage_workspace
+)->dict[str,Any]:
+    projected=stage_dto(workspace,stage_id)
+    projected["workspace"]={
+        "epoch":str(stage_workspace.workspace_epoch),
+        "working_revision":stage_workspace.revision,
+        "dirty":bool(stage_workspace.dirty),
+    }
+    projected["graph_snapshot_version"]=stage_workspace.graph_snapshot_version
+    projected["port_catalog_version"]=stage_workspace.snapshot.port_catalog_version
+    projected["blocks"]=[{
+        "instance_id":str(block.instance_id),
+        "type_key":block.type_key,
+        "position":{
+            "x":block.position.x,"y":block.position.y,"z":block.position.z,
+        },
+        "orientation":block.orientation.value,
+        "label":block.label,
+        "description":block.description,
+    } for block in stage_workspace.snapshot.blocks]
+    return projected
+
+
 def program_dto(service:ProgramService,workspace:ProgramWorkspace)->dict[str,Any]:
     with workspace.lock:
         aggregate_dirty=service.is_dirty(workspace.program_id)

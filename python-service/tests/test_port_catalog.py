@@ -14,7 +14,7 @@ from hangar.graph import (
 
 class PortCatalogTest(unittest.TestCase):
     def test_catalog_version_is_explicit(self):
-        self.assertEqual(PORT_CATALOG_VERSION, "ck-control-v2")
+        self.assertEqual(PORT_CATALOG_VERSION, "ck-control-v3")
         self.assertEqual(CK_CONTROL_PORT_CATALOG.version, PORT_CATALOG_VERSION)
 
     def test_start_stop_and_if_ports_match_contract(self):
@@ -63,6 +63,10 @@ class PortCatalogTest(unittest.TestCase):
                 CK_CONTROL_PORT_CATALOG[type_key]
             self.assertIs(caught.exception.issue.code, PortCatalogIssueCode.UNSPECIFIED_BLOCK_TYPE)
 
+    def test_program_is_structural_and_has_exactly_zero_ports(self):
+        self.assertIs(CK_CONTROL_PORT_CATALOG.status("PROGRAM"), BlockPortStatus.SPECIFIED)
+        self.assertEqual(CK_CONTROL_PORT_CATALOG["PROGRAM"], ())
+
     def test_unknown_type_has_structured_error(self):
         with self.assertRaises(PortCatalogLookupError) as caught:
             CK_CONTROL_PORT_CATALOG.specification("MISSING")
@@ -70,7 +74,7 @@ class PortCatalogTest(unittest.TestCase):
 
     def test_runtime_catalog_consistency_is_deterministic(self):
         compatible = CK_CONTROL_PORT_CATALOG.check_runtime_types(
-            ["STOP", "IF", "START", "FUN", "FOR"]
+            ["STOP", "IF", "START", "FUN", "FOR", "PROGRAM"]
         )
         self.assertTrue(compatible.compatible)
         self.assertEqual(compatible.issues, ())
@@ -78,11 +82,11 @@ class PortCatalogTest(unittest.TestCase):
         self.assertFalse(mismatch.compatible)
         self.assertEqual(
             tuple(item.type_key for item in mismatch.issues),
-            ("EXTRA", "FOR", "FUN", "IF", "STOP"),
+            ("EXTRA", "FOR", "FUN", "IF", "PROGRAM", "STOP"),
         )
 
     def test_catalog_order_and_specifications_are_immutable(self):
-        self.assertEqual(tuple(CK_CONTROL_PORT_CATALOG), ("IF", "START", "STOP"))
+        self.assertEqual(tuple(CK_CONTROL_PORT_CATALOG), ("IF", "PROGRAM", "START", "STOP"))
         with self.assertRaises(FrozenInstanceError):
             CK_CONTROL_PORT_CATALOG.specifications[0].status = BlockPortStatus.SPECIFIED
 

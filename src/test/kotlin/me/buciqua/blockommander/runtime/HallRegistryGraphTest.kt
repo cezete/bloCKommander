@@ -66,6 +66,21 @@ class HallRegistryGraphTest {
         assertEquals(GraphSyncStatus.STALE, registry.graph(STAGE_ID.toString())!!.status)
     }
 
+    @Test fun `domain relative CRUD response is projected into active Hall coordinates`() {
+        val registry=HallRegistry()
+        registry.install(JsonParser.parseString(hallJson(EPOCH_A,0)).asJsonObject)
+        val fence=registry.stageUpdateFence(STAGE_ID.toString())!!
+        val response=JsonParser.parseString(stageJson(EPOCH_A,1,withBlock=true)).asJsonObject
+        response.add("hall_id",com.google.gson.JsonNull.INSTANCE)
+        response.getAsJsonArray("blocks")[0].asJsonObject.addProperty("x",999)
+
+        val updated=registry.updateStageFromDomainResponse(response,fence)
+
+        assertNotNull(updated)
+        assertEquals(BlockPos(2,1,1),updated!!.stage!!.blocks.single().pos)
+        assertEquals(GraphSyncStatus.STALE,registry.graph(STAGE_ID.toString())!!.status)
+    }
+
     @Test fun `stale revision is rejected instead of returning a renderable old Hall`() {
         val registry = HallRegistry()
         registry.install(JsonParser.parseString(hallJson(EPOCH_A, 5)).asJsonObject)
@@ -215,7 +230,8 @@ class HallRegistryGraphTest {
     private fun stageJson(epoch: UUID, revision: Long, dirty: Boolean = true, withBlock: Boolean = false): String {
         val blocks = if (withBlock) """
           [{"instance_id":"00000000-0000-0000-0000-000000000099","type_key":"START",
-            "x":2,"y":1,"z":1,"orientation":"EAST","label":"START","description":""}]
+            "x":2,"y":1,"z":1,"rel_x":1,"rel_y":0,"rel_z":0,
+            "orientation":"EAST","label":"START","description":""}]
         """.trimIndent() else "[]"
         return """
       {"stage_id":"$STAGE_ID","hall_id":"$HALL_ID","origin":{"x":1,"y":1,"z":1},

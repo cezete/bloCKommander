@@ -61,7 +61,7 @@ class FakeProgramRepository:
         self.types=[
             {"type_key":key,"display_name":key,"material_name":"TEST",
              "default_label":key,"default_description":None,"display_definition":{}}
-            for key in ("START","STOP","PROGRAM","CLASS","INTERFACE")
+            for key in ("START","STOP","IF","FOR","FUN","PROGRAM","CLASS","INTERFACE")
         ]
         self.add_program(PROGRAM,ROOT,mounted_hall=HALL)
 
@@ -222,6 +222,39 @@ class ProgramServiceTest(unittest.TestCase):
         })
         self.assertTrue(self.root.dirty);self.assertTrue(child.dirty)
         self.assertTrue(self.workspace.dirty)
+
+    def test_program_blocks_are_allowed_in_root_and_program_body_and_retain_subtree(self):
+        root_placement=self.stages.place(str(ROOT),{
+            "player_uuid":str(OWNER),"type_key":"PROGRAM",
+            "x":2,"y":0,"z":0,"orientation":"WEST",
+        })
+        root_block=uuid.UUID(next(item["instance_id"] for item in root_placement["blocks"]
+            if item["type_key"]=="PROGRAM" and item["rel_x"]==2))
+        child=self.service.ensure_child(PROGRAM,ROOT,root_block,str(OWNER))
+        body_placement=self.stages.place(str(child.snapshot.stage_id),{
+            "player_uuid":str(OWNER),"type_key":"PROGRAM",
+            "x":3,"y":0,"z":0,"orientation":"SOUTH",
+        })
+        body_block=uuid.UUID(next(item["instance_id"] for item in body_placement["blocks"]
+            if item["type_key"]=="PROGRAM" and item["rel_x"]==3))
+        grandchild=self.service.ensure_child(
+            PROGRAM,child.snapshot.stage_id,body_block,str(OWNER)
+        )
+        grandchild_id=grandchild.snapshot.stage_id
+
+        receipt=self.service.save(PROGRAM,str(OWNER))
+        self.assertIn(root_block,{item.instance_id for item in self.repo.snapshots[ROOT].blocks})
+        self.assertIn(body_block,{item.instance_id for item in self.repo.snapshots[child.snapshot.stage_id].blocks})
+        self.assertIn(grandchild_id,{item.stage_id for item in receipt.stages})
+
+        self.stages.delete(
+            str(child.snapshot.stage_id),str(body_block),{"player_uuid":str(OWNER)}
+        )
+        retained=next(item for item in self.workspace.links
+            if item.program_block_instance_id==body_block)
+        self.assertEqual(retained.link_state,"RETAINED")
+        self.assertIn(grandchild_id,self.workspace.stage_headers)
+        self.assertIn(grandchild_id,self.workspace.stage_workspaces)
 
     def test_first_legacy_mutation_resolves_program_before_stage_lock(self):
         repo=FakeProgramRepository();stages=StageService(repo)

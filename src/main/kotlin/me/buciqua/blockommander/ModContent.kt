@@ -53,6 +53,7 @@ object ModContent {
     val IF: Block = programBlock("if", SoundType.GLASS, CkProgramPortFace.FRONT)
     val FOR: Block = programBlock("for", SoundType.GLASS)
     val FUN: Block = programBlock("fun", SoundType.GLASS)
+    val PROGRAM: Block = programBlock("program", SoundType.GLASS)
     private val wireContent = wire()
     val CK_WIRE: Block = wireContent.first
     val CK_WIRE_ITEM: Item = wireContent.second
@@ -64,13 +65,15 @@ object ModContent {
         .title(Component.literal("bloCKommander"))
         .displayItems { _, output ->
             output.accept(START); output.accept(STOP); output.accept(IF)
-            output.accept(FOR); output.accept(FUN); output.accept(CK_WIRE); output.accept(HANGAR_SWORD)
+            output.accept(FOR); output.accept(FUN); output.accept(PROGRAM)
+            output.accept(CK_WIRE); output.accept(HANGAR_SWORD)
         }.build()
 
     fun initialize() { Registry.register(BuiltInRegistries.CREATIVE_MODE_TAB, tabKey, tab) }
 
     fun typeOf(block: Block): String? = when (block) {
-        START -> "START"; STOP -> "STOP"; IF -> "IF"; FOR -> "FOR"; FUN -> "FUN"; else -> null
+        START -> "START"; STOP -> "STOP"; IF -> "IF"; FOR -> "FOR"; FUN -> "FUN"
+        PROGRAM -> "PROGRAM"; else -> null
     }
 
     fun placementFacing(type: String, playerDirection: Direction): Direction = when (type) {

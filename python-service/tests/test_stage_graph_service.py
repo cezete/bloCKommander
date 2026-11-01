@@ -30,7 +30,7 @@ def runtime_types():
             "default_description": type_key.lower(),
             "display_definition": {},
         }
-        for type_key in ("START", "STOP", "IF", "FOR", "FUN")
+        for type_key in ("START", "STOP", "IF", "FOR", "FUN", "PROGRAM")
     ]
 
 

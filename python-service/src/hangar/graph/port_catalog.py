@@ -10,7 +10,7 @@ from types import MappingProxyType
 from .model import LocalSide, PortDefinition, PortDirection, PortKind
 
 
-PORT_CATALOG_VERSION = "ck-control-v2"
+PORT_CATALOG_VERSION = "ck-control-v3"
 
 
 class BlockPortStatus(str, Enum):
@@ -195,6 +195,8 @@ CK_CONTROL_PORT_CATALOG = VersionedPortCatalog(
                 ),
             ),
         ),
+        # PROGRAM is structural: it deliberately participates in no GraphEdge.
+        BlockPortSpecification("PROGRAM", BlockPortStatus.SPECIFIED, ()),
         BlockPortSpecification("FOR", BlockPortStatus.UNSPECIFIED, ()),
         BlockPortSpecification("FUN", BlockPortStatus.UNSPECIFIED, ()),
     ),

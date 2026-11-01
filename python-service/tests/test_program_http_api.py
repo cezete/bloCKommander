@@ -114,6 +114,89 @@ class ProgramHttpApiTest(unittest.TestCase):
         self.assertEqual(1,self.repo.program_save_calls)
         self.assertEqual(1,self.repo.programs[PROGRAM]["saved_version"])
 
+    def test_program_placement_ensure_and_delete_retains_child(self):
+        placed=self.client.post(
+            f"/api/v1/stages/{ROOT}/blocks",
+            json={
+                "player_uuid":str(OWNER),"type_key":"PROGRAM",
+                "x":4,"y":0,"z":0,"orientation":"NORTH",
+            },
+        )
+        self.assertEqual(201,placed.status_code)
+        instance_id=next(item["instance_id"] for item in placed.get_json()["stage"]["blocks"]
+            if item["type_key"]=="PROGRAM" and item["rel_x"]==4)
+        ensured=self.ensure(block_id=uuid.UUID(instance_id))
+        self.assertEqual(201,ensured.status_code)
+        child_id=ensured.get_json()["child"]["stage_id"]
+
+        deleted=self.client.post(
+            f"/api/v1/stages/{ROOT}/blocks/{instance_id}/delete",
+            json={"player_uuid":str(OWNER)},
+        )
+        self.assertEqual(200,deleted.status_code)
+        workspace=self.programs.load(PROGRAM)
+        link=next(item for item in workspace.links
+            if str(item.program_block_instance_id)==instance_id)
+        self.assertEqual("RETAINED",link.link_state)
+        self.assertIn(uuid.UUID(child_id),workspace.stage_headers)
+
+    def test_authoritative_stage_projection_uses_relative_coordinates_only(self):
+        response=self.client.get(
+            f"/api/v1/programs/{PROGRAM}/stages/{ROOT}",headers=self.headers,
+        )
+        self.assertEqual(200,response.status_code)
+        body=response.get_json();stage=body["stage"]
+        self.assertEqual(str(PROGRAM),body["program_id"])
+        self.assertEqual(str(ROOT),stage["stage_id"])
+        self.assertIsNotNone(stage["workspace"]["epoch"])
+        self.assertEqual({"x":0,"y":0,"z":0},stage["blocks"][0]["position"])
+        serialized=str(stage)
+        self.assertNotIn("world_uuid",serialized)
+        self.assertNotIn("hall_min_",serialized)
+
+    def test_program_body_graph_get_uses_logical_coordinates_without_hall_identity(self):
+        child_id=self.ensure().get_json()["child"]["stage_id"]
+        response=self.client.get(
+            f"/api/v1/stages/{child_id}/graph?player_uuid={OWNER}",headers=self.headers,
+        )
+        self.assertEqual(200,response.status_code)
+        state=response.get_json()["state"]
+        self.assertEqual(child_id,state["stage_id"])
+        self.assertIsNone(state["hall_id"])
+        self.assertEqual({"x":0,"y":0,"z":0},state["origin"])
+        self.assertEqual(0,state["working_revision"])
+
+    def test_program_body_accepts_explicit_stage_relative_block_placement(self):
+        child_id=self.ensure().get_json()["child"]["stage_id"]
+        child=self.programs.stage(PROGRAM,child_id)
+        child.stage["hall_min_x"]=None
+        child.stage["hall_min_y"]=None
+        child.stage["hall_min_z"]=None
+        response=self.client.post(
+            f"/api/v1/stages/{child_id}/blocks",
+            json={
+                "player_uuid":str(OWNER),"type_key":"START",
+                "coordinate_space":"STAGE_RELATIVE","x":2,"y":0,"z":1,
+                "orientation":"EAST",
+            },
+        )
+        self.assertEqual(201,response.status_code)
+        stage=response.get_json()["stage"]
+        self.assertIsNone(stage["hall_id"])
+        placed=stage["blocks"][0]
+        self.assertEqual((2,0,1),(placed["rel_x"],placed["rel_y"],placed["rel_z"]))
+        self.assertTrue(stage["dirty"])
+
+        invalid=self.client.post(
+            f"/api/v1/stages/{child_id}/blocks",
+            json={
+                "player_uuid":str(OWNER),"type_key":"STOP",
+                "coordinate_space":"WORLD_GUESS","x":3,"y":0,"z":1,
+                "orientation":"EAST",
+            },
+        )
+        self.assertEqual(422,invalid.status_code)
+
     def test_owner_only_save_and_cross_program_stage_are_rejected(self):
         self.ensure()
         denied=self.save(owner=uuid.uuid4())

@@ -66,7 +66,7 @@ object WorldRenderer {
                 }
         stage.blocks.forEach {
             val direction = runCatching { Direction.valueOf(it.orientation.uppercase()) }.getOrDefault(Direction.NORTH)
-            level.setBlockAndUpdate(it.pos, block(it.type).defaultBlockState().setValue(HorizontalDirectionalBlock.FACING, direction))
+            level.setBlockAndUpdate(it.pos, programBlock(it.type).defaultBlockState().setValue(HorizontalDirectionalBlock.FACING, direction))
         }
     }
 
@@ -84,9 +84,10 @@ object WorldRenderer {
         level.setBlockAndUpdate(hall.door.above(), upper)
     }
 
-    private fun block(type: String): Block = when (type) {
+    internal fun programBlock(type: String): Block = when (type) {
         "START" -> ModContent.START; "STOP" -> ModContent.STOP; "IF" -> ModContent.IF
-        "FOR" -> ModContent.FOR; "FUN" -> ModContent.FUN; else -> Blocks.BARRIER
+        "FOR" -> ModContent.FOR; "FUN" -> ModContent.FUN; "PROGRAM" -> ModContent.PROGRAM
+        else -> Blocks.BARRIER
     }
 
     private fun renderControl(level: ServerLevel, hall: Hall, control: Control, graphDirty: Boolean? = null) {

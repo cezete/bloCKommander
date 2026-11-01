@@ -7,6 +7,8 @@ import me.buciqua.blockommander.runtime.HallRegistry
 import me.buciqua.blockommander.runtime.Interactions
 import me.buciqua.blockommander.runtime.graph.GraphApiClient
 import me.buciqua.blockommander.runtime.graph.GraphTransportAdapter
+import me.buciqua.blockommander.runtime.program.ProgramApiClient
+import me.buciqua.blockommander.runtime.program.StageNavigationCoordinator
 import me.buciqua.blockommander.runtime.wire.WireInteractionCoordinator
 import me.buciqua.blockommander.runtime.wire.WireWorldProjector
 import me.buciqua.blockommander.network.Networking
@@ -28,7 +30,8 @@ class BlockCommanderMod : ModInitializer {
         ModContent.initialize()
         val registry = HallRegistry()
         val wireCoordinator = AtomicReference<WireInteractionCoordinator?>()
-        val interactions = Interactions(ApiClient(), registry, wireCoordinator::get)
+        val stageNavigation = AtomicReference<StageNavigationCoordinator?>()
+        val interactions = Interactions(ApiClient(), registry, wireCoordinator::get, stageNavigation::get)
         ServerLifecycleEvents.SERVER_STARTED.register { server ->
             val mainThread = Executor(server::execute)
             val transport = GraphTransportAdapter(
@@ -37,10 +40,15 @@ class BlockCommanderMod : ModInitializer {
             graphTransport = transport
             wireCoordinator.set(WireInteractionCoordinator(
                 registry.graphProjections, transport, WireWorldProjector(), mainThread,
+                projectionFence = { stage -> registry.isActiveStage(stage.stageId, stage.workspaceEpoch) },
+            ))
+            stageNavigation.set(StageNavigationCoordinator(
+                registry, ProgramApiClient.fromEnvironment(), transport, mainThread,
             ))
         }
         ServerLifecycleEvents.SERVER_STOPPED.register {
             wireCoordinator.set(null)
+            stageNavigation.set(null)
             graphTransport = null
         }
         Networking.register(interactions)

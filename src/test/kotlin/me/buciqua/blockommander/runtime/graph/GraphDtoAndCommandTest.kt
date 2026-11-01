@@ -26,6 +26,16 @@ class GraphDtoAndCommandTest {
         assertNull(response.discovery)
     }
 
+    @Test fun `unmounted PROGRAM BODY graph accepts nullable physical Hall identity`() {
+        val body=successJson()
+            .replace("\"hall_id\":\"$HALL_ID\"","\"hall_id\":null")
+            .replace("\"world_uuid\":\"$WORLD_ID\"","\"world_uuid\":null")
+        val state=(GraphResponseParser.parse(200,body) as GraphSuccessResponse).state
+        assertNull(state.hallId)
+        assertNull(state.worldUuid)
+        assertEquals(GraphPosition(10,20,30),state.origin)
+    }
+
     @Test fun `versioned discovery preserves components candidates steps and diagnostics`() {
         val componentId = "10101010-1010-1010-1010-101010101010"
         val candidateId = "20202020-2020-2020-2020-202020202020"

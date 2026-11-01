@@ -1,0 +1,1 @@
+{"variants":{"facing=north":{"model":"blockommander:block/program"},"facing=east":{"model":"blockommander:block/program","y":90},"facing=south":{"model":"blockommander:block/program","y":180},"facing=west":{"model":"blockommander:block/program","y":270}}}
