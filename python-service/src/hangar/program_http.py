@@ -182,6 +182,7 @@ def program_dto(service:ProgramService,workspace:ProgramWorkspace)->dict[str,Any
             "mounts":[{
                 "hall_id":str(item["hall_id"]),
                 "program_id":str(workspace.program_id),
+                "working_copy_id":str(item["working_copy_id"]),
                 "current":True,
             } for item in workspace.mounts],
         }

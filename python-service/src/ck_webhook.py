@@ -104,7 +104,9 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
         present={c["kind"] for c in hall.get("controls",[])};missing=[c for c in expected if c["kind"] not in present]
         if missing:
             repo.add_controls(str(hall["hall_id"]),str(hall["world_uuid"]),missing);hall.setdefault("controls",[]).extend(missing)
-        return hall_client_view(hall,with_program_dirty(stages.ensure(hall)))
+        view=hall_client_view(hall,with_program_dirty(stages.ensure(hall)))
+        view.update(repo.resolve_working_copy_context(hall["hall_id"]).as_dict())
+        return view
 
     @app.errorhandler(HallValidationError)
     def validation(exc): return jsonify(status="error",message=str(exc)),422
@@ -162,8 +164,9 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
         try:
             normalized=parse_uuid(hall_id,"hall_id")
             workspace=programs.for_hall(normalized)
+            context=repo.resolve_working_copy_context(normalized,program_id=workspace.program_id)
             return jsonify(program_success(
-                mount={"hall_id":normalized,"program_id":str(workspace.program_id),"current":True},
+                mount={**context.as_dict(),"current":True},
                 program=program_dto(programs,workspace),
             ))
         except Exception as exc:return program_failure(exc)

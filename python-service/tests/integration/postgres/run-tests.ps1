@@ -1,3 +1,7 @@
+param(
+    [ValidateSet('graph','program_model','program_save','program_service','stage_service','program_http','program_block','working_copy')]
+    [string[]]$Suites = @('graph','program_model','program_save','program_service','stage_service','program_http','program_block','working_copy')
+)
 . "$PSScriptRoot\common.ps1"
 Assert-B2TTools
 & "$PSScriptRoot\readiness.ps1"
@@ -10,7 +14,6 @@ if ($localBusy) { throw "Local tunnel port $script:B2TLocalPort is already in us
 $pythonService = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..\..')).Path
 $python = Join-Path $pythonService '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw "Python venv is missing: $python" }
-$testFile = Join-Path $PSScriptRoot 'postgres_graph_integration.py'
 $tunnelArgs = @(
     '-batch', '-agent', '-N', '-P', [string]$script:B2TSshPort,
     '-L', "$script:B2TLocalPort`:127.0.0.1:$script:B2TRemotePort",
@@ -33,26 +36,11 @@ try {
     $env:BLOCKCOMMANDER_TEST_IDENTITY = $script:B2TIdentity
     $env:BLOCKCOMMANDER_TEST_COMPOSE_PROJECT = $script:B2TProject
     $env:BLOCKCOMMANDER_TEST_CONTAINER_ID = $state.containerId
-    & $python $testFile -v
-    if ($LASTEXITCODE -ne 0) { throw "PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
-    $programModelTestFile = Join-Path $PSScriptRoot 'postgres_program_model_integration.py'
-    & $python $programModelTestFile -v
-    if ($LASTEXITCODE -ne 0) { throw "Program model PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
-    $programSaveTestFile = Join-Path $PSScriptRoot 'postgres_program_save_integration.py'
-    & $python $programSaveTestFile -v
-    if ($LASTEXITCODE -ne 0) { throw "Program SAVE PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
-    $programServiceTestFile = Join-Path $PSScriptRoot 'postgres_program_service_integration.py'
-    & $python $programServiceTestFile -v
-    if ($LASTEXITCODE -ne 0) { throw "ProgramService PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
-    $stageServiceTestFile = Join-Path $PSScriptRoot 'postgres_stage_service_integration.py'
-    & $python $stageServiceTestFile -v
-    if ($LASTEXITCODE -ne 0) { throw "StageService PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
-    $programHttpTestFile = Join-Path $PSScriptRoot 'postgres_program_http_integration.py'
-    & $python $programHttpTestFile -v
-    if ($LASTEXITCODE -ne 0) { throw "Program HTTP PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
-    $programBlockTestFile = Join-Path $PSScriptRoot 'postgres_program_block_integration.py'
-    & $python $programBlockTestFile -v
-    if ($LASTEXITCODE -ne 0) { throw "PROGRAM block PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
+    foreach ($suite in $Suites) {
+        $suiteFile = Join-Path $PSScriptRoot "postgres_${suite}_integration.py"
+        & $python $suiteFile -v
+        if ($LASTEXITCODE -ne 0) { throw "$suite PostgreSQL integration suite failed with exit code $LASTEXITCODE." }
+    }
 } finally {
     $env:PYTHONPATH = $oldPythonPath
     Remove-Item Env:BLOCKCOMMANDER_TEST_DB_DSN -ErrorAction SilentlyContinue

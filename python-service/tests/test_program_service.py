@@ -30,6 +30,7 @@ from hangar.repository import (
     StageVersionConflict,
 )
 from hangar.stage import StageService
+from hangar.working_copy import WorkingCopyContext
 
 
 OWNER = uuid.UUID("00000000-0000-0000-0000-000000009001")
@@ -91,12 +92,23 @@ class FakeProgramRepository:
         ) if uuid.UUID(str(row["program_id"]))==pid)
         mounts=tuple(MappingProxyType({"hall_id":str(hall),"program_id":str(pid)})
             for hall,mounted in self.mounts.items() if mounted==pid)
+        mounts=tuple(MappingProxyType({**row,"working_copy_id":str(
+            uuid.uuid5(uuid.UUID(row["hall_id"]),"working-copy"))}) for row in mounts)
         return LoadedProgram(
             MappingProxyType(copy.deepcopy(program)),stages,self.links[pid],mounts
         )
 
     def load_program_for_hall(self,hall_id):
         return self.load_program(self.mounts[uuid.UUID(str(hall_id))])
+
+    def resolve_working_copy_context(self,hall_id,*,program_id=None,working_copy_id=None):
+        hall=uuid.UUID(str(hall_id));pid=self.mounts[hall]
+        context=WorkingCopyContext(hall,pid,uuid.uuid5(hall,"working-copy"))
+        if ((program_id is not None and uuid.UUID(str(program_id))!=pid)
+                or (working_copy_id is not None
+                    and uuid.UUID(str(working_copy_id))!=context.working_copy_id)):
+            raise HallConflict("WorkingCopy identity mismatch")
+        return context
 
     def load_program_for_stage(self,stage_id):
         sid=uuid.UUID(str(stage_id))

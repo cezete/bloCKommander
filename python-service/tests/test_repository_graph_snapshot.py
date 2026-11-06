@@ -238,7 +238,9 @@ class EnsureStageCursor:
     def execute(self, sql, params=None):
         normalized = " ".join(sql.split())
         self.calls.append((normalized, params))
-        if normalized.startswith("SELECT s.*"):
+        if normalized.startswith("SELECT hall_id FROM blockcommander.halls"):
+            self.current = {"hall_id": params[0]}
+        elif normalized.startswith("SELECT s.*"):
             self.current = None
         elif normalized.startswith("INSERT INTO blockcommander.programs"):
             self.current = None
@@ -253,6 +255,8 @@ class EnsureStageCursor:
                 "port_catalog_version": params[-1],
             }
         elif normalized.startswith("INSERT INTO blockcommander.hall_program_mounts"):
+            self.current = None
+        elif normalized.startswith("INSERT INTO blockcommander.working_copies"):
             self.current = None
         else:
             raise AssertionError(normalized)
@@ -344,7 +348,10 @@ class RepositoryGraphSnapshotUnitTest(unittest.TestCase):
             if call[0].startswith("INSERT INTO blockcommander.hall_program_mounts")
         )
         self.assertEqual(stage["program_id"], program_insert[1][0])
-        self.assertEqual((hall["hall_id"], stage["program_id"]), mount_insert[1])
+        self.assertEqual((hall["hall_id"], stage["program_id"]), mount_insert[1][:2])
+        working_copy_insert = next(call for call in cursor.calls
+            if call[0].startswith("INSERT INTO blockcommander.working_copies"))
+        self.assertEqual((mount_insert[1][2],stage["program_id"]),working_copy_insert[1])
         self.assertEqual("ROOT", stage["stage_kind"])
         self.assertEqual(GRAPH_SNAPSHOT_VERSION, stage["graph_snapshot_version"])
         self.assertEqual(PORT_CATALOG_VERSION, stage["port_catalog_version"])

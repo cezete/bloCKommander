@@ -7,6 +7,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from .working_copy import WorkingCopyContext
 
 from .graph.model import (
     CardinalDirection, EdgeKind, EdgeRoute, GraphEdge, GridPos, PortRef,
@@ -583,6 +584,10 @@ class HallRepository:
     def ensure_stage(self,hall:dict[str,Any])->dict[str,Any]:
         """Return the mounted Program root, creating the Program aggregate if absent."""
         with self._connect() as conn,conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Serialize initial Program/WorkingCopy allocation for this Hall.
+            cur.execute("SELECT hall_id FROM blockcommander.halls WHERE hall_id=%s FOR UPDATE",
+                (hall["hall_id"],))
+            if not cur.fetchone(): raise HallNotFound("Nincs ilyen csarnok.")
             cur.execute("""SELECT s.*
                 FROM blockcommander.hall_program_mounts m
                 JOIN blockcommander.programs p ON p.program_id=m.program_id
@@ -611,9 +616,13 @@ class HallRepository:
                     (stage_id,program_id,hall["hall_id"],f"{hall['hall_name']} stage",
                      size_x,size_y,size_z,GRAPH_SNAPSHOT_VERSION,PORT_CATALOG_VERSION))
                 stage=cur.fetchone()
+                working_copy_id=str(uuid.uuid4())
+                cur.execute("""INSERT INTO blockcommander.working_copies
+                    (working_copy_id,program_id) VALUES(%s,%s)""",
+                    (working_copy_id,program_id))
                 cur.execute("""INSERT INTO blockcommander.hall_program_mounts
-                    (hall_id,program_id) VALUES(%s,%s)""",
-                    (hall["hall_id"],program_id))
+                    (hall_id,program_id,working_copy_id) VALUES(%s,%s,%s)""",
+                    (hall["hall_id"],program_id,working_copy_id))
             result=dict(stage)
             result.update({
                 "owner_uuid":hall["owner_uuid"],"world_uuid":hall["world_uuid"],
@@ -733,7 +742,7 @@ class HallRepository:
                 uuid.UUID(str(row["program_block_instance_id"])),
                 uuid.UUID(str(row["child_stage_id"])),str(row["link_state"]),
             ) for row in cur.fetchall())
-            cur.execute("""SELECT hall_id,program_id,created_at,updated_at
+            cur.execute("""SELECT hall_id,program_id,working_copy_id,created_at,updated_at
                 FROM blockcommander.hall_program_mounts
                 WHERE program_id=%s ORDER BY hall_id""",(program_id,))
             mounts=tuple(MappingProxyType(self._row(row)) for row in cur.fetchall())
@@ -745,6 +754,29 @@ class HallRepository:
                 WHERE hall_id=%s""",(hall_id,));row=cur.fetchone()
         if not row: raise HallNotFound("A csarnokhoz nincs program mountolva.")
         return self.load_program(str(row[0]))
+
+    def resolve_working_copy_context(
+        self,hall_id:str|uuid.UUID,*,program_id:str|uuid.UUID|None=None,
+        working_copy_id:str|uuid.UUID|None=None,
+    )->WorkingCopyContext:
+        """Resolve the live DB mount, optionally checking expected identity; no cache."""
+        hall=uuid.UUID(str(hall_id))
+        with self._connect() as conn,conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""SELECT m.hall_id,m.program_id,m.working_copy_id
+                FROM blockcommander.hall_program_mounts m
+                JOIN blockcommander.working_copies w
+                  ON w.program_id=m.program_id AND w.working_copy_id=m.working_copy_id
+                WHERE m.hall_id=%s""",(str(hall),))
+            row=cur.fetchone()
+        if not row: raise HallNotFound("A csarnokhoz nincs WorkingCopy mountolva.")
+        context=WorkingCopyContext(*(uuid.UUID(str(row[key])) for key in (
+            "hall_id","program_id","working_copy_id",
+        )))
+        if ((program_id is not None and context.program_id!=uuid.UUID(str(program_id)))
+                or (working_copy_id is not None
+                    and context.working_copy_id!=uuid.UUID(str(working_copy_id)))):
+            raise HallConflict("A Hall–Program–WorkingCopy kötés eltér a várt azonosságtól.")
+        return context
 
     def load_program_for_stage(self,stage_id:str)->LoadedProgram:
         with self._connect() as conn,conn.cursor() as cur:

@@ -141,6 +141,9 @@ class ProgramHttpApiTest(unittest.TestCase):
         response=self.client.get(f"/api/v1/halls/{HALL}/program",headers=self.headers)
         body=response.get_json();program=body["program"]
         self.assertEqual(200,response.status_code)
+        context=self.repo.resolve_working_copy_context(HALL)
+        self.assertEqual(str(context.working_copy_id),body["mount"]["working_copy_id"])
+        self.assertEqual(body["mount"]["working_copy_id"],program["mounts"][0]["working_copy_id"])
         self.assertEqual("ck-program-v1",body["api_version"])
         self.assertEqual(str(PROGRAM),program["program_id"])
         self.assertEqual(str(ROOT),program["root_stage_id"])

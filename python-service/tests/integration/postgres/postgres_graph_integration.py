@@ -197,11 +197,19 @@ def create_stage(*, with_legacy_block: bool = False) -> None:
                    VALUES(%s,%s,'ROOT',%s,'B2T stage',0,0,0,20,20,20)""",
                 (str(STAGE_ID), str(PROGRAM_ID), str(HALL_ID)),
             )
-            cur.execute(
-                """INSERT INTO blockcommander.hall_program_mounts(hall_id,program_id)
-                   VALUES(%s,%s)""",
-                (str(HALL_ID), str(PROGRAM_ID)),
-            )
+            cur.execute("SELECT to_regclass('blockcommander.working_copies')")
+            if cur.fetchone()[0] is not None:
+                cur.execute("""INSERT INTO blockcommander.working_copies(working_copy_id,program_id)
+                    VALUES(%s,%s)""",(str(UUID(int=7015)),str(PROGRAM_ID)))
+                cur.execute("""INSERT INTO blockcommander.hall_program_mounts(
+                    hall_id,program_id,working_copy_id) VALUES(%s,%s,%s)""",
+                    (str(HALL_ID),str(PROGRAM_ID),str(UUID(int=7015))))
+            else:
+                cur.execute(
+                    """INSERT INTO blockcommander.hall_program_mounts(hall_id,program_id)
+                       VALUES(%s,%s)""",
+                    (str(HALL_ID), str(PROGRAM_ID)),
+                )
         else:
             cur.execute(
                 """INSERT INTO blockcommander.stages(
