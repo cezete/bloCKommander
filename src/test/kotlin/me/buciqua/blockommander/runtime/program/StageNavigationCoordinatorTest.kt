@@ -53,6 +53,20 @@ class StageNavigationCoordinatorTest {
         assertEquals(CHILD,fixture.registry.navigationState(HALL.toString())!!.activeStageId)
     }
 
+    @Test fun `Program dirty survives ROOT CHILD GRANDCHILD even when target Stage is clean`() {
+        val fixture=fixture()
+        fixture.programs.stageDirty=false
+        for (block in listOf(ROOT_BLOCK,CHILD_BLOCK)) {
+            assertEquals(NavigationStatus.SUCCESS,fixture.navigation.enter(
+                HALL,block,player,fixture.committer).get().status)
+            assertFalse(fixture.registry.hall(HALL.toString())!!.stage!!.dirty)
+            assertTrue(fixture.registry.hall(HALL.toString())!!.programDirty)
+        }
+        fixture.programs.aggregateDirty=false
+        assertEquals(NavigationStatus.SUCCESS,fixture.navigation.back(HALL,player,fixture.committer).get().status)
+        assertFalse(fixture.registry.hall(HALL.toString())!!.programDirty)
+    }
+
     @Test fun `ckback at root is safe no-op and non-owner cannot begin switch`() {
         val fixture=fixture()
         val root=fixture.navigation.back(HALL,player,fixture.committer).get()
@@ -92,6 +106,23 @@ class StageNavigationCoordinatorTest {
         assertEquals(NavigationStatus.STALE,first.get(3,TimeUnit.SECONDS).status)
         assertEquals(ROOT,fixture.registry.navigationState(HALL.toString())!!.activeStageId)
         assertEquals(0,fixture.committer.commits)
+    }
+
+    @Test fun `new dirty response during navigation rejects an older clean Program projection`() {
+        val fixture=fixture()
+        fixture.programs.aggregateDirty=false
+        val pending=CompletableFuture<ProgramHttpResult<ProgramStageResponse>>()
+        fixture.programs.pendingStages[CHILD]=pending
+        val navigation=fixture.navigation.enter(HALL,ROOT_BLOCK,player,fixture.committer)
+        val fence=fixture.registry.stageUpdateFenceForHall(HALL.toString())!!
+        val dirty=JsonParser.parseString(hallJson(BlockPos.ZERO)).asJsonObject.getAsJsonObject("stage")
+        dirty.addProperty("program_dirty",true)
+        assertNotNull(fixture.registry.updateStage(dirty,fence))
+        pending.complete(ProgramHttpResult.Success(fixture.programs.stageResponse(CHILD)))
+        assertEquals(NavigationStatus.STALE,navigation.get().status)
+        assertEquals(ROOT,fixture.registry.navigationState(HALL.toString())!!.activeStageId)
+        assertTrue(fixture.registry.hall(HALL.toString())!!.programDirty)
+        assertFalse(fixture.registry.navigationState(HALL.toString())!!.switchInProgress)
     }
 
     @Test fun `relative domain coordinates map into Hall without rewriting projection DTO`() {
@@ -153,7 +184,7 @@ class StageNavigationCoordinatorTest {
             commits++
             val context=prepared.program
             return registry.commitStageSwitch(
-                token,context.programId,context.workspaceEpoch,context.hierarchyRevision,prepared.target,
+                token,context.programId,context.workspaceEpoch,context.hierarchyRevision,prepared.target,prepared.programDirty,
             )!=null
         }
     }
@@ -166,6 +197,8 @@ class StageNavigationCoordinatorTest {
         var failStage=false
         var lastEnsureCreated=false
         var mutationCalls=0
+        var stageDirty=true
+        var aggregateDirty=true
 
         override fun mountedProgram(hallId:UUID)=success(MountedProgramResponse(
             ProgramMount(HALL,PROGRAM,true),snapshot(),
@@ -201,11 +234,11 @@ class StageNavigationCoordinatorTest {
                     CHILD->listOf(block(CHILD_BLOCK,GraphPosition(2,0,1)))
                     else->emptyList()
                 },
-            ),
+            ),aggregateDirty,
         )
         fun summary(stageId:UUID)=ProgramStageSummary(
             stageId,PROGRAM,if(stageId==ROOT) "ROOT" else "PROGRAM_BODY","Stage",stageId==ROOT,0,
-            ProgramStageWorkspace(epoch(stageId),revision(stageId),true),
+            ProgramStageWorkspace(epoch(stageId),revision(stageId),stageDirty),
             ProgramDomainLayout(GraphPosition(1,1,1),GraphPosition(7,5,7)),
             links.filter { it.childStageId==stageId },links.filter { it.parentStageId==stageId },
         )

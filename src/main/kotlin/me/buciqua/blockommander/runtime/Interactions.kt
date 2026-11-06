@@ -12,6 +12,9 @@ import me.buciqua.blockommander.runtime.program.MinecraftStageSwitchCommitter
 import me.buciqua.blockommander.runtime.program.NavigationResult
 import me.buciqua.blockommander.runtime.program.NavigationStatus
 import me.buciqua.blockommander.runtime.program.StageNavigationCoordinator
+import me.buciqua.blockommander.runtime.program.ProgramApiClient
+import me.buciqua.blockommander.runtime.program.ProgramGateway
+import me.buciqua.blockommander.runtime.program.ProgramHttpResult
 import me.buciqua.blockommander.runtime.wire.*
 import net.fabricmc.fabric.api.event.player.AttackBlockCallback
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents
@@ -38,6 +41,7 @@ class Interactions(
     private val registry: HallRegistry,
     private val wireCoordinator: () -> WireInteractionCoordinator? = { null },
     private val stageNavigation: () -> StageNavigationCoordinator? = { null },
+    private val programs: ProgramGateway = ProgramApiClient.fromEnvironment(),
 ) {
     private data class Selection(val first: BlockPos, val material: String)
     private val selections = ConcurrentHashMap<UUID, Selection>()
@@ -370,11 +374,22 @@ class Interactions(
         player.sendSystemMessage(Component.literal(message))
     }
 
-    private fun refreshSaveSign(level: ServerLevel, stageId: String, overrideDirty: Boolean? = null) {
+    private fun refreshSaveSign(level: ServerLevel, stageId: String) {
         level.server.execute {
             val hall = registry.hallForStage(stageId) ?: return@execute
-            val dirty = overrideDirty ?: registry.saveDirty(stageId) ?: return@execute
-            WorldRenderer.renderSaveState(level, hall, dirty)
+            val fence = registry.beginProgramStatus(hall.id)
+            val current = registry.hall(hall.id) ?: return@execute
+            WorldRenderer.renderSaveState(level, current, current.programDirty)
+            if (fence == null) return@execute
+            programs.mountedProgram(UUID.fromString(hall.id)).thenAccept { result ->
+                level.server.execute {
+                    if (result is ProgramHttpResult.Success) {
+                        registry.applyProgramStatus(fence, result.value)?.let { updated ->
+                            WorldRenderer.renderSaveState(level, updated, updated.programDirty)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -454,11 +469,12 @@ class Interactions(
                     registry.updateStageAfterSave(response.getAsJsonObject("stage"), fence)?.let { hall ->
                         WorldRenderer.renderStage(level, hall)
                         hall.stage?.let { savedStage ->
+                            val savedFence = registry.saveFenceForHall(hall.id) ?: return@let
                             reconcileGraphAndWire(player, level, savedStage) {
-                                registry.isSaveFenceCurrent(fence)
+                                registry.isSaveFenceCurrent(savedFence)
                             }.thenAccept {
                                 level.server.execute {
-                                    if (registry.isSaveFenceCurrent(fence)) {
+                                    if (registry.isSaveFenceCurrent(savedFence)) {
                                         registry.saveDirty(savedStage.id)?.let { dirty ->
                                             WorldRenderer.renderSaveState(level, hall, dirty)
                                         }

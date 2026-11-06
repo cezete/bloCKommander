@@ -67,6 +67,7 @@ data class ProgramStageResponse(
     val programWorkspaceEpoch: UUID,
     val hierarchyRevision: Long,
     val stage: ProgramStageProjection,
+    val aggregateDirty: Boolean = true,
 )
 data class ChildEnsureResponse(
     val programId: UUID,
@@ -106,6 +107,7 @@ object ProgramResponseParser {
         ProgramStageResponse(
             programId,root.requiredLong("program_saved_version"),
             root.requiredUuid("program_workspace_epoch"),root.requiredLong("hierarchy_revision"),stage,
+            root.requiredBoolean("aggregate_dirty"),
         )
     }
 

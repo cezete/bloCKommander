@@ -158,15 +158,14 @@ class CkWireAssetsTest {
         assertTrue(source.contains("reconcileGraphAndWire = { stage ->"))
     }
 
-    @Test fun `save sign accepts only lifecycle-current synchronized graph dirty state`() {
+    @Test fun `save sign uses authoritative Program state instead of graph dirty`() {
         val interactions = Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/Interactions.kt"))
         val registry = Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/HallRegistry.kt"))
         val renderer = Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/WorldRenderer.kt"))
-        assertTrue(interactions.contains("registry.saveDirty(stageId)"))
-        assertTrue(registry.contains("GraphSyncStatus.SYNCED"))
-        assertTrue(registry.contains("graph.stageEpoch == stage.workspaceEpoch"))
-        assertTrue(interactions.contains("WorldRenderer.renderSaveState(level, hall, dirty)"))
-        assertTrue(renderer.contains("if (graphDirty ?: (hall.stage?.dirty == true))"))
+        assertTrue(interactions.contains("registry.applyProgramStatus(fence, result.value)"))
+        assertTrue(registry.contains("hallForStage(stageId)?.programDirty"))
+        assertTrue(renderer.contains("renderSaveState(level, hall, hall.programDirty)"))
+        assertTrue(renderer.contains("if (graphDirty ?: hall.programDirty)"))
     }
 
     @Test fun `wire interactions cancel vanilla placement and break paths`() {

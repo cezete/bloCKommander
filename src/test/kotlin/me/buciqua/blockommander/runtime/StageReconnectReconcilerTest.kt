@@ -105,7 +105,7 @@ class StageReconnectReconcilerTest {
        "max_x":12,"max_y":8,"max_z":12,"door":{"x":0,"y":1,"z":1},"orientation":"NORTH",
        "controls":[{"kind":"SAVE_SIGN","x":0,"y":2,"z":2}],
        "stage":{"stage_id":"$STAGE_ID","hall_id":"$HALL_ID","origin":{"x":1,"y":1,"z":1},
-       "size":{"x":11,"y":6,"z":11},"dirty":$dirty,"workspace_epoch":"$epoch",
+       "size":{"x":11,"y":6,"z":11},"dirty":$dirty,"program_dirty":$dirty,"workspace_epoch":"$epoch",
        "working_revision":$revision,"blocks":$blocks}}
     """.trimIndent()).asJsonObject
 

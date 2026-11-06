@@ -3,6 +3,8 @@ package me.buciqua.blockommander.runtime
 import com.google.gson.JsonObject
 import me.buciqua.blockommander.runtime.graph.GraphProjectionStore
 import me.buciqua.blockommander.runtime.graph.StageGraphView
+import me.buciqua.blockommander.runtime.program.MountedProgramResponse
+import me.buciqua.blockommander.runtime.program.ProgramWorkspaceState
 import net.minecraft.core.BlockPos
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -17,13 +19,16 @@ data class Stage(val id: String, val origin: BlockPos, val sizeX: Int, val sizeY
         pos.y in origin.y until origin.y + sizeY && pos.z in origin.z until origin.z + sizeZ
 }
 data class StageUpdateFence(val hallId: String, val stageId: String, val workspaceEpoch: UUID,
-                            val workingRevision: Long, val navigationGeneration: Long? = null)
+                            val workingRevision: Long, val navigationGeneration: Long? = null,
+                            val programStatusGeneration: Long? = null)
 data class StageSwitchToken(
     val hallId: String,
     val generation: Long,
     val sourceStageId: UUID,
     val ownerUuid: UUID,
+    val programStatusGeneration: Long,
 )
+data class ProgramStatusFence(val stage: StageUpdateFence, val generation: Long)
 data class HallNavigationState(
     val hallId: UUID,
     val mountedProgramId: UUID?,
@@ -37,7 +42,7 @@ data class HallNavigationState(
 data class Hall(val id: String, val name: String, val ownerUuid: String, val ownerName: String,
                 val worldUuid: String, val material: String,
                 val min: BlockPos, val max: BlockPos, val door: BlockPos, val orientation: String,
-                val controls: List<Control>, val stage: Stage?) {
+                val controls: List<Control>, val stage: Stage?, val programDirty: Boolean = true) {
     fun contains(pos: BlockPos) = pos.x in min.x..max.x && pos.y in min.y..max.y && pos.z in min.z..max.z
 }
 
@@ -46,12 +51,46 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
 
     private val halls = ConcurrentHashMap<String, Hall>()
     private val navigation = ConcurrentHashMap<String, HallNavigationState>()
+    private val programStatusGenerations = ConcurrentHashMap<String, Long>()
+
+    private fun invalidateProgramStatus(hallId: String): Long =
+        programStatusGenerations.merge(hallId, 1L, Long::plus)!!
+
+    @Synchronized
+    fun beginProgramStatus(hallId: String): ProgramStatusFence? {
+        val fence = saveFenceForHall(hallId) ?: return null
+        // Unknown while refreshing: only Python may confirm clean.
+        halls.computeIfPresent(hallId) { _, hall -> hall.copy(programDirty = true) }
+        val generation = invalidateProgramStatus(hallId)
+        val currentFence = fence.copy(programStatusGeneration = generation)
+        if (!isSaveFenceCurrent(currentFence)) return null
+        return ProgramStatusFence(currentFence, generation)
+    }
+
+    @Synchronized
+    fun applyProgramStatus(fence: ProgramStatusFence, response: MountedProgramResponse): Hall? {
+        val stage = fence.stage
+        if (programStatusGenerations[stage.hallId] != fence.generation || !isSaveFenceCurrent(stage)) return null
+        val hall = halls[stage.hallId] ?: return null
+        val program = response.program
+        val state = navigation[stage.hallId] ?: return null
+        val workspace = program.stages.singleOrNull { it.stageId.toString() == stage.stageId }?.workspace
+            ?: return null
+        if (response.mount.hallId.toString() != hall.id || !response.mount.current ||
+            response.mount.programId != program.programId || program.ownerUuid.toString() != hall.ownerUuid ||
+            workspace.epoch != stage.workspaceEpoch || workspace.workingRevision != stage.workingRevision ||
+            (state.mountedProgramId != null && state.mountedProgramId != program.programId) ||
+            (state.programWorkspaceEpoch != null && state.programWorkspaceEpoch != program.workspaceEpoch)) return null
+        return hall.copy(programDirty = program.aggregateDirty ||
+            program.workspaceState != ProgramWorkspaceState.ACTIVE).also { halls[hall.id] = it }
+    }
 
     @Synchronized
     fun install(json: JsonObject): Hall {
         val hall = parseHall(json)
         val stage = hall.stage
         val previous = halls.put(hall.id, hall)
+        invalidateProgramStatus(hall.id)
         if (previous?.stage?.id != null && previous.stage.id != stage?.id) {
             graphProjections.remove(UUID.fromString(previous.stage.id))
         }
@@ -78,7 +117,7 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
             json.getAsJsonArray("controls").map {
                 val c = it.asJsonObject
                 Control(hallId, c["kind"].asString, BlockPos(c["x"].asInt, c["y"].asInt, c["z"].asInt))
-            }, stage)
+            }, stage, json.getAsJsonObject("stage")?.get("program_dirty")?.asBoolean ?: true)
     }
 
     fun stageUpdateFence(stageId: String): StageUpdateFence? = halls.values
@@ -94,7 +133,8 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
     fun saveFenceForHall(hallId: String): StageUpdateFence? {
         val fence = stageUpdateFenceForHall(hallId) ?: return null
         val stage = halls[hallId]?.stage ?: return null
-        return fence.copy(workingRevision = currentRevision(stage))
+        return fence.copy(workingRevision = currentRevision(stage),
+            programStatusGeneration = programStatusGenerations[hallId])
     }
 
     private fun currentRevision(stage: Stage): Long {
@@ -108,6 +148,8 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
         val stage = halls[fence.hallId]?.stage ?: return false
         val state = navigation[fence.hallId] ?: return false
         return !state.switchInProgress && state.switchGeneration == fence.navigationGeneration &&
+            (fence.programStatusGeneration == null ||
+                programStatusGenerations[fence.hallId] == fence.programStatusGeneration) &&
             stage.id == fence.stageId && stage.workspaceEpoch == fence.workspaceEpoch &&
             currentRevision(stage) == fence.workingRevision
     }
@@ -138,6 +180,7 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
         }
 
         halls[incoming.id] = incoming
+        invalidateProgramStatus(incoming.id)
         graphProjections.authoritativeStageReconciliation(
             UUID.fromString(incomingStage.id), incomingStage.workspaceEpoch, incomingStage.workingRevision,
         )
@@ -145,16 +188,7 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
     }
 
     fun saveDirty(stageId: String): Boolean? {
-        val hall = hallForStage(stageId) ?: return null
-        val stage = hall.stage ?: return null
-        val graph = graph(stageId)
-        val synchronizedSnapshot = graph?.snapshot?.takeIf {
-            graph.status == me.buciqua.blockommander.runtime.graph.GraphSyncStatus.SYNCED &&
-                graph.stageEpoch == stage.workspaceEpoch &&
-                it.workspaceEpoch == stage.workspaceEpoch &&
-                it.workingRevision >= stage.workingRevision
-        }
-        return synchronizedSnapshot?.dirty ?: stage.dirty
+        return hallForStage(stageId)?.programDirty
     }
 
     @Synchronized
@@ -166,11 +200,12 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
             UUID.fromString(hallId),null,UUID.fromString(stage.id),0,false,null,null,null,
         )
         val generation=previous.switchGeneration+1
+        val statusGeneration = invalidateProgramStatus(hallId)
         navigation[hallId]=previous.copy(
             activeStageId=UUID.fromString(stage.id),switchGeneration=generation,
             switchInProgress=true,pendingStageId=null,
         )
-        return StageSwitchToken(hallId,generation,UUID.fromString(stage.id),playerUuid)
+        return StageSwitchToken(hallId,generation,UUID.fromString(stage.id),playerUuid,statusGeneration)
     }
 
     @Synchronized
@@ -181,6 +216,7 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
         val state=navigation[token.hallId] ?: return false
         val hall=halls[token.hallId] ?: return false
         if (!state.switchInProgress || state.switchGeneration!=token.generation ||
+            programStatusGenerations[token.hallId]!=token.programStatusGeneration ||
             state.activeStageId!=token.sourceStageId || hall.stage?.id!=token.sourceStageId.toString() ||
             (state.mountedProgramId!=null && state.mountedProgramId!=programId)) return false
         navigation[token.hallId]=state.copy(
@@ -197,6 +233,7 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
     ):Boolean {
         val state=navigation[token.hallId] ?: return false
         return state.switchInProgress && state.switchGeneration==token.generation &&
+            programStatusGenerations[token.hallId]==token.programStatusGeneration &&
             state.activeStageId==token.sourceStageId && state.mountedProgramId==programId &&
             state.pendingStageId==targetStageId && state.programWorkspaceEpoch==programEpoch &&
             state.hierarchyRevision==hierarchyRevision
@@ -205,13 +242,14 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
     @Synchronized
     fun commitStageSwitch(
         token:StageSwitchToken,programId:UUID,programEpoch:UUID,
-        hierarchyRevision:Long,target:Stage,
+        hierarchyRevision:Long,target:Stage,programDirty:Boolean = true,
     ):Hall? {
         val targetId=UUID.fromString(target.id)
         if (!isStageSwitchCurrent(token,programId,targetId,programEpoch,hierarchyRevision)) return null
         val hall=halls[token.hallId] ?: return null
         if (hall.stage?.id!=token.sourceStageId.toString()) return null
-        val updated=hall.copy(stage=target)
+        val updated=hall.copy(stage=target,programDirty=programDirty)
+        invalidateProgramStatus(hall.id)
         halls[token.hallId]=updated
         navigation[token.hallId]=navigation.getValue(token.hallId).copy(
             activeStageId=targetId,switchInProgress=false,pendingStageId=null,
@@ -293,7 +331,8 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
                 currentStage.workingRevision == fence.workingRevision
             if (!fenceStillCurrent) return null
 
-            val updated = hall.copy(stage = stage)
+            val updated = hall.copy(stage = stage, programDirty = stageJson["program_dirty"]?.asBoolean ?: true)
+            invalidateProgramStatus(hall.id)
             halls[updated.id] = updated
             graphProjections.authoritativeStageReload(
                 stageUuid, stage.workspaceEpoch, stage.workingRevision,
@@ -305,7 +344,8 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
         val projectedRevision = projection?.stageRevision ?: -1
         if (stage.workingRevision < maxOf(currentStage.workingRevision, projectedRevision)) return null
 
-        val updated = hall.copy(stage = stage)
+        val updated = hall.copy(stage = stage, programDirty = stageJson["program_dirty"]?.asBoolean ?: true)
+        invalidateProgramStatus(hall.id)
         halls[updated.id] = updated
         if (kind == StageResponseKind.SAVE) {
             graphProjections.authoritativeStageReconciliation(

@@ -112,7 +112,7 @@ class ProgramApiClientTest {
     """.trimIndent()
     private fun stageJson()="""
       {"api_version":"ck-program-v1","status":"ok","program_id":"$PROGRAM","program_saved_version":1,
-       "program_workspace_epoch":"$PROGRAM_EPOCH","hierarchy_revision":2,
+       "program_workspace_epoch":"$PROGRAM_EPOCH","hierarchy_revision":2,"aggregate_dirty":true,
        "stage":${summaryJson(CHILD,"PROGRAM_BODY",false).dropLast(1)},
          "graph_snapshot_version":1,"port_catalog_version":"ck-control-v3",
          "blocks":[{"instance_id":"$BLOCK","type_key":"PROGRAM","position":{"x":2,"y":0,"z":1},

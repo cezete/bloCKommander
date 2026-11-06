@@ -23,6 +23,7 @@ data class PreparedStageSwitch(
     val target:Stage,
     val graph:GraphStateSnapshot,
     val program:ProgramSwitchContext,
+    val programDirty:Boolean = true,
 )
 
 interface StageSwitchCommitter {
@@ -75,7 +76,7 @@ object StageProjectionAssembler {
         return PreparedStageSwitch(
             target,graph,ProgramSwitchContext(
                 response.programId,response.programWorkspaceEpoch,response.hierarchyRevision,
-            ),
+            ),response.aggregateDirty,
         )
     }
 }
@@ -205,9 +206,10 @@ class StageNavigationCoordinator(
         registry.failStageSwitch(token)
         return completedFrom(token,NavigationStatus.REJECTED,detail)
     }
-    private fun stale(token:StageSwitchToken,target:UUID?,detail:String)=completed(
-        NavigationStatus.STALE,UUID.fromString(token.hallId),token.sourceStageId,target,detail,
-    )
+    private fun stale(token:StageSwitchToken,target:UUID?,detail:String):CompletableFuture<NavigationResult> {
+        registry.failStageSwitch(token)
+        return completed(NavigationStatus.STALE,UUID.fromString(token.hallId),token.sourceStageId,target,detail)
+    }
     private fun completedFrom(token:StageSwitchToken,status:NavigationStatus,detail:String?)=completed(
         status,UUID.fromString(token.hallId),token.sourceStageId,null,detail,
     )

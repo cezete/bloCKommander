@@ -93,13 +93,18 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
             app.logger.exception("Program API művelet sikertelen",exc_info=exc)
         return jsonify(failure.body()),failure.status_code
 
+    def with_program_dirty(stage):
+        workspace=programs.for_stage(stage["stage_id"])
+        with workspace.lock:
+            return {**stage,"program_dirty":programs.is_dirty(workspace.program_id)}
+
     def enrich(hall):
         bounds={k:int(hall[k]) for k in ("min_x","min_y","min_z","max_x","max_y","max_z")}
         expected=[e.as_record() for e in control_elements(bounds,str(hall["orientation"]),str(hall["owner_name"]),str(hall["hall_name"]))]
         present={c["kind"] for c in hall.get("controls",[])};missing=[c for c in expected if c["kind"] not in present]
         if missing:
             repo.add_controls(str(hall["hall_id"]),str(hall["world_uuid"]),missing);hall.setdefault("controls",[]).extend(missing)
-        return hall_client_view(hall,stages.ensure(hall))
+        return hall_client_view(hall,with_program_dirty(stages.ensure(hall)))
 
     @app.errorhandler(HallValidationError)
     def validation(exc): return jsonify(status="error",message=str(exc)),422
@@ -214,11 +219,13 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
                 program_epoch=str(workspace.workspace_epoch)
                 program_version=workspace.saved_version
                 hierarchy_revision=workspace.hierarchy_revision
+                aggregate_dirty=programs.is_dirty(workspace.program_id)
             return jsonify(program_success(
                 program_id=normalized_program,
                 program_saved_version=program_version,
                 program_workspace_epoch=program_epoch,
                 hierarchy_revision=hierarchy_revision,
+                aggregate_dirty=aggregate_dirty,
                 stage=projected,
             ))
         except Exception as exc:return program_failure(exc)
@@ -300,27 +307,27 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
 
     @app.post("/api/v1/stages/<stage_id>/blocks")
     def place_stage_block(stage_id):
-        stage=stages.place(stage_id,request.get_json(silent=True) or {})
+        stage=with_program_dirty(stages.place(stage_id,request.get_json(silent=True) or {}))
         return jsonify(status="ok",message="Programelem lerakva; a stage még nincs mentve.",stage=stage),201
 
     @app.post("/api/v1/stages/<stage_id>/blocks/<instance_id>")
     def update_stage_block(stage_id,instance_id):
-        stage=stages.update(stage_id,instance_id,request.get_json(silent=True) or {})
+        stage=with_program_dirty(stages.update(stage_id,instance_id,request.get_json(silent=True) or {}))
         return jsonify(status="ok",message="Programelem módosítva; a stage még nincs mentve.",stage=stage)
 
     @app.post("/api/v1/stages/<stage_id>/blocks/<instance_id>/delete")
     def delete_stage_block(stage_id,instance_id):
-        stage=stages.delete(stage_id,instance_id,request.get_json(silent=True) or {})
+        stage=with_program_dirty(stages.delete(stage_id,instance_id,request.get_json(silent=True) or {}))
         return jsonify(status="ok",message="Programelem törölve; a stage még nincs mentve.",stage=stage)
 
     @app.post("/api/v1/stages/<stage_id>/save")
     def save_stage(stage_id):
-        stage=stages.save(stage_id,request.get_json(silent=True) or {})
+        stage=with_program_dirty(stages.save(stage_id,request.get_json(silent=True) or {}))
         return jsonify(status="ok",message=f"Stage mentve (v{stage['saved_version']}).",stage=stage)
 
     @app.post("/api/v1/stages/<stage_id>/rebuild")
     def rebuild_stage(stage_id):
-        stage=stages.rebuild(stage_id,request.get_json(silent=True) or {})
+        stage=with_program_dirty(stages.rebuild(stage_id,request.get_json(silent=True) or {}))
         return jsonify(status="ok",message="A stage a mentett DB-állapotból visszaépült.",stage=stage)
 
     @app.get("/api/v1/stages/<stage_id>/graph")
@@ -376,10 +383,10 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
                     workspace.program_id,str(data["player_uuid"]),
                     target_stage_id=stage_id,client_payload=data,
                 )
-                stage=stages.view(programs.stage(workspace.program_id,stage_id))
+                stage=with_program_dirty(stages.view(programs.stage(workspace.program_id,stage_id)))
         else:
             # Compatibility for older clients: still save the entire Program.
-            ensured=stages.ensure(hall);stage=stages.save(str(ensured["stage_id"]),data)
+            ensured=stages.ensure(hall);stage=with_program_dirty(stages.save(str(ensured["stage_id"]),data))
         return jsonify(status="ok",message=f"Stage mentve (v{stage['saved_version']}).",stage=stage)
 
     @app.get("/api/v1/players/<player_uuid>/halls")

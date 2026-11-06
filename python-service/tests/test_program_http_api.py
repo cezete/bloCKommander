@@ -105,6 +105,35 @@ class ProgramHttpApiTest(unittest.TestCase):
         self.assertTrue(self.programs.load(PROGRAM).hierarchy_dirty)
         self.assertEqual(0,self.repo.programs[PROGRAM]["saved_version"])
 
+    def projected_program_dirty(self,stage_id):
+        response=self.client.get(
+            f"/api/v1/programs/{PROGRAM}/stages/{stage_id}",headers=self.headers)
+        self.assertEqual(200,response.status_code)
+        return response.get_json()["aggregate_dirty"]
+
+    def test_program_dirty_is_independent_of_active_stage_and_includes_new_children(self):
+        child=uuid.UUID(self.ensure().get_json()["child"]["stage_id"])
+        self.assertTrue(self.projected_program_dirty(ROOT))
+        self.assertTrue(self.projected_program_dirty(child))
+        saved=self.save_button(child)
+        self.assertFalse(saved.get_json()["stage"]["program_dirty"])
+        self.assertFalse(self.projected_program_dirty(ROOT))
+        self.assertFalse(self.projected_program_dirty(child))
+        root_ws=self.programs.stage(PROGRAM,ROOT)
+        child_ws=self.programs.stage(PROGRAM,child)
+        root_ws.dirty=True
+        self.assertFalse(child_ws.dirty)
+        self.assertTrue(self.projected_program_dirty(child))
+        self.assertFalse(self.save_button(ROOT).get_json()["stage"]["program_dirty"])
+        child_ws.dirty=True
+        self.assertFalse(root_ws.dirty)
+        self.assertTrue(self.projected_program_dirty(ROOT))
+        self.assertFalse(self.save_button(child).get_json()["stage"]["program_dirty"])
+        self.programs.retain_child(PROGRAM,ROOT,self.program_block,str(OWNER))
+        self.assertFalse(root_ws.dirty)
+        self.assertFalse(child_ws.dirty)
+        self.assertTrue(self.projected_program_dirty(ROOT))
+
     def test_hall_program_and_hierarchy_dto_round_trip(self):
         ensured=self.ensure()
         self.assertEqual(201,ensured.status_code)

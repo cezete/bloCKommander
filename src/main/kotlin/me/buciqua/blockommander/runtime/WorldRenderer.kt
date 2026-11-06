@@ -52,7 +52,7 @@ object WorldRenderer {
     fun renderStage(level: ServerLevel, hall: Hall) {
         val stage = hall.stage ?: return
         renderStageBlocks(level, hall)
-        renderSaveState(level, hall, stage.dirty)
+        renderSaveState(level, hall, hall.programDirty)
     }
 
     fun renderStageBlocks(level: ServerLevel, hall: Hall) {
@@ -108,7 +108,7 @@ object WorldRenderer {
             "DESTROY_SIGN" -> listOf("Csarnok", "megszüntetése", "Tulajdonos", "gombja")
             "SAVE_SIGN" -> listOf(
                 "STAGE", "MENTÉS", "",
-                if (graphDirty ?: (hall.stage?.dirty == true)) "NINCS MENTVE" else "MENTVE",
+                if (graphDirty ?: hall.programDirty) "NINCS MENTVE" else "MENTVE",
             )
             else -> listOf("bloCKommander", "", "", "")
         }

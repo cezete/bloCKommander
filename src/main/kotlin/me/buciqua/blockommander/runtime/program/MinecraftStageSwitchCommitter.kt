@@ -61,15 +61,15 @@ class MinecraftStageSwitchCommitter(
                 ),prepared.graph.workingRevision,prepared.graph,MinecraftWireWorldAccess(level),
             )
             check(wire.complete) { "WIRE_PROJECTION_FAILED" }
-            WorldRenderer.renderSaveState(level,hall,target.dirty)
+            WorldRenderer.renderSaveState(level,hall,prepared.programDirty)
             val committed=registry.commitStageSwitch(
-                token,context.programId,context.workspaceEpoch,context.hierarchyRevision,target,
+                token,context.programId,context.workspaceEpoch,context.hierarchyRevision,target,prepared.programDirty,
             )!=null
             check(committed) { "SWITCH_GENERATION_CHANGED" }
             return true
         } catch (_:Exception) {
             before.forEach { (pos,state) -> level.setBlockAndUpdate(pos,state) }
-            runCatching { WorldRenderer.renderSaveState(level,hall,old.dirty) }
+            runCatching { WorldRenderer.renderSaveState(level,hall,hall.programDirty) }
             registry.failStageSwitch(token)
             return false
         }

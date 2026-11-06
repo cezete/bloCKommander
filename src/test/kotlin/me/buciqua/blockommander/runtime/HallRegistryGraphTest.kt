@@ -2,12 +2,56 @@ package me.buciqua.blockommander.runtime
 
 import com.google.gson.JsonParser
 import me.buciqua.blockommander.runtime.graph.*
+import me.buciqua.blockommander.runtime.program.*
 import net.minecraft.core.BlockPos
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import java.util.UUID
 
 class HallRegistryGraphTest {
+    private fun programStatus(dirty: Boolean, revision: Long = 0): MountedProgramResponse {
+        val summary=ProgramStageSummary(STAGE_ID,EPOCH_B,"ROOT","root",true,0,ProgramStageWorkspace(EPOCH_A,revision,false),
+            ProgramDomainLayout(GraphPosition(1,1,1),GraphPosition(7,5,7)),emptyList(),emptyList())
+        return MountedProgramResponse(ProgramMount(HALL_ID,EPOCH_B,true),ProgramSnapshot(
+            EPOCH_B,PLAYER_ID,STAGE_ID,0,dirty,false,0,EPOCH_A,ProgramWorkspaceState.ACTIVE,
+            listOf(summary),emptyList(),listOf(ProgramMount(HALL_ID,EPOCH_B,true))))
+    }
+
+    @Test fun `late Program clean status and SAVE cannot overwrite newer dirty status`() {
+        val registry=HallRegistry()
+        registry.install(JsonParser.parseString(hallJson(EPOCH_A,4,true)).asJsonObject)
+        val savedFence=registry.saveFenceForHall(HALL_ID.toString())!!
+        val old=registry.beginProgramStatus(HALL_ID.toString())!!
+        val newer=registry.beginProgramStatus(HALL_ID.toString())!!
+        assertNotNull(registry.applyProgramStatus(newer,programStatus(true,4)))
+        assertNull(registry.applyProgramStatus(old,programStatus(false,4)))
+        assertNull(registry.updateStageAfterSave(
+            JsonParser.parseString(stageJson(EPOCH_A,4,false)).asJsonObject,savedFence))
+        assertTrue(registry.saveDirty(STAGE_ID.toString())!!)
+    }
+
+    @Test fun `Program status is authoritative when active Stage is clean and ignores late clean graph`() {
+        val registry=HallRegistry()
+        registry.install(JsonParser.parseString(hallJson(EPOCH_A,0,false)).asJsonObject)
+        val pending=registry.beginProgramStatus(HALL_ID.toString())!!
+        assertTrue(registry.saveDirty(STAGE_ID.toString())!!)
+        assertNotNull(registry.applyProgramStatus(pending,programStatus(true)))
+        val store=registry.graphProjections
+        store.apply(store.begin(STAGE_ID,GraphRequestKind.RECONCILIATION),snapshot(revision=0,dirty=false))
+        assertTrue(registry.saveDirty(STAGE_ID.toString())!!)
+        val clean=registry.beginProgramStatus(HALL_ID.toString())!!
+        assertNotNull(registry.applyProgramStatus(clean,programStatus(false)))
+        assertFalse(registry.saveDirty(STAGE_ID.toString())!!)
+    }
+
+    @Test fun `Program status requested before navigation cannot mark new projection clean`() {
+        val registry=HallRegistry()
+        registry.install(JsonParser.parseString(hallJson(EPOCH_A,0,true)).asJsonObject)
+        val old=registry.beginProgramStatus(HALL_ID.toString())!!
+        switchTo(registry,OTHER_STAGE_ID,false)
+        assertNull(registry.applyProgramStatus(old,programStatus(false)))
+        assertTrue(registry.saveDirty(OTHER_STAGE_ID.toString())!!)
+    }
     @Test fun `HallRegistry preserves envelope and legacy update invalidates graph`() {
         val registry = HallRegistry()
         val hall = registry.install(JsonParser.parseString(hallJson(EPOCH_A, 0)).asJsonObject)
@@ -153,12 +197,12 @@ class HallRegistryGraphTest {
         assertEquals(GraphSyncStatus.NOT_REQUESTED, registry.graph(STAGE_ID.toString())!!.status)
     }
 
-    @Test fun `save dirty ignores a stale graph snapshot from the current lifecycle`() {
+    @Test fun `save dirty ignores graph dirty and uses Python Program state`() {
         val registry = HallRegistry()
         registry.install(JsonParser.parseString(hallJson(EPOCH_A, 0, dirty = false)).asJsonObject)
         val store = registry.graphProjections
         store.apply(store.begin(STAGE_ID, GraphRequestKind.RECONCILIATION), snapshot(epoch = EPOCH_A, revision = 0, dirty = true))
-        assertTrue(registry.saveDirty(STAGE_ID.toString())!!)
+        assertFalse(registry.saveDirty(STAGE_ID.toString())!!)
 
         store.legacyStageUpdated(STAGE_ID, EPOCH_A, 0)
 
@@ -307,7 +351,7 @@ class HallRegistryGraphTest {
         """.trimIndent() else "[]"
         return """
       {"stage_id":"$STAGE_ID","hall_id":"$HALL_ID","origin":{"x":1,"y":1,"z":1},
-       "size":{"x":7,"y":5,"z":7},"dirty":$dirty,"workspace_epoch":"$epoch",
+       "size":{"x":7,"y":5,"z":7},"dirty":$dirty,"program_dirty":$dirty,"workspace_epoch":"$epoch",
        "working_revision":$revision,"blocks":$blocks}
     """.trimIndent()
     }
