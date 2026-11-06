@@ -20,6 +20,7 @@ from hangar.program import (
 )
 from hangar.repository import (
     HallConflict,
+    HallNotFound,
     LegacyStageSaveBlocked,
     LoadedProgram,
     LoadedStageSnapshot,
@@ -86,7 +87,9 @@ class FakeProgramRepository:
         if mounted_hall is not None: self.mounts[mounted_hall]=program_id
 
     def load_program(self,program_id):
-        pid=uuid.UUID(str(program_id));program=self.programs[pid]
+        pid=uuid.UUID(str(program_id))
+        if pid not in self.programs:raise HallNotFound("Missing Program")
+        program=self.programs[pid]
         stages=tuple(MappingProxyType(copy.deepcopy(row)) for sid,row in sorted(
             self.headers.items(),key=lambda item:str(item[0])
         ) if uuid.UUID(str(row["program_id"]))==pid)
@@ -102,7 +105,9 @@ class FakeProgramRepository:
         return self.load_program(self.mounts[uuid.UUID(str(hall_id))])
 
     def resolve_working_copy_context(self,hall_id,*,program_id=None,working_copy_id=None):
-        hall=uuid.UUID(str(hall_id));pid=self.mounts[hall]
+        hall=uuid.UUID(str(hall_id))
+        if hall not in self.mounts:raise HallNotFound("Missing mount")
+        pid=self.mounts[hall]
         context=WorkingCopyContext(hall,pid,uuid.uuid5(hall,"working-copy"))
         if ((program_id is not None and uuid.UUID(str(program_id))!=pid)
                 or (working_copy_id is not None
@@ -112,6 +117,7 @@ class FakeProgramRepository:
 
     def load_program_for_stage(self,stage_id):
         sid=uuid.UUID(str(stage_id))
+        if sid not in self.headers:raise HallNotFound("Missing Stage")
         return self.load_program(self.headers[sid]["program_id"])
 
     def load_full_stage_snapshot(self,stage_id):

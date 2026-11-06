@@ -1,6 +1,6 @@
 param(
-    [ValidateSet('graph','program_model','program_save','program_service','stage_service','program_http','program_block','working_copy')]
-    [string[]]$Suites = @('graph','program_model','program_save','program_service','stage_service','program_http','program_block','working_copy')
+    [ValidateSet('graph','program_model','program_save','program_service','stage_service','program_http','program_block','working_copy','transport_context')]
+    [string[]]$Suites = @('graph','program_model','program_save','program_service','stage_service','program_http','program_block','working_copy','transport_context')
 )
 . "$PSScriptRoot\common.ps1"
 Assert-B2TTools

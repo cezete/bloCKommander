@@ -290,8 +290,8 @@ class ProgramHttpApiTest(unittest.TestCase):
 
         self.repo.add_program(OTHER_PROGRAM,OTHER_ROOT)
         cross=self.ensure(program=PROGRAM,parent=OTHER_ROOT)
-        self.assertEqual(404,cross.status_code)
-        self.assertEqual("NOT_FOUND",cross.get_json()["error_code"])
+        self.assertEqual(409,cross.status_code)
+        self.assertEqual("STAGE_PROGRAM_MISMATCH",cross.get_json()["error_code"])
 
     def test_program_save_receipt_status_and_stale_version_contract(self):
         self.ensure()

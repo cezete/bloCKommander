@@ -1,7 +1,7 @@
 from __future__ import annotations
 import os
 import uuid
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
 from hangar.builder import HallValidationError, control_elements, hall_client_view
 from hangar.repository import HallConflict, HallForbidden, HallNotFound, HallRepository
 from hangar.service import HallService
@@ -13,6 +13,7 @@ from hangar.program_http import (
     translate_error as translate_program_error,
 )
 from hangar.stage import StageService
+from hangar.transport_context import TransportContextError, TransportContextResolver
 from hangar.graph_application import (
     API_VERSION, GRAPH_SECRET_ENV, GRAPH_SECRET_HEADER, GraphApplicationService, GraphCommand,
     GraphRequestError, GraphTransportAuthError, GraphTransportAuthenticator,
@@ -23,7 +24,7 @@ from hangar.graph_application import (
 BLOCK_IDS={"AIR":0,"STONE":1,"GRASS_BLOCK":2,"DIRT":3,"COBBLESTONE":4,"OAK_PLANKS":5,"SAND":12,
            "GRAVEL":13,"GOLD_BLOCK":41,"IRON_BLOCK":42,"BRICK_BLOCK":45,"OBSIDIAN":49,"DIAMOND_BLOCK":57}
 
-def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
+def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,allow_legacy_context=None):
     app=Flask(__name__); repo=repository or HallRepository()
     if migrate: repo.migrate()
     world_driver=os.getenv("BLOCKCOMMANDER_WORLD_DRIVER","fabric").lower()
@@ -44,6 +45,79 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
     app.extensions["blockcommander_stage_service"]=stages
     app.extensions["blockcommander_program_service"]=programs
     app.extensions["blockcommander_graph_application"]=graph_app
+    if allow_legacy_context is None:
+        legacy_setting=os.getenv("BLOCKCOMMANDER_ALLOW_LEGACY_CONTEXT","1")
+        if legacy_setting not in ("0","1"):
+            raise RuntimeError("BLOCKCOMMANDER_ALLOW_LEGACY_CONTEXT must be 0 or 1")
+        allow_legacy_context=legacy_setting=="1"
+    contexts=TransportContextResolver(repo,programs,allow_legacy=allow_legacy_context)
+
+    @app.errorhandler(TransportContextError)
+    def context_failure(exc):
+        if "/graph" in request.path:
+            result=request_error_response(GraphRequestError(exc.code,exc.message,status_code=exc.status_code))
+            return jsonify(result.body),result.status_code
+        return jsonify(api_version=PROGRAM_API_VERSION,
+            status="error",error_code=exc.code,message=exc.message,
+            diagnostics=[{"code":exc.code,"severity":"ERROR","message":exc.message}]),exc.status_code
+
+    @app.before_request
+    def validate_transport_context():
+        endpoint=request.endpoint
+        args=request.view_args or {}
+        program_routes={"get_program","get_program_children","get_program_stage",
+            "ensure_program_child","program_status","save_program"}
+        stage_routes={"place_stage_block","update_stage_block","delete_stage_block",
+            "save_stage","rebuild_stage","graph_state","graph_wire","graph_bind","graph_wire_place"}
+        # Keep authentication ahead of identity disclosure on the existing protected routes.
+        if endpoint in program_routes or endpoint=="mounted_program":
+            denied=program_authenticated()
+            if denied is not None:return denied
+        if endpoint in {"graph_state","graph_wire","graph_bind","graph_wire_place"}:
+            denied=graph_authenticated()
+            if denied is not None:return denied
+        explicit=contexts.explicit(request.headers)
+        if endpoint in program_routes or endpoint in stage_routes or endpoint in {"mounted_program","save_button"}:
+            body=request.get_json(silent=True)
+            keys={"hall_id","program_id","working_copy_id","transport_context"}
+            if (isinstance(body,dict) and keys.intersection(body)) or keys.intersection(request.args):
+                raise TransportContextError(400,"CONTEXT_LOCATION_INVALID",
+                    "A context kizárólag a három X-BlockCommander identity-headerben adható meg.")
+        if endpoint in program_routes or endpoint in stage_routes or endpoint=="mounted_program":
+            g.transport_context=contexts.resolve(request.headers,**{
+                key:args[key] for key in ("hall_id","program_id","stage_id") if key in args})
+        elif endpoint=="save_button":
+            data=request.get_json(silent=True) or {}
+            hall=repo.by_control(str(data["world_uuid"]),"SAVE_BUTTON",int(data["x"]),int(data["y"]),int(data["z"]))
+            g.transport_context=contexts.resolve(request.headers,hall_id=hall["hall_id"],
+                stage_id=data.get("active_stage_id"))
+        elif endpoint=="rebuild":
+            g.transport_context=contexts.resolve(request.headers,hall_id=args["hall_id"])
+        elif endpoint=="rebuild_by_code":
+            data=request.get_json(silent=True) or {}
+            hall=repo.get_by_code(str(data["player_uuid"]),str(data["hall_code"]))
+            g.transport_context=contexts.resolve(request.headers,hall_id=hall["hall_id"])
+        else:
+            # One explicit context cannot authorize a bulk restore or a newly created Hall.
+            if explicit is not None:
+                raise TransportContextError(409,"CONTEXT_ROUTE_UNSUPPORTED",
+                    "Ez az útvonal nem fogad egyetlen WorkingCopy-contextet.")
+            if endpoint in {"restore_all","world_halls"}:
+                if endpoint=="world_halls":halls=repo.list_world(args["world_uuid"])
+                else:
+                    data=request.get_json(silent=True) or {}
+                    halls=repo.restore_candidates(str(data["player_uuid"]),data)
+                # Known Hall identities, never a Stage-ID-based choice. Validate all first.
+                for hall in halls:contexts.resolve({},hall_id=hall["hall_id"])
+
+    @app.after_request
+    def include_transport_context(response):
+        context=getattr(g,"transport_context",None)
+        if context is not None and response.is_json and 200<=response.status_code<300:
+            body=response.get_json()
+            body["transport_context"]=context.as_dict()
+            response.set_data(app.json.dumps(body))
+        return response
 
     def graph_authenticated():
         try:

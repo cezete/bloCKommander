@@ -118,6 +118,15 @@ class ProgramService:
             loaded_program_id=uuid.UUID(str(loaded.program["program_id"]))
             return self._programs.get(loaded_program_id) or self._install(loaded)
 
+    def transient_stage_program_id(self,stage_id:uuid.UUID)->uuid.UUID|None:
+        """Read identity of an existing unsaved Stage without installing cache entries."""
+        with self._guard:
+            program_id=self._stage_to_program.get(stage_id)
+            workspace=self._programs.get(program_id)
+        if workspace is None:return None
+        with workspace.lock:
+            return workspace.program_id if stage_id in workspace.new_stage_ids else None
+
     def _install(self,loaded:LoadedProgram)->ProgramWorkspace:
         program_id=uuid.UUID(str(loaded.program["program_id"]))
         headers={
