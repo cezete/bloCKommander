@@ -58,10 +58,12 @@ class WireInteractionCoordinator(
         stage: WireStageContext,
         player: ServerPlayerIdentity,
         world: WireWorldAccess,
+        projectionAllowed: () -> Boolean = { true },
     ): CompletableFuture<WireActionResult> {
         val requestId = requestIdFactory()
         return gateway.reconcile(stage.stageId, player).thenCompose {
-            renderCurrent(stage, world, WireAction.PLACE, requestId, null, recovered = true)
+            renderCurrent(stage, world, WireAction.PLACE, requestId, null, recovered = true,
+                projectionAllowed = projectionAllowed)
         }
     }
 
@@ -218,8 +220,9 @@ class WireInteractionCoordinator(
         recovered: Boolean,
         forceRejected: Boolean = false,
         discoveryDiagnostics: List<GraphDiscoveryDiagnostic> = emptyList(),
+        projectionAllowed: () -> Boolean = { true },
     ): CompletableFuture<WireActionResult> = CompletableFuture.supplyAsync({
-        if (!projectionFence(stage)) return@supplyAsync WireActionResult(
+        if (!projectionFence(stage) || !projectionAllowed()) return@supplyAsync WireActionResult(
             action, WireActionStatus.STALE, requestId, detail = "STAGE_NOT_ACTIVE",
         )
         val view = current(stage) ?: return@supplyAsync WireActionResult(

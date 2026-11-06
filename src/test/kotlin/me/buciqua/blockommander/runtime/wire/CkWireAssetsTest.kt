@@ -188,7 +188,7 @@ class CkWireAssetsTest {
         )
         assertTrue(source.contains("registry.updateStageAfterSave"))
         assertTrue(source.contains("reconcileGraphAndWire(player, level, savedStage)"))
-        assertTrue(source.contains("refreshSaveSign(level, savedStage.id)"))
+        assertTrue(source.contains("registry.isSaveFenceCurrent(fence)"))
     }
 
     private fun json(path: Path) = JsonParser.parseString(Files.readString(path)).asJsonObject

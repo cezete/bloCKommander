@@ -364,7 +364,22 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None):
     def save_button():
         data=request.get_json(silent=True) or {}
         hall=repo.by_control(str(data["world_uuid"]),"SAVE_BUTTON",int(data["x"]),int(data["y"]),int(data["z"]))
-        ensured=stages.ensure(hall);stage=stages.save(str(ensured["stage_id"]),data)
+        if "active_stage_id" in data:
+            try: stage_id=uuid.UUID(str(data["active_stage_id"]))
+            except (ValueError,TypeError) as exc:
+                raise HallConflict("Hibás aktív Stage azonosító.") from exc
+            if "workspace_epoch" not in data or "expected_working_revision" not in data:
+                raise HallConflict("Az aktív Stage mentéséhez epoch és revision szükséges.")
+            workspace=programs.for_hall(hall["hall_id"])
+            with workspace.lock:
+                programs.save(
+                    workspace.program_id,str(data["player_uuid"]),
+                    target_stage_id=stage_id,client_payload=data,
+                )
+                stage=stages.view(programs.stage(workspace.program_id,stage_id))
+        else:
+            # Compatibility for older clients: still save the entire Program.
+            ensured=stages.ensure(hall);stage=stages.save(str(ensured["stage_id"]),data)
         return jsonify(status="ok",message=f"Stage mentve (v{stage['saved_version']}).",stage=stage)
 
     @app.get("/api/v1/players/<player_uuid>/halls")

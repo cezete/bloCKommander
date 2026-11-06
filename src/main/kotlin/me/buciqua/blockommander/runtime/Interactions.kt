@@ -282,12 +282,13 @@ class Interactions(
     }
 
     private fun reconcileGraphAndWire(player: ServerPlayer, level: ServerLevel,
-                                      stage: Stage): CompletableFuture<ReconnectGraphResult> {
+                                      stage: Stage, projectionAllowed: () -> Boolean = { true }): CompletableFuture<ReconnectGraphResult> {
         val coordinator = wireCoordinator() ?: return CompletableFuture.completedFuture(
             ReconnectGraphResult(false, "GRAPH_COORDINATOR_UNAVAILABLE"),
         )
         return coordinator.reconcileAndRender(
             stage.wireContext(), ServerPlayerIdentity.from(player), MinecraftWireWorldAccess(level),
+            projectionAllowed,
         ).thenApply { result ->
             val synchronized = result.status == WireActionStatus.SUCCESS || result.status == WireActionStatus.RECOVERED
             if (!synchronized) {
@@ -369,10 +370,10 @@ class Interactions(
         player.sendSystemMessage(Component.literal(message))
     }
 
-    private fun refreshSaveSign(level: ServerLevel, stageId: String) {
+    private fun refreshSaveSign(level: ServerLevel, stageId: String, overrideDirty: Boolean? = null) {
         level.server.execute {
             val hall = registry.hallForStage(stageId) ?: return@execute
-            val dirty = registry.saveDirty(stageId) ?: return@execute
+            val dirty = overrideDirty ?: registry.saveDirty(stageId) ?: return@execute
             WorldRenderer.renderSaveState(level, hall, dirty)
         }
     }
@@ -444,13 +445,25 @@ class Interactions(
             "DESTROY_BUTTON" -> api.post(player, "/api/v1/halls/button", payload) { response ->
                 registry.remove(response["hall_id"].asString)?.let { WorldRenderer.demolish(level, it) }
             }
-            "SAVE_BUTTON" -> registry.stageUpdateFenceForHall(control.hallId)?.let { fence ->
+            "SAVE_BUTTON" -> registry.saveFenceForHall(control.hallId)?.let { fence ->
+                if (!registry.isSaveFenceCurrent(fence)) return@let
+                payload.addProperty("active_stage_id", fence.stageId)
+                payload.addProperty("workspace_epoch", fence.workspaceEpoch.toString())
+                payload.addProperty("expected_working_revision", fence.workingRevision)
                 api.post(player, "/api/v1/halls/save-button", payload) { response ->
                     registry.updateStageAfterSave(response.getAsJsonObject("stage"), fence)?.let { hall ->
                         WorldRenderer.renderStage(level, hall)
                         hall.stage?.let { savedStage ->
-                            reconcileGraphAndWire(player, level, savedStage).thenAccept {
-                                refreshSaveSign(level, savedStage.id)
+                            reconcileGraphAndWire(player, level, savedStage) {
+                                registry.isSaveFenceCurrent(fence)
+                            }.thenAccept {
+                                level.server.execute {
+                                    if (registry.isSaveFenceCurrent(fence)) {
+                                        registry.saveDirty(savedStage.id)?.let { dirty ->
+                                            WorldRenderer.renderSaveState(level, hall, dirty)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

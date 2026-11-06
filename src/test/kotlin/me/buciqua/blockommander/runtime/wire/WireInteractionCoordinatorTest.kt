@@ -15,6 +15,20 @@ class WireInteractionCoordinatorTest {
     private val target = GraphPosition(11, 20, 30)
     private val player = ServerPlayerIdentity.trustedForTest(PLAYER_ID)
 
+    @Test fun `SAVE reconciliation cannot render after its navigation fence expires`() {
+        val store=syncedStore(0)
+        val gateway=FakeGraphGateway(store).apply { reconcileSnapshot=wireSnapshot(0) }
+        val queued=mutableListOf<Runnable>()
+        val world=FakeWireWorld()
+        var allowed=true
+        val coordinator=WireInteractionCoordinator(store,gateway,WireWorldProjector(),Executor { queued.add(it) })
+        val result=coordinator.reconcileAndRender(stage,player,world) { allowed }
+        allowed=false
+        queued.forEach(Runnable::run)
+        assertEquals(WireActionStatus.STALE,result.get(3,TimeUnit.SECONDS).status)
+        assertEquals(0,world.setCalls)
+    }
+
     @Test fun `automatic mutual neighbor placement uses authoritative intent contract`() {
         assertEquals(
             "SUPPORTED_WIRE_PLACE_INTENT",

@@ -220,6 +220,78 @@ class HallRegistryGraphTest {
         assertNull(registry.hallForStage(OTHER_STAGE_ID.toString()))
     }
 
+    private fun switchTo(registry: HallRegistry, id: UUID, dirty: Boolean = true) {
+        val token=registry.beginStageSwitch(HALL_ID.toString(),PLAYER_ID)!!
+        assertTrue(registry.bindStageSwitch(token,EPOCH_B,EPOCH_A,0,id))
+        val old=registry.hall(HALL_ID.toString())!!.stage!!
+        assertNotNull(registry.commitStageSwitch(token,EPOCH_B,EPOCH_A,0,
+            old.copy(id=id.toString(),dirty=dirty)))
+    }
+
+    @Test fun `child SAVE projects domain coordinates and reloads clean graph`() {
+        val registry=HallRegistry()
+        registry.install(JsonParser.parseString(hallJson(EPOCH_A,4)).asJsonObject)
+        switchTo(registry,OTHER_STAGE_ID)
+        val fence=registry.stageUpdateFenceForHall(HALL_ID.toString())!!
+        val response=JsonParser.parseString(stageJson(EPOCH_A,4,false,true)).asJsonObject
+        response.addProperty("stage_id",OTHER_STAGE_ID.toString())
+        response.add("hall_id",com.google.gson.JsonNull.INSTANCE)
+        response.getAsJsonObject("origin").addProperty("x",999)
+        val saved=registry.updateStageAfterSave(response,fence)
+        assertNotNull(saved)
+        assertEquals(OTHER_STAGE_ID.toString(),saved!!.stage!!.id)
+        assertEquals(BlockPos(2,1,1),saved.stage!!.blocks.single().pos)
+        assertFalse(registry.saveDirty(OTHER_STAGE_ID.toString())!!)
+        val store=registry.graphProjections
+        assertInstanceOf(GraphApplyResult.Applied::class.java,store.apply(
+            store.begin(OTHER_STAGE_ID,GraphRequestKind.RECONCILIATION),
+            snapshot(epoch=EPOCH_A,revision=4,dirty=false).copy(stageId=OTHER_STAGE_ID)))
+        assertFalse(registry.saveDirty(OTHER_STAGE_ID.toString())!!)
+    }
+
+    @Test fun `SAVE response is rejected during navigation and after returning to same Stage`() {
+        val registry=HallRegistry()
+        registry.install(JsonParser.parseString(hallJson(EPOCH_A,4)).asJsonObject)
+        val fence=registry.stageUpdateFenceForHall(HALL_ID.toString())!!
+        val response=JsonParser.parseString(stageJson(EPOCH_A,4,false)).asJsonObject
+        val pending=registry.beginStageSwitch(HALL_ID.toString(),PLAYER_ID)!!
+        assertNull(registry.updateStageAfterSave(response,fence))
+        registry.failStageSwitch(pending)
+        switchTo(registry,OTHER_STAGE_ID)
+        assertNull(registry.updateStageAfterSave(response,fence))
+        switchTo(registry,STAGE_ID)
+        assertNull(registry.updateStageAfterSave(response,fence))
+        assertFalse(registry.isSaveFenceCurrent(fence))
+        assertTrue(registry.hall(HALL_ID.toString())!!.stage!!.dirty)
+    }
+
+    @Test fun `SAVE cannot clear newer edits or replace a changed epoch`() {
+        val registry=HallRegistry()
+        registry.install(JsonParser.parseString(hallJson(EPOCH_A,4)).asJsonObject)
+        val fence=registry.stageUpdateFenceForHall(HALL_ID.toString())!!
+        registry.updateStage(JsonParser.parseString(stageJson(EPOCH_A,5)).asJsonObject,fence)
+        assertNull(registry.updateStageAfterSave(
+            JsonParser.parseString(stageJson(EPOCH_A,4,false)).asJsonObject,fence))
+        val current=registry.stageUpdateFenceForHall(HALL_ID.toString())!!
+        assertNull(registry.updateStageAfterSave(
+            JsonParser.parseString(stageJson(EPOCH_B,5,false)).asJsonObject,current))
+        assertTrue(registry.saveDirty(STAGE_ID.toString())!!)
+    }
+
+    @Test fun `SAVE captures latest Graph revision after wire edits`() {
+        val registry=HallRegistry()
+        registry.install(JsonParser.parseString(hallJson(EPOCH_A,0,false)).asJsonObject)
+        val store=registry.graphProjections
+        store.apply(store.begin(STAGE_ID,GraphRequestKind.RECONCILIATION),
+            snapshot(epoch=EPOCH_A,revision=2,dirty=true))
+        val fence=registry.saveFenceForHall(HALL_ID.toString())!!
+        assertEquals(2,fence.workingRevision)
+        assertTrue(registry.isSaveFenceCurrent(fence))
+        assertNotNull(registry.updateStageAfterSave(
+            JsonParser.parseString(stageJson(EPOCH_A,2,false)).asJsonObject,fence))
+        assertFalse(registry.saveDirty(STAGE_ID.toString())!!)
+    }
+
     private fun hallJson(epoch: UUID, revision: Long, dirty: Boolean = true) = """
       {"hall_id":"$HALL_ID","hall_name":"Hall","owner_uuid":"$PLAYER_ID","owner_name":"Owner",
        "world_uuid":"$WORLD_ID","material_name":"STONE","min_x":0,"min_y":0,"min_z":0,

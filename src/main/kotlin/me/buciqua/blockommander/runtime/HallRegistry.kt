@@ -17,7 +17,7 @@ data class Stage(val id: String, val origin: BlockPos, val sizeX: Int, val sizeY
         pos.y in origin.y until origin.y + sizeY && pos.z in origin.z until origin.z + sizeZ
 }
 data class StageUpdateFence(val hallId: String, val stageId: String, val workspaceEpoch: UUID,
-                            val workingRevision: Long)
+                            val workingRevision: Long, val navigationGeneration: Long? = null)
 data class StageSwitchToken(
     val hallId: String,
     val generation: Long,
@@ -86,7 +86,30 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
         ?.let { hall -> hall.stage?.let { StageUpdateFence(hall.id, it.id, it.workspaceEpoch, it.workingRevision) } }
 
     fun stageUpdateFenceForHall(hallId: String): StageUpdateFence? = halls[hallId]?.let { hall ->
-        hall.stage?.let { StageUpdateFence(hall.id, it.id, it.workspaceEpoch, it.workingRevision) }
+        hall.stage?.let { StageUpdateFence(hall.id, it.id, it.workspaceEpoch, it.workingRevision,
+            navigation[hall.id]?.switchGeneration) }
+    }
+
+    @Synchronized
+    fun saveFenceForHall(hallId: String): StageUpdateFence? {
+        val fence = stageUpdateFenceForHall(hallId) ?: return null
+        val stage = halls[hallId]?.stage ?: return null
+        return fence.copy(workingRevision = currentRevision(stage))
+    }
+
+    private fun currentRevision(stage: Stage): Long {
+        val graph = graphProjections.view(UUID.fromString(stage.id))
+        return maxOf(stage.workingRevision,
+            graph?.takeIf { it.stageEpoch == stage.workspaceEpoch }?.stageRevision ?: -1)
+    }
+
+    @Synchronized
+    fun isSaveFenceCurrent(fence: StageUpdateFence): Boolean {
+        val stage = halls[fence.hallId]?.stage ?: return false
+        val state = navigation[fence.hallId] ?: return false
+        return !state.switchInProgress && state.switchGeneration == fence.navigationGeneration &&
+            stage.id == fence.stageId && stage.workspaceEpoch == fence.workspaceEpoch &&
+            currentRevision(stage) == fence.workingRevision
     }
 
     fun stageUpdateFencesForOwner(ownerUuid: String): Map<String, StageUpdateFence> = halls.values
@@ -220,6 +243,10 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
     /** Map a Stage-domain CRUD response into the currently mounted Hall coordinate system. */
     @Synchronized
     fun updateStageFromDomainResponse(stageJson:JsonObject,fence:StageUpdateFence):Hall? {
+        return updateDomainStage(stageJson,fence,StageResponseKind.LEGACY_MUTATION)
+    }
+
+    private fun updateDomainStage(stageJson:JsonObject,fence:StageUpdateFence,kind:StageResponseKind):Hall? {
         val current=halls[fence.hallId]?.stage ?: return null
         if (current.id!=fence.stageId) return null
         val normalized=stageJson.deepCopy().apply {
@@ -240,12 +267,16 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
             block.addProperty("y",current.origin.y+relY)
             block.addProperty("z",current.origin.z+relZ)
         }
-        return updateStage(normalized,fence,StageResponseKind.LEGACY_MUTATION)
+        return updateStage(normalized,fence,kind)
     }
 
     @Synchronized
-    fun updateStageAfterSave(stageJson: JsonObject, fence: StageUpdateFence): Hall? =
-        updateStage(stageJson, fence, StageResponseKind.SAVE)
+    fun updateStageAfterSave(stageJson: JsonObject, fence: StageUpdateFence): Hall? {
+        if (!isSaveFenceCurrent(fence) || stageJson["stage_id"].asString != fence.stageId ||
+            stageJson["workspace_epoch"].asString != fence.workspaceEpoch.toString() ||
+            stageJson["working_revision"].asLong != fence.workingRevision) return null
+        return updateDomainStage(stageJson, fence, StageResponseKind.SAVE)
+    }
 
     private fun updateStage(stageJson: JsonObject, fence: StageUpdateFence, kind: StageResponseKind): Hall? {
         val stage = parseStage(stageJson)

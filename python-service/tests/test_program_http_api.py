@@ -52,6 +52,59 @@ class ProgramHttpApiTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"already attached"):
             ProgramService(self.repo,self.stages)
 
+    def save_button(self,stage_id,**overrides):
+        stage=self.programs.stage(PROGRAM,stage_id)
+        payload={"player_uuid":str(OWNER),"world_uuid":str(uuid.UUID(int=77)),
+            "x":0,"y":0,"z":0,"active_stage_id":str(stage_id),
+            "workspace_epoch":str(stage.workspace_epoch),
+            "expected_working_revision":stage.revision}
+        payload.update(overrides)
+        with patch.object(self.repo,"by_control",return_value={"hall_id":str(HALL)},create=True):
+            return self.client.post("/api/v1/halls/save-button",json=payload)
+
+    def test_save_button_returns_requested_root_or_child_and_saves_whole_program(self):
+        child=uuid.UUID(self.ensure().get_json()["child"]["stage_id"])
+        root=self.programs.stage(PROGRAM,ROOT)
+        root.dirty=True
+        saved=self.save_button(child)
+        self.assertEqual(200,saved.status_code)
+        self.assertEqual(str(child),saved.get_json()["stage"]["stage_id"])
+        self.assertFalse(saved.get_json()["stage"]["dirty"])
+        self.assertFalse(root.dirty)
+        self.assertIn(child,self.repo.headers)
+        root.dirty=True
+        saved=self.save_button(ROOT)
+        self.assertEqual(200,saved.status_code)
+        self.assertEqual(str(ROOT),saved.get_json()["stage"]["stage_id"])
+        self.assertFalse(saved.get_json()["stage"]["dirty"])
+        self.assertEqual(2,self.repo.program_save_calls)
+
+    def test_save_button_rejects_stale_or_incomplete_lifecycle_without_saving(self):
+        self.programs.stage(PROGRAM,ROOT).dirty=True
+        for override in ({"workspace_epoch":str(uuid.uuid4())},
+                         {"expected_working_revision":999}, {"active_stage_id":str(OTHER_ROOT)}):
+            response=self.save_button(ROOT,**override)
+            self.assertNotEqual(200,response.status_code)
+        with patch.object(self.repo,"by_control",return_value={"hall_id":str(HALL)},create=True):
+            response=self.client.post("/api/v1/halls/save-button",json={
+                "player_uuid":str(OWNER),"world_uuid":str(uuid.UUID(int=77)),
+                "x":0,"y":0,"z":0,"active_stage_id":str(ROOT)})
+        self.assertEqual(409,response.status_code)
+        self.assertEqual(0,self.repo.program_save_calls)
+        self.assertTrue(self.programs.stage(PROGRAM,ROOT).dirty)
+
+    def test_save_button_database_failure_preserves_dirty_stage_and_hierarchy(self):
+        child=uuid.UUID(self.ensure().get_json()["child"]["stage_id"])
+        root=self.programs.stage(PROGRAM,ROOT);root.dirty=True
+        self.repo.fail_save=True
+        response=self.save_button(child)
+        self.assertEqual(500,response.status_code)
+        self.assertNotIn("stage",response.get_json())
+        self.assertTrue(root.dirty)
+        self.assertTrue(self.programs.stage(PROGRAM,child).dirty)
+        self.assertTrue(self.programs.load(PROGRAM).hierarchy_dirty)
+        self.assertEqual(0,self.repo.programs[PROGRAM]["saved_version"])
+
     def test_hall_program_and_hierarchy_dto_round_trip(self):
         ensured=self.ensure()
         self.assertEqual(201,ensured.status_code)
