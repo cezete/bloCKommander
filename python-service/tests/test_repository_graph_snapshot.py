@@ -242,6 +242,8 @@ class EnsureStageCursor:
             self.current = {"hall_id": params[0]}
         elif normalized.startswith("SELECT s.*"):
             self.current = None
+        elif normalized.startswith("SELECT 1 FROM blockcommander.hall_program_mounts"):
+            self.current = None
         elif normalized.startswith("INSERT INTO blockcommander.programs"):
             self.current = None
         elif normalized.startswith("INSERT INTO blockcommander.stages"):

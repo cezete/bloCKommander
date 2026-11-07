@@ -106,6 +106,16 @@ class FakeProgramRepository:
     def load_program_for_hall(self,hall_id):
         return self.load_program(self.mounts[uuid.UUID(str(hall_id))])
 
+    def get(self,hall_id):
+        return {"hall_id":str(hall_id),"owner_uuid":str(OWNER),
+            "world_uuid":str(uuid.UUID(int=77)),"min_x":0,"min_y":0,"min_z":0}
+
+    def get_selection(self,hall_id,player_uuid,expected_context=None):
+        context=self.resolve_working_copy_context(hall_id)
+        return {**context.as_dict(),"world_uuid":str(uuid.UUID(int=77)),
+            "active_stage_id":self.programs[context.program_id]["root_stage_id"],
+            "selection_revision":0}
+
     def resolve_working_copy_context(self,hall_id,*,program_id=None,working_copy_id=None):
         hall=uuid.UUID(str(hall_id))
         if hall not in self.mounts:raise HallMountNotFound("Missing mount")

@@ -44,8 +44,8 @@ class TransportContextPostgreSQLIntegrationTest(unittest.TestCase):
                 FROM blockcommander.halls WHERE hall_id=%s""",(hall,str(uuid4()),str(HALL_ID)))
             cur.execute("INSERT INTO blockcommander.working_copies(working_copy_id,program_id) VALUES(%s,%s)",
                 (copy_id,str(PROGRAM_ID)))
-            cur.execute("""INSERT INTO blockcommander.hall_program_mounts(hall_id,program_id,working_copy_id)
-                VALUES(%s,%s,%s)""",(hall,str(PROGRAM_ID),copy_id))
+            cur.execute("""INSERT INTO blockcommander.hall_program_mounts(hall_id,program_id,working_copy_id,active_stage_id)
+                VALUES(%s,%s,%s,%s)""",(hall,str(PROGRAM_ID),copy_id,str(STAGE_ID)))
         return hall,copy_id
 
     def place(self,headers):

@@ -13,6 +13,8 @@ from hangar.program_http import (
     translate_error as translate_program_error,
 )
 from hangar.stage import StageService
+from hangar.selection import SelectionFailure, parse_selection, selection_dto
+from hangar.hall_projection import project_stage
 from hangar.transport_context import TransportContextError, TransportContextResolver
 from hangar.graph_application import (
     API_VERSION, GRAPH_SECRET_ENV, GRAPH_SECRET_HEADER, GraphApplicationService, GraphCommand,
@@ -69,8 +71,15 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
             "ensure_program_child","program_status","save_program"}
         stage_routes={"place_stage_block","update_stage_block","delete_stage_block",
             "save_stage","rebuild_stage","graph_state","graph_wire","graph_bind","graph_wire_place"}
+        if endpoint in {"get_hall_selection","put_hall_selection"}:
+            denied=program_authenticated()
+            if denied is not None:return denied
+            # Dedicated identity handoff: target IDs in the body, optional old
+            # G1 headers checked together with the CAS in the repository transaction.
+            g.selection_expected_context=contexts.explicit(request.headers)
+            return None
         # Keep authentication ahead of identity disclosure on the existing protected routes.
-        if endpoint in program_routes or endpoint=="mounted_program":
+        if endpoint in program_routes or endpoint in {"mounted_program","hall_detail"}:
             denied=program_authenticated()
             if denied is not None:return denied
         if endpoint in {"graph_state","graph_wire","graph_bind","graph_wire_place"}:
@@ -83,7 +92,7 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
             if (isinstance(body,dict) and keys.intersection(body)) or keys.intersection(request.args):
                 raise TransportContextError(400,"CONTEXT_LOCATION_INVALID",
                     "A context kizárólag a három X-BlockCommander identity-headerben adható meg.")
-        if endpoint in program_routes or endpoint in stage_routes or endpoint=="mounted_program":
+        if endpoint in program_routes or endpoint in stage_routes or endpoint in {"mounted_program","hall_detail"}:
             g.transport_context=contexts.resolve(request.headers,**{
                 key:args[key] for key in ("hall_id","program_id","stage_id") if key in args})
         elif endpoint=="save_button":
@@ -116,6 +125,14 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
         if context is not None and response.is_json and 200<=response.status_code<300:
             body=response.get_json()
             body["transport_context"]=context.as_dict()
+            if context.mount is not None and any(isinstance(body.get(key),dict)
+                    and "stage_id" in body[key] for key in ("stage","state")):
+                hall=repo.get(str(context.mount.hall_id))
+                for key in ("stage","state"):
+                    view=body.get(key)
+                    if isinstance(view,dict) and "stage_id" in view:
+                        ws=programs.stage(context.program_id,view["stage_id"])
+                        body[key]=project_stage(view,ws.stage,hall)
             response.set_data(app.json.dumps(body))
         return response
 
@@ -178,9 +195,42 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
         present={c["kind"] for c in hall.get("controls",[])};missing=[c for c in expected if c["kind"] not in present]
         if missing:
             repo.add_controls(str(hall["hall_id"]),str(hall["world_uuid"]),missing);hall.setdefault("controls",[]).extend(missing)
-        view=hall_client_view(hall,with_program_dirty(stages.ensure(hall)))
-        view.update(repo.resolve_working_copy_context(hall["hall_id"]).as_dict())
+        repo.ensure_stage(hall)
+        # Capture one selection. Concurrent PUTs may supersede this revision,
+        # but must never mix its identity with another revision's Stage.
+        context=getattr(g,"transport_context",None)
+        expected=None if context is None or context.mount is None else context.mount.as_dict()
+        selection=repo.get_selection(hall["hall_id"],hall["owner_uuid"],expected)
+        ws=programs.stage(selection["program_id"],selection["active_stage_id"])
+        view=hall_client_view(hall,with_program_dirty(project_stage(stages.view(ws),ws.stage,hall)))
+        view.update(selection_dto(selection))
         return view
+
+    @app.errorhandler(SelectionFailure)
+    def selection_failure(exc):
+        return jsonify(ProgramHttpFailure(exc.status,exc.code,exc.message).body()),exc.status
+
+    @app.get("/api/v1/halls/<hall_id>/selection")
+    def get_hall_selection(hall_id):
+        try:
+            row=repo.get_selection(parse_uuid(hall_id,"hall_id"),
+                parse_uuid(request.args.get("player_uuid"),"player_uuid"),
+                g.selection_expected_context)
+            return jsonify(program_success(selection_api_version="ck-hall-selection-v1",
+                selection=selection_dto(row)))
+        except SelectionFailure:raise
+        except Exception as exc:return program_failure(exc)
+
+    @app.put("/api/v1/halls/<hall_id>/selection")
+    def put_hall_selection(hall_id):
+        try:
+            data=parse_selection(request.get_json(silent=True))
+            row,changed=repo.select(parse_uuid(hall_id,"hall_id"),**data,
+                expected_context=g.selection_expected_context)
+            return jsonify(program_success(selection_api_version="ck-hall-selection-v1",
+                changed=changed,selection=selection_dto(row)))
+        except SelectionFailure:raise
+        except Exception as exc:return program_failure(exc)
 
     @app.errorhandler(HallValidationError)
     def validation(exc): return jsonify(status="error",message=str(exc)),422
@@ -231,18 +281,25 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
     def world_halls(world_uuid):
         return jsonify(status="ok",halls=[enrich(h) for h in repo.list_world(world_uuid)])
 
+    @app.get("/api/v1/halls/<hall_id>")
+    def hall_detail(hall_id):
+        return jsonify(program_success(hall=enrich(repo.get(parse_uuid(hall_id,"hall_id")))))
+
     @app.get("/api/v1/halls/<hall_id>/program")
     def mounted_program(hall_id):
         denied=program_authenticated()
         if denied is not None:return denied
         try:
             normalized=parse_uuid(hall_id,"hall_id")
-            workspace=programs.for_hall(normalized)
-            context=repo.resolve_working_copy_context(normalized,program_id=workspace.program_id)
+            expected=g.transport_context.mount
+            selection=selection_dto(repo.get_selection(normalized,repo.get(normalized)["owner_uuid"],
+                None if expected is None else expected.as_dict()))
+            workspace=programs.load(selection["program_id"])
             return jsonify(program_success(
-                mount={**context.as_dict(),"current":True},
+                mount={**selection,"current":True},
                 program=program_dto(programs,workspace),
             ))
+        except SelectionFailure:raise
         except Exception as exc:return program_failure(exc)
 
     @app.get("/api/v1/programs/<program_id>")
@@ -469,7 +526,8 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
     @app.get("/api/v1/players/<player_uuid>/halls")
     def player_halls(player_uuid):
         halls=repo.list_owner(player_uuid)
-        return jsonify(status="ok",halls=[{**h,"hall_id":str(h["hall_id"]),"world_uuid":str(h["world_uuid"])} for h in halls])
+        return jsonify(status="ok",halls=[{**h,
+            **selection_dto(repo.get_selection(h["hall_id"],player_uuid))} for h in halls])
 
     @app.post("/event")
     def legacy_event():

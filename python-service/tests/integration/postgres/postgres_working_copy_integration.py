@@ -80,8 +80,8 @@ class WorkingCopyIdentityIntegrationTest(unittest.TestCase):
             copy_id=str(uuid4())
             cur.execute("INSERT INTO blockcommander.working_copies(working_copy_id,program_id) VALUES(%s,%s)",
                 (copy_id,self.program_id))
-            cur.execute("""INSERT INTO blockcommander.hall_program_mounts(hall_id,program_id,working_copy_id)
-                VALUES(%s,%s,%s)""",(second,self.program_id,copy_id))
+            cur.execute("""INSERT INTO blockcommander.hall_program_mounts(hall_id,program_id,working_copy_id,active_stage_id)
+                VALUES(%s,%s,%s,%s)""",(second,self.program_id,copy_id,str(STAGE_ID)))
         for _ in range(2):
             # Fresh app/services model a webhook restart without touching persisted rows.
             app=create_app(repository=repository(),migrate=False,graph_shared_secret="wc-test")
@@ -107,7 +107,13 @@ class WorkingCopyIdentityIntegrationTest(unittest.TestCase):
         new_stage=repository().ensure_stage(repository().get(second))
         other=repository().resolve_working_copy_context(second)
         self.assertNotEqual(str(other.program_id),self.program_id)
-        for copy_id in (str(other.working_copy_id),str(uuid4())):
+        # Use an unmounted foreign copy so this specifically exercises the
+        # composite FK, independently of the newer mounted-copy uniqueness rule.
+        foreign_copy=str(uuid4())
+        with connect() as conn,conn.cursor() as cur:
+            cur.execute("INSERT INTO blockcommander.working_copies(working_copy_id,program_id) VALUES(%s,%s)",
+                (foreign_copy,str(other.program_id)))
+        for copy_id in (foreign_copy,str(uuid4())):
             with self.assertRaises(errors.ForeignKeyViolation):
                 with connect() as conn,conn.cursor() as cur:
                     cur.execute("UPDATE blockcommander.hall_program_mounts SET working_copy_id=%s WHERE hall_id=%s",
@@ -135,8 +141,8 @@ class WorkingCopyIdentityIntegrationTest(unittest.TestCase):
             # A later explicit remount is schema-legal; identity is not owned by the old Hall.
             cur.execute("SELECT count(*) FROM blockcommander.hall_program_mounts")
             self.assertEqual(0,cur.fetchone()[0])
-            cur.execute("""INSERT INTO blockcommander.hall_program_mounts(hall_id,program_id,working_copy_id)
-                VALUES(%s,%s,%s)""",(second,str(context.program_id),str(context.working_copy_id)))
+            cur.execute("""INSERT INTO blockcommander.hall_program_mounts(hall_id,program_id,working_copy_id,active_stage_id)
+                VALUES(%s,%s,%s,%s)""",(second,str(context.program_id),str(context.working_copy_id),str(STAGE_ID)))
         self.assertEqual(str(context.program_id),str(repository().load_program(str(context.program_id)).program["program_id"]))
         remounted=repository().resolve_working_copy_context(second)
         self.assertEqual(context.working_copy_id,remounted.working_copy_id)

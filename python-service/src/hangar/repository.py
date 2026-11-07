@@ -8,6 +8,7 @@ from typing import Any, Mapping
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from .working_copy import WorkingCopyContext
+from .selection import SelectionFailure
 
 from .graph.model import (
     CardinalDirection, EdgeKind, EdgeRoute, GraphEdge, GridPos, PortRef,
@@ -586,7 +587,7 @@ class HallRepository:
         return self.get(hall_id)
 
     def ensure_stage(self,hall:dict[str,Any])->dict[str,Any]:
-        """Return the mounted Program root, creating the Program aggregate if absent."""
+        """Return the selected Stage, creating an initial aggregate only if unmounted."""
         with self._connect() as conn,conn.cursor(cursor_factory=RealDictCursor) as cur:
             # Serialize initial Program/WorkingCopy allocation for this Hall.
             cur.execute("SELECT hall_id FROM blockcommander.halls WHERE hall_id=%s FOR UPDATE",
@@ -596,10 +597,14 @@ class HallRepository:
                 FROM blockcommander.hall_program_mounts m
                 JOIN blockcommander.programs p ON p.program_id=m.program_id
                 JOIN blockcommander.stages s
-                  ON s.program_id=p.program_id AND s.stage_id=p.root_stage_id
+                  ON s.program_id=p.program_id AND s.stage_id=m.active_stage_id
                 WHERE m.hall_id=%s""",(hall["hall_id"],))
             stage=cur.fetchone()
             if not stage:
+                cur.execute("SELECT 1 FROM blockcommander.hall_program_mounts WHERE hall_id=%s",
+                    (hall["hall_id"],))
+                if cur.fetchone():
+                    raise SelectionFailure("INVALID_SELECTION", "Selected Stage is missing.")
                 stage_id=str(uuid.uuid4())
                 program_id=str(uuid.uuid4())
                 # Keep a one-block inner service aisle so program blocks can never
@@ -625,8 +630,8 @@ class HallRepository:
                     (working_copy_id,program_id) VALUES(%s,%s)""",
                     (working_copy_id,program_id))
                 cur.execute("""INSERT INTO blockcommander.hall_program_mounts
-                    (hall_id,program_id,working_copy_id) VALUES(%s,%s,%s)""",
-                    (hall["hall_id"],program_id,working_copy_id))
+                    (hall_id,program_id,working_copy_id,active_stage_id) VALUES(%s,%s,%s,%s)""",
+                    (hall["hall_id"],program_id,working_copy_id,stage_id))
             result=dict(stage)
             result.update({
                 "owner_uuid":hall["owner_uuid"],"world_uuid":hall["world_uuid"],
@@ -719,7 +724,7 @@ class HallRepository:
 
     def load_stage_for_hall(self,hall_id:str)->dict[str,Any]:
         with self._connect() as conn,conn.cursor() as cur:
-            cur.execute("""SELECT p.root_stage_id
+            cur.execute("""SELECT m.active_stage_id
                 FROM blockcommander.hall_program_mounts m
                 JOIN blockcommander.programs p ON p.program_id=m.program_id
                 WHERE m.hall_id=%s""",(hall_id,)); row=cur.fetchone()
@@ -746,7 +751,7 @@ class HallRepository:
                 uuid.UUID(str(row["program_block_instance_id"])),
                 uuid.UUID(str(row["child_stage_id"])),str(row["link_state"]),
             ) for row in cur.fetchall())
-            cur.execute("""SELECT hall_id,program_id,working_copy_id,created_at,updated_at
+            cur.execute("""SELECT hall_id,program_id,working_copy_id,active_stage_id,selection_revision,created_at,updated_at
                 FROM blockcommander.hall_program_mounts
                 WHERE program_id=%s ORDER BY hall_id""",(program_id,))
             mounts=tuple(MappingProxyType(self._row(row)) for row in cur.fetchall())
@@ -758,6 +763,72 @@ class HallRepository:
                 WHERE hall_id=%s""",(hall_id,));row=cur.fetchone()
         if not row: raise HallNotFound("A csarnokhoz nincs program mountolva.")
         return self.load_program(str(row[0]))
+
+    @staticmethod
+    def _selection_row(cur, hall_id, *, lock=False):
+        cur.execute("SELECT hall_id,owner_uuid,world_uuid FROM blockcommander.halls "
+            "WHERE hall_id=%s" + (" FOR UPDATE" if lock else ""), (str(hall_id),))
+        hall=cur.fetchone()
+        if not hall: raise SelectionFailure("HALL_NOT_FOUND", "Hall not found.", 404)
+        cur.execute("""SELECT m.*,s.stage_id selected_stage,w.working_copy_id selected_copy
+            FROM blockcommander.hall_program_mounts m
+            LEFT JOIN blockcommander.stages s
+              ON (s.program_id,s.stage_id)=(m.program_id,m.active_stage_id)
+            LEFT JOIN blockcommander.working_copies w
+              ON (w.program_id,w.working_copy_id)=(m.program_id,m.working_copy_id)
+            WHERE m.hall_id=%s""" + (" FOR UPDATE OF m" if lock else ""), (str(hall_id),))
+        mount=cur.fetchone()
+        if not mount: raise SelectionFailure("MOUNT_NOT_FOUND", "Mount not found.", 404)
+        if mount["selected_stage"] is None or mount["selected_copy"] is None:
+            raise SelectionFailure("INVALID_SELECTION", "Inconsistent persisted selection.")
+        return {**dict(mount),"world_uuid":hall["world_uuid"],"owner_uuid":hall["owner_uuid"]}
+
+    @staticmethod
+    def _selection_authorize(row, player_uuid, expected_context=None):
+        if str(row["owner_uuid"]) != str(player_uuid):
+            raise SelectionFailure("FORBIDDEN", "Only the Hall owner may select.", 403)
+        if expected_context is not None and any(str(row[key]) != str(value)
+                for key,value in expected_context.items()):
+            raise SelectionFailure("CONTEXT_MISMATCH", "The previous mount identity is stale.")
+
+    def get_selection(self, hall_id, player_uuid, expected_context=None):
+        with self._connect() as conn,conn.cursor(cursor_factory=RealDictCursor) as cur:
+            row=self._selection_row(cur,hall_id)
+            self._selection_authorize(row,player_uuid,expected_context)
+            return row
+
+    def select(self, hall_id, player_uuid, program_id, stage_id,
+               expected_selection_revision, expected_context=None):
+        """Serialize on Hall; all validation/allocation and CAS share one transaction."""
+        with self._connect() as conn,conn.cursor(cursor_factory=RealDictCursor) as cur:
+            row=self._selection_row(cur,hall_id,lock=True)
+            self._selection_authorize(row,player_uuid,expected_context)
+            cur.execute("SELECT owner_uuid FROM blockcommander.programs WHERE program_id=%s FOR SHARE",
+                (program_id,))
+            program=cur.fetchone()
+            if not program: raise SelectionFailure("PROGRAM_NOT_FOUND", "Program not found.",404)
+            if str(program["owner_uuid"]) != str(player_uuid):
+                raise SelectionFailure("FORBIDDEN", "Only the Program owner may select.",403)
+            cur.execute("SELECT program_id FROM blockcommander.stages WHERE stage_id=%s FOR SHARE",(stage_id,))
+            stage=cur.fetchone()
+            if not stage: raise SelectionFailure("STAGE_NOT_PERSISTED", "Stage must already be saved.",422)
+            if str(stage["program_id"]) != str(program_id):
+                raise SelectionFailure("STAGE_PROGRAM_MISMATCH", "Stage belongs to another Program.")
+            # Strict CAS, including no-op requests. A stale retry reads GET and compares
+            # identity; it cannot masquerade as a successful write after an ABA change.
+            if row["selection_revision"] != expected_selection_revision:
+                raise SelectionFailure("SELECTION_CONFLICT", "Selection revision is stale.")
+            if str(row["program_id"]) == str(program_id) and str(row["active_stage_id"]) == str(stage_id):
+                return row, False
+            copy_id=str(row["working_copy_id"])
+            if str(row["program_id"]) != str(program_id):
+                copy_id=str(uuid.uuid4())
+                cur.execute("INSERT INTO blockcommander.working_copies(working_copy_id,program_id) VALUES(%s,%s)",
+                    (copy_id,program_id))
+            cur.execute("""UPDATE blockcommander.hall_program_mounts SET program_id=%s,
+                working_copy_id=%s,active_stage_id=%s,selection_revision=selection_revision+1,
+                updated_at=now() WHERE hall_id=%s RETURNING *""",(program_id,copy_id,stage_id,str(hall_id)))
+            return {**dict(cur.fetchone()),"world_uuid":row["world_uuid"]}, True
 
     def resolve_working_copy_context(
         self,hall_id:str|uuid.UUID,*,program_id:str|uuid.UUID|None=None,

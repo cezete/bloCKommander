@@ -201,9 +201,17 @@ def create_stage(*, with_legacy_block: bool = False) -> None:
             if cur.fetchone()[0] is not None:
                 cur.execute("""INSERT INTO blockcommander.working_copies(working_copy_id,program_id)
                     VALUES(%s,%s)""",(str(UUID(int=7015)),str(PROGRAM_ID)))
-                cur.execute("""INSERT INTO blockcommander.hall_program_mounts(
-                    hall_id,program_id,working_copy_id) VALUES(%s,%s,%s)""",
-                    (str(HALL_ID),str(PROGRAM_ID),str(UUID(int=7015))))
+                cur.execute("""SELECT EXISTS(SELECT 1 FROM information_schema.columns
+                    WHERE table_schema='blockcommander' AND table_name='hall_program_mounts'
+                    AND column_name='active_stage_id')""")
+                if cur.fetchone()[0]:
+                    cur.execute("""INSERT INTO blockcommander.hall_program_mounts(
+                        hall_id,program_id,working_copy_id,active_stage_id) VALUES(%s,%s,%s,%s)""",
+                        (str(HALL_ID),str(PROGRAM_ID),str(UUID(int=7015)),str(STAGE_ID)))
+                else:
+                    cur.execute("""INSERT INTO blockcommander.hall_program_mounts(
+                        hall_id,program_id,working_copy_id) VALUES(%s,%s,%s)""",
+                        (str(HALL_ID),str(PROGRAM_ID),str(UUID(int=7015))))
             else:
                 cur.execute(
                     """INSERT INTO blockcommander.hall_program_mounts(hall_id,program_id)

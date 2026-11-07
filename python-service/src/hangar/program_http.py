@@ -166,6 +166,7 @@ def stage_projection_dto(
 
 def program_dto(service:ProgramService,workspace:ProgramWorkspace)->dict[str,Any]:
     with workspace.lock:
+        service.refresh_mounts(workspace)
         aggregate_dirty=service.is_dirty(workspace.program_id)
         return {
             "program_id":str(workspace.program_id),
@@ -184,6 +185,7 @@ def program_dto(service:ProgramService,workspace:ProgramWorkspace)->dict[str,Any
                 "program_id":str(workspace.program_id),
                 "working_copy_id":str(item["working_copy_id"]),
                 "current":True,
+                **{key:item[key] for key in ("active_stage_id","selection_revision") if key in item},
             } for item in workspace.mounts],
         }
 

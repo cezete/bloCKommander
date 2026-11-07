@@ -109,6 +109,16 @@ class ProgramService:
         with self._guard:
             return self._programs.get(program_id) or self._install(loaded)
 
+    def refresh_mounts(self, workspace:ProgramWorkspace)->None:
+        """Read-through metadata only; failure leaves every workspace field intact.
+
+        Reads retry naturally. Selection commits do not depend on process cache
+        availability and never report a committed DB write as a failed PUT.
+        """
+        with workspace.lock:
+            mounts=self.repository.load_program(str(workspace.program_id)).mounts
+            workspace.mounts=tuple(dict(row) for row in mounts)
+
     def for_stage(self,stage_id:str|uuid.UUID)->ProgramWorkspace:
         normalized=uuid.UUID(str(stage_id))
         with self._guard:
