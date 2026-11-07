@@ -2,6 +2,7 @@ package me.buciqua.blockommander.runtime.graph
 
 import com.google.gson.JsonParser
 import com.sun.net.httpserver.HttpServer
+import me.buciqua.blockommander.runtime.*
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
@@ -20,7 +21,7 @@ class GraphApiClientTest {
         val hits = AtomicInteger()
         val base = startServer { _, _ -> hits.incrementAndGet(); 200 to successJson() }
         val client = GraphApiClient.configured(base, "   ")
-        val result = client.getState(STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID)).get(2, TimeUnit.SECONDS)
+        val result = client.getState(TRANSPORT_CONTEXT, STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID)).get(2, TimeUnit.SECONDS)
         assertTrue(result is GraphHttpResult.Unavailable)
         assertEquals(0, hits.get())
         assertFalse(client.toString().contains("top-secret"))
@@ -31,10 +32,25 @@ class GraphApiClientTest {
         val header = AtomicReference<String>()
         val base = startServer { requestHeader, _ -> header.set(requestHeader); 200 to successJson() }
         val result = GraphApiClient.configured(base, "top-secret")
-            .getState(STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID)).get(3, TimeUnit.SECONDS)
+            .getState(TRANSPORT_CONTEXT, STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID)).get(3, TimeUnit.SECONDS)
         assertTrue(result is GraphHttpResult.Success)
         assertEquals("top-secret", header.get())
         assertFalse(result.toString().contains("top-secret"))
+    }
+
+    @Test fun `successful HTTP with foreign or missing context is a protocol failure`() {
+        for (body in listOf(
+            successJson().replace(WORKING_COPY_ID.toString(), java.util.UUID.randomUUID().toString()),
+            successJson().replace("\"transport_context\"", "\"ignored_context\""),
+            "not-json",
+        )) {
+            server?.stop(0)
+            val base=startServer { _, _ -> 200 to body }
+            val result=GraphApiClient.configured(base,"secret")
+                .getState(TRANSPORT_CONTEXT,STAGE_ID,ServerPlayerIdentity.trustedForTest(PLAYER_ID))
+                .get(3,TimeUnit.SECONDS)
+            assertInstanceOf(GraphHttpResult.ProtocolFailure::class.java,result)
+        }
     }
 
     @Test fun `all B1 HTTP errors remain structured`() {
@@ -42,7 +58,7 @@ class GraphApiClientTest {
             server?.stop(0)
             val base = startServer { _, _ -> status to errorJson("E$status") }
             val result = GraphApiClient.configured(base, "secret")
-                .getState(STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID)).get(3, TimeUnit.SECONDS)
+                .getState(TRANSPORT_CONTEXT, STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID)).get(3, TimeUnit.SECONDS)
             assertEquals(status, (result as GraphHttpResult.ApiError).response.httpStatus)
             assertEquals("E$status", result.response.errorCode)
         }
@@ -54,7 +70,7 @@ class GraphApiClientTest {
         val command = BindEdgesCommand(
             REQUEST_ID, STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID), EPOCH_A, 3,
         )
-        val result = GraphApiClient.configured(base, "secret").send(command).get(3, TimeUnit.SECONDS)
+        val result = GraphApiClient.configured(base, "secret").send(TRANSPORT_CONTEXT, command).get(3, TimeUnit.SECONDS)
         assertTrue(result is GraphHttpResult.Success)
         assertTrue(body.get().contains(REQUEST_ID.toString()))
         assertEquals(REQUEST_ID, (result as GraphHttpResult.Success).response.requestId)
@@ -67,7 +83,7 @@ class GraphApiClientTest {
             REQUEST_ID, STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID), EPOCH_A, 3,
             listOf(GraphWireChangeInput(GraphPosition(1, 0, 0), null)),
         )
-        val result = GraphApiClient.configured(base, "secret").send(command).get(3, TimeUnit.SECONDS)
+        val result = GraphApiClient.configured(base, "secret").send(TRANSPORT_CONTEXT, command).get(3, TimeUnit.SECONDS)
         assertTrue(result is GraphHttpResult.Success)
         val change = JsonParser.parseString(body.get()).asJsonObject
             .getAsJsonObject("payload").getAsJsonArray("changes")[0].asJsonObject
@@ -87,7 +103,7 @@ class GraphApiClientTest {
             REQUEST_ID, STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID), EPOCH_A, 3,
             GraphPosition(2, 0, 3), GraphPlacementIntent.CROSS,
         )
-        val result = GraphApiClient.configured(base, "secret").send(command).get(3, TimeUnit.SECONDS)
+        val result = GraphApiClient.configured(base, "secret").send(TRANSPORT_CONTEXT, command).get(3, TimeUnit.SECONDS)
         assertTrue(result is GraphHttpResult.Success)
         assertEquals("secret", header.get())
         assertEquals("/api/v1/stages/$STAGE_ID/graph/wire/place", path.get())
@@ -103,6 +119,9 @@ class GraphApiClientTest {
     ): String {
         val created = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         created.createContext("/") { exchange ->
+            assertEquals(HALL_ID.toString(),exchange.requestHeaders.getFirst(HALL_ID_HEADER))
+            assertEquals(PROGRAM_ID.toString(),exchange.requestHeaders.getFirst(PROGRAM_ID_HEADER))
+            assertEquals(WORKING_COPY_ID.toString(),exchange.requestHeaders.getFirst(WORKING_COPY_ID_HEADER))
             pathCapture?.set(exchange.requestURI.path)
             val requestBody = exchange.requestBody.readAllBytes().toString(StandardCharsets.UTF_8)
             val (status, body) = response(exchange.requestHeaders.getFirst(GRAPH_SECRET_HEADER), requestBody)

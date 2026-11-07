@@ -10,6 +10,7 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
+import java.util.UUID
 
 class ApiClient {
     private val gson = Gson()
@@ -17,14 +18,22 @@ class ApiClient {
     private val baseUrl = System.getProperty("blockommander.api", "http://127.0.0.1:5001").trimEnd('/')
 
     fun get(player: ServerPlayer?, path: String, onFailure: (String) -> Unit = {}, success: (JsonObject) -> Unit) =
-        request(player, "GET", path, null, success, onFailure)
+        request(player, "GET", path, null, null, null, success, onFailure)
+    fun get(player: ServerPlayer?, path: String, context: WorkingCopyTransportContext, stageId: UUID? = null,
+            onFailure: (String) -> Unit = {}, success: (JsonObject) -> Unit) =
+        request(player, "GET", path, null, context, stageId, success, onFailure)
     fun post(player: ServerPlayer, path: String, payload: JsonObject, onFailure: (String) -> Unit = {},
-             success: (JsonObject) -> Unit) = request(player, "POST", path, payload, success, onFailure)
+             success: (JsonObject) -> Unit) = request(player, "POST", path, payload, null, null, success, onFailure)
+    fun post(player: ServerPlayer, path: String, payload: JsonObject, context: WorkingCopyTransportContext,
+             stageId: UUID? = null, onFailure: (String) -> Unit = {}, success: (JsonObject) -> Unit) =
+        request(player, "POST", path, payload, context, stageId, success, onFailure)
 
     private fun request(player: ServerPlayer?, method: String, path: String, payload: JsonObject?,
+                        context: WorkingCopyTransportContext?, stageId: UUID?,
                         success: (JsonObject) -> Unit, onFailure: (String) -> Unit) {
         val builder = HttpRequest.newBuilder(URI.create(baseUrl + path)).timeout(Duration.ofSeconds(10))
             .header("Accept", "application/json")
+        context?.addHeaders(builder)
         if (payload == null) builder.GET() else builder.header("Content-Type", "application/json")
             .method(method, HttpRequest.BodyPublishers.ofString(gson.toJson(payload)))
         http.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString()).whenComplete { response, failure ->
@@ -44,6 +53,19 @@ class ApiClient {
                     player?.sendSystemMessage(Component.literal("§c[CK] $message"))
                     onFailure("HTTP_${response.statusCode()}: $message")
                     return@Runnable
+                }
+                if (context != null) {
+                    try {
+                        TransportContextParser.validateResponse(body, context, stageId)
+                    } catch (failure: TransportContextProtocolException) {
+                        BlockCommanderMod.LOGGER.warn(
+                            "Python service returned invalid transport context: {} {} detail={}",
+                            method, path, failure.message,
+                        )
+                        player?.sendSystemMessage(Component.literal("§c[CK] A Python válasz kontextusa hibás."))
+                        onFailure("TRANSPORT_CONTEXT_INVALID")
+                        return@Runnable
+                    }
                 }
                 body.get("message")?.asString?.let { player?.sendSystemMessage(Component.literal("§a[CK] $it")) }
                 success(body)

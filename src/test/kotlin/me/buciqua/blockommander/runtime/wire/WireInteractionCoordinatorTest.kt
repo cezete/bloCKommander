@@ -11,7 +11,7 @@ import java.util.concurrent.TimeUnit
 
 class WireInteractionCoordinatorTest {
     private val direct = Executor(Runnable::run)
-    private val stage = WireStageContext(STAGE_ID, GraphPosition(10, 20, 30), GraphPosition(7, 5, 7), EPOCH_A)
+    private val stage = WireStageContext(TRANSPORT_CONTEXT, STAGE_ID, GraphPosition(10, 20, 30), GraphPosition(7, 5, 7), EPOCH_A)
     private val target = GraphPosition(11, 20, 30)
     private val player = ServerPlayerIdentity.trustedForTest(PLAYER_ID)
 
@@ -209,9 +209,9 @@ class WireInteractionCoordinatorTest {
         val pending = CompletableFuture<CommandTransportOutcome>()
         lateinit var captured: GraphCommand
         val gateway = object : GraphGateway {
-            override fun reconcile(stageId: UUID, player: ServerPlayerIdentity) =
+            override fun reconcile(context: me.buciqua.blockommander.runtime.WorkingCopyTransportContext, stageId: UUID, player: ServerPlayerIdentity) =
                 CompletableFuture.completedFuture(ReconciliationOutcome(GraphHttpResult.Unavailable("unused"), null))
-            override fun send(command: GraphCommand): CompletableFuture<CommandTransportOutcome> {
+            override fun send(context: me.buciqua.blockommander.runtime.WorkingCopyTransportContext, command: GraphCommand): CompletableFuture<CommandTransportOutcome> {
                 captured = command
                 return pending
             }
@@ -404,7 +404,7 @@ private class FakeGraphGateway(private val store: GraphProjectionStore) : GraphG
     var discovery: GraphDiscovery? = null
     var afterSend: () -> Unit = {}
 
-    override fun reconcile(stageId: UUID, player: ServerPlayerIdentity): CompletableFuture<ReconciliationOutcome> {
+    override fun reconcile(context: me.buciqua.blockommander.runtime.WorkingCopyTransportContext, stageId: UUID, player: ServerPlayerIdentity): CompletableFuture<ReconciliationOutcome> {
         reconcileCalls++
         val snapshot = reconcileSnapshot ?: store.view(stageId)?.snapshot
             ?: return CompletableFuture.completedFuture(ReconciliationOutcome(GraphHttpResult.Unavailable("missing"), null))
@@ -412,7 +412,7 @@ private class FakeGraphGateway(private val store: GraphProjectionStore) : GraphG
         return CompletableFuture.completedFuture(ReconciliationOutcome(GraphHttpResult.Success(success(snapshot, null)), applied))
     }
 
-    override fun send(command: GraphCommand): CompletableFuture<CommandTransportOutcome> {
+    override fun send(context: me.buciqua.blockommander.runtime.WorkingCopyTransportContext, command: GraphCommand): CompletableFuture<CommandTransportOutcome> {
         commands += command
         rejectStatus?.let { status ->
             val error = GraphErrorResponse(
@@ -421,7 +421,7 @@ private class FakeGraphGateway(private val store: GraphProjectionStore) : GraphG
                 rejectErrorCode, "rejected", rejectDiagnostics, discovery,
             )
             val transport = GraphHttpResult.ApiError(error)
-            return if (status == 409 || status >= 500) reconcile(command.stageId, command.player).thenApply {
+            return if (status == 409 || status >= 500) reconcile(context, command.stageId, command.player).thenApply {
                 CommandTransportOutcome(transport, null, it)
             } else CompletableFuture.completedFuture(CommandTransportOutcome(transport, null, null))
         }

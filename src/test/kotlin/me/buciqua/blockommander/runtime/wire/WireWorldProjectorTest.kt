@@ -6,7 +6,7 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class WireWorldProjectorTest {
-    private val stage = WireStageContext(STAGE_ID, GraphPosition(10, 20, 30), GraphPosition(7, 5, 7), EPOCH_A)
+    private val stage = WireStageContext(TRANSPORT_CONTEXT, STAGE_ID, GraphPosition(10, 20, 30), GraphPosition(7, 5, 7), EPOCH_A)
     private val target = GraphPosition(11, 20, 30)
 
     @Test fun `supported E-W cell renders and repeated reconciliation is idempotent`() {

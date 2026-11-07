@@ -40,7 +40,7 @@ class StageReconnectReconcilerTest {
             registry,
             projectStage = { events += "stage"; projectedTypes = it.stage!!.blocks.map(StageBlock::type) },
             reconcileGraphAndWire = { stage ->
-                events += "graph-wire:${stage.workspaceEpoch}"
+                events += "graph-wire:${stage.stage!!.workspaceEpoch}"
                 CompletableFuture.completedFuture(ReconnectGraphResult(true))
             },
             projectSaveState = { _, dirty -> events += "save"; projectedDirty = dirty },
@@ -100,7 +100,7 @@ class StageReconnectReconcilerTest {
     }
 
     private fun hall(epoch: UUID, revision: Long, dirty: Boolean, blocks: String = "[]") = JsonParser.parseString("""
-      {"hall_id":"$HALL_ID","hall_name":"Hall","owner_uuid":"$OWNER_ID","owner_name":"Owner",
+      {"hall_id":"$HALL_ID","program_id":"$STAGE_ID","working_copy_id":"$OWNER_ID","hall_name":"Hall","owner_uuid":"$OWNER_ID","owner_name":"Owner",
        "world_uuid":"$WORLD_ID","material_name":"STONE","min_x":0,"min_y":0,"min_z":0,
        "max_x":12,"max_y":8,"max_z":12,"door":{"x":0,"y":1,"z":1},"orientation":"NORTH",
        "controls":[{"kind":"SAVE_SIGN","x":0,"y":2,"z":2}],

@@ -9,7 +9,7 @@ data class ReconnectGraphResult(val synchronized: Boolean, val detail: String? =
 class StageReconnectReconciler(
     private val registry: HallRegistry,
     private val projectStage: (Hall) -> Unit,
-    private val reconcileGraphAndWire: (Stage) -> CompletableFuture<ReconnectGraphResult>,
+    private val reconcileGraphAndWire: (Hall) -> CompletableFuture<ReconnectGraphResult>,
     private val projectSaveState: (Hall, Boolean) -> Unit,
     private val diagnose: (String) -> Unit = {},
 ) {
@@ -33,22 +33,22 @@ class StageReconnectReconciler(
             return false
         }
 
-        val graphFuture = runCatching { reconcileGraphAndWire(stage) }.getOrElse {
-            completeAfterGraph(stage, ReconnectGraphResult(false, "GRAPH_RECONCILIATION_FAILED: ${it.message}"))
+        val graphFuture = runCatching { reconcileGraphAndWire(hall) }.getOrElse {
+            completeAfterGraph(hall.id, stage, ReconnectGraphResult(false, "GRAPH_RECONCILIATION_FAILED: ${it.message}"))
             return true
         }
         graphFuture.whenComplete { result, failure ->
             completeAfterGraph(
-                stage,
+                hall.id, stage,
                 if (failure == null) result else ReconnectGraphResult(false, "GRAPH_RECONCILIATION_FAILED: ${failure.message}"),
             )
         }
         return true
     }
 
-    private fun completeAfterGraph(stage: Stage, result: ReconnectGraphResult) {
+    private fun completeAfterGraph(hallId: String, stage: Stage, result: ReconnectGraphResult) {
         if (!result.synchronized) diagnose(result.detail ?: "GRAPH_RECONCILIATION_NOT_SYNCED")
-        val currentHall = registry.hallForStage(stage.id) ?: run {
+        val currentHall = registry.hall(hallId) ?: run {
             diagnose("STAGE_LIFECYCLE_CHANGED")
             return
         }
@@ -58,7 +58,6 @@ class StageReconnectReconciler(
             diagnose("STAGE_LIFECYCLE_CHANGED")
             return
         }
-        val dirty = registry.saveDirty(stage.id) ?: return
-        projectSaveState(currentHall, dirty)
+        projectSaveState(currentHall, currentHall.programDirty)
     }
 }

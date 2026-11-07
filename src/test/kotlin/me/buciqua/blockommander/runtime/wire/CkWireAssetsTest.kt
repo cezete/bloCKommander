@@ -155,7 +155,7 @@ class CkWireAssetsTest {
         assertTrue(source.contains("/api/v1/worlds/\$worldUuid/halls"))
         assertTrue(source.contains("StageReconnectReconciler("))
         assertTrue(source.contains("WorldRenderer.renderStageBlocks(level, hall)"))
-        assertTrue(source.contains("reconcileGraphAndWire = { stage ->"))
+        assertTrue(source.contains("reconcileGraphAndWire = { hall ->"))
     }
 
     @Test fun `save sign uses authoritative Program state instead of graph dirty`() {
@@ -186,7 +186,7 @@ class CkWireAssetsTest {
             root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/Interactions.kt"),
         )
         assertTrue(source.contains("registry.updateStageAfterSave"))
-        assertTrue(source.contains("reconcileGraphAndWire(player, level, savedStage)"))
+        assertTrue(source.contains("reconcileGraphAndWire(player, level, hall)"))
         assertTrue(source.contains("registry.isSaveFenceCurrent(fence)"))
     }
 

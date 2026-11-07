@@ -61,7 +61,7 @@ class WireInteractionCoordinator(
         projectionAllowed: () -> Boolean = { true },
     ): CompletableFuture<WireActionResult> {
         val requestId = requestIdFactory()
-        return gateway.reconcile(stage.stageId, player).thenCompose {
+        return gateway.reconcile(stage.transportContext, stage.stageId, player).thenCompose {
             renderCurrent(stage, world, WireAction.PLACE, requestId, null, recovered = true,
                 projectionAllowed = projectionAllowed)
         }
@@ -86,7 +86,7 @@ class WireInteractionCoordinator(
             val command = BindEdgesCommand(
                 requestId, stage.stageId, player, view.stageEpoch, view.stageRevision,
             )
-            gateway.send(command).thenCompose { outcome ->
+            gateway.send(stage.transportContext, command).thenCompose { outcome ->
                 val discoveryDiagnostics = outcomeDiscoveryDiagnostics(outcome)
                 val authoritative = outcome.application is GraphApplyResult.Applied ||
                     outcome.reconciliation?.application is GraphApplyResult.Applied
@@ -103,7 +103,7 @@ class WireInteractionCoordinator(
                         discoveryDiagnostics = discoveryDiagnostics,
                     ).thenCompose { rendered ->
                         if (rendered.detail != "WORLD_RENDER_FAILED") CompletableFuture.completedFuture(rendered)
-                        else gateway.reconcile(stage.stageId, player).thenCompose {
+                        else gateway.reconcile(stage.transportContext, stage.stageId, player).thenCompose {
                             renderCurrent(
                                 stage, world, WireAction.BIND, requestId, null,
                                 recovered = true, forceRejected = forceRejected,
@@ -156,7 +156,7 @@ class WireInteractionCoordinator(
                 )
                 WireAction.BIND -> error("A bind nem placement/remove művelet.")
             }
-            gateway.send(command).thenCompose { outcome ->
+            gateway.send(stage.transportContext, command).thenCompose { outcome ->
                 val discoveryDiagnostics = outcomeDiscoveryDiagnostics(outcome)
                 val authoritative = outcome.application is GraphApplyResult.Applied ||
                     outcome.reconciliation?.application is GraphApplyResult.Applied
@@ -179,7 +179,7 @@ class WireInteractionCoordinator(
                             if (rendered.detail != "WORLD_RENDER_FAILED") {
                                 CompletableFuture.completedFuture(rendered)
                             } else {
-                                gateway.reconcile(stage.stageId, player).thenCompose {
+                                gateway.reconcile(stage.transportContext, stage.stageId, player).thenCompose {
                                     renderCurrent(
                                         stage, world, action, requestId, absolutePosition,
                                         recovered = true, forceRejected = forceRejected,
@@ -200,7 +200,7 @@ class WireInteractionCoordinator(
         player: ServerPlayerIdentity,
     ): CompletableFuture<SyncCheck> {
         current(stage)?.let { return CompletableFuture.completedFuture(SyncCheck(it)) }
-        return gateway.reconcile(stage.stageId, player).thenApply { outcome ->
+        return gateway.reconcile(stage.transportContext, stage.stageId, player).thenApply { outcome ->
             val forbidden=outcome.transport is GraphHttpResult.ApiError &&
                 outcome.transport.response.httpStatus in setOf(401,403)
             SyncCheck(current(stage),forbidden)

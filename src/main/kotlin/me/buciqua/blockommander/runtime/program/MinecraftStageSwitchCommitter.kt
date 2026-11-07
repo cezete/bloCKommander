@@ -56,7 +56,7 @@ class MinecraftStageSwitchCommitter(
             }
             val wire=wireProjector.apply(
                 WireStageContext(
-                    UUID.fromString(target.id),target.origin.graphPosition(),
+                    hall.transportContext,UUID.fromString(target.id),target.origin.graphPosition(),
                     GraphPosition(target.sizeX,target.sizeY,target.sizeZ),target.workspaceEpoch,
                 ),prepared.graph.workingRevision,prepared.graph,MinecraftWireWorldAccess(level),
             )

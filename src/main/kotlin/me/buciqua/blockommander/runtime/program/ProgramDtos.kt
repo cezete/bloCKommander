@@ -10,7 +10,12 @@ const val PROGRAM_API_VERSION = "ck-program-v1"
 enum class ProgramWorkspaceState { ACTIVE, RELOAD_REQUIRED }
 enum class ProgramLinkState { ACTIVE, RETAINED }
 
-data class ProgramMount(val hallId: UUID, val programId: UUID, val current: Boolean)
+data class ProgramMount(
+    val hallId: UUID,
+    val programId: UUID,
+    val workingCopyId: UUID,
+    val current: Boolean,
+)
 data class ProgramLink(
     val parentStageId: UUID,
     val programBlockInstanceId: UUID,
@@ -204,7 +209,8 @@ object ProgramResponseParser {
         obj.requiredUuid("child_stage_id"),obj.requiredEnum("state"),
     )
     private fun parseMount(obj:JsonObject)=ProgramMount(
-        obj.requiredUuid("hall_id"),obj.requiredUuid("program_id"),obj.requiredBoolean("current"),
+        obj.requiredUuid("hall_id"),obj.requiredUuid("program_id"),
+        obj.requiredUuid("working_copy_id"),obj.requiredBoolean("current"),
     )
     private fun parsePosition(obj:JsonObject)=GraphPosition(
         obj.requiredInt("x"),obj.requiredInt("y"),obj.requiredInt("z"),

@@ -1,10 +1,14 @@
 package me.buciqua.blockommander.runtime.graph
 
+import me.buciqua.blockommander.runtime.WorkingCopyTransportContext
 import java.util.UUID
 
 internal val STAGE_ID: UUID = UUID.fromString("11111111-1111-1111-1111-111111111111")
 internal val OTHER_STAGE_ID: UUID = UUID.fromString("22222222-2222-2222-2222-222222222222")
 internal val HALL_ID: UUID = UUID.fromString("33333333-3333-3333-3333-333333333333")
+internal val PROGRAM_ID: UUID = UUID.fromString("33333333-3333-3333-3333-333333333334")
+internal val WORKING_COPY_ID: UUID = UUID.fromString("33333333-3333-3333-3333-333333333335")
+internal val TRANSPORT_CONTEXT = WorkingCopyTransportContext(HALL_ID, PROGRAM_ID, WORKING_COPY_ID)
 internal val WORLD_ID: UUID = UUID.fromString("44444444-4444-4444-4444-444444444444")
 internal val EPOCH_A: UUID = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 internal val EPOCH_B: UUID = UUID.fromString("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
@@ -35,6 +39,7 @@ internal fun successJson(
 ): String = """
 {
   "api_version":"ck-graph-v1","status":"ok",${requestId?.let { "\"request_id\":\"$it\"," } ?: ""}
+  "transport_context":{"mode":"explicit","hall_id":"$HALL_ID","program_id":"$PROGRAM_ID","working_copy_id":"$WORKING_COPY_ID","stage_id":"$stageId","content_scope":"SHARED_PROGRAM"},
   "modified":false,"stage_id":"$stageId","workspace_epoch":"$epoch","working_revision":$revision,
   "diagnostics":[],"wire_diff":[],
   "state":{

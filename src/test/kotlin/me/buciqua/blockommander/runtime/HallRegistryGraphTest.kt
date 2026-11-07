@@ -12,9 +12,9 @@ class HallRegistryGraphTest {
     private fun programStatus(dirty: Boolean, revision: Long = 0): MountedProgramResponse {
         val summary=ProgramStageSummary(STAGE_ID,EPOCH_B,"ROOT","root",true,0,ProgramStageWorkspace(EPOCH_A,revision,false),
             ProgramDomainLayout(GraphPosition(1,1,1),GraphPosition(7,5,7)),emptyList(),emptyList())
-        return MountedProgramResponse(ProgramMount(HALL_ID,EPOCH_B,true),ProgramSnapshot(
+        return MountedProgramResponse(ProgramMount(HALL_ID,EPOCH_B,WORKING_COPY_ID,true),ProgramSnapshot(
             EPOCH_B,PLAYER_ID,STAGE_ID,0,dirty,false,0,EPOCH_A,ProgramWorkspaceState.ACTIVE,
-            listOf(summary),emptyList(),listOf(ProgramMount(HALL_ID,EPOCH_B,true))))
+            listOf(summary),emptyList(),listOf(ProgramMount(HALL_ID,EPOCH_B,WORKING_COPY_ID,true))))
     }
 
     @Test fun `late Program clean status and SAVE cannot overwrite newer dirty status`() {
@@ -337,7 +337,7 @@ class HallRegistryGraphTest {
     }
 
     private fun hallJson(epoch: UUID, revision: Long, dirty: Boolean = true) = """
-      {"hall_id":"$HALL_ID","hall_name":"Hall","owner_uuid":"$PLAYER_ID","owner_name":"Owner",
+      {"hall_id":"$HALL_ID","program_id":"$EPOCH_B","working_copy_id":"$WORKING_COPY_ID","hall_name":"Hall","owner_uuid":"$PLAYER_ID","owner_name":"Owner",
        "world_uuid":"$WORLD_ID","material_name":"STONE","min_x":0,"min_y":0,"min_z":0,
        "max_x":10,"max_y":10,"max_z":10,"door":{"x":0,"y":1,"z":1},"orientation":"NORTH",
        "controls":[],"stage":${stageJson(epoch, revision, dirty)}}

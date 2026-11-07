@@ -6,6 +6,7 @@ import me.buciqua.blockommander.CkWireVisualVariant
 import me.buciqua.blockommander.ModContent
 import me.buciqua.blockommander.runtime.graph.GraphPosition
 import me.buciqua.blockommander.runtime.graph.GraphStateSnapshot
+import me.buciqua.blockommander.runtime.WorkingCopyTransportContext
 import net.minecraft.core.BlockPos
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.level.block.Block
@@ -13,6 +14,7 @@ import net.minecraft.world.level.block.Blocks
 import java.util.UUID
 
 data class WireStageContext(
+    val transportContext: WorkingCopyTransportContext,
     val stageId: UUID,
     val origin: GraphPosition,
     val size: GraphPosition,

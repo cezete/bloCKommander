@@ -162,7 +162,7 @@ class StageNavigationCoordinatorTest {
         val origin=min.offset(1,1,1)
         val max=min.offset(10,10,10)
         return """
-          {"hall_id":"$HALL","hall_name":"Hall","owner_uuid":"$OWNER","owner_name":"Owner",
+          {"hall_id":"$HALL","program_id":"$PROGRAM","working_copy_id":"$WORKING_COPY","hall_name":"Hall","owner_uuid":"$OWNER","owner_name":"Owner",
            "world_uuid":"$WORLD","material_name":"STONE","min_x":${min.x},"min_y":${min.y},"min_z":${min.z},
            "max_x":${max.x},"max_y":${max.y},"max_z":${max.z},"door":{"x":${min.x},"y":${min.y+1},"z":${min.z+1}},
            "orientation":"NORTH","controls":[],"stage":{"stage_id":"$ROOT","hall_id":"$HALL",
@@ -200,17 +200,17 @@ class StageNavigationCoordinatorTest {
         var stageDirty=true
         var aggregateDirty=true
 
-        override fun mountedProgram(hallId:UUID)=success(MountedProgramResponse(
-            ProgramMount(HALL,PROGRAM,true),snapshot(),
+        override fun mountedProgram(context:WorkingCopyTransportContext)=success(MountedProgramResponse(
+            ProgramMount(HALL,PROGRAM,WORKING_COPY,true),snapshot(),
         ))
-        override fun program(programId:UUID)=success(ProgramViewResponse(snapshot()))
-        override fun stage(programId:UUID,stageId:UUID):CompletableFuture<ProgramHttpResult<ProgramStageResponse>> {
+        override fun program(context:WorkingCopyTransportContext)=success(ProgramViewResponse(snapshot()))
+        override fun stage(context:WorkingCopyTransportContext,stageId:UUID):CompletableFuture<ProgramHttpResult<ProgramStageResponse>> {
             pendingStages[stageId]?.let { return it }
             if (failStage) return CompletableFuture.completedFuture(ProgramHttpResult.Unavailable("offline"))
             return success(stageResponse(stageId))
         }
         override fun ensureChild(
-            programId:UUID,parentStageId:UUID,programBlockInstanceId:UUID,playerUuid:UUID,
+            context:WorkingCopyTransportContext,parentStageId:UUID,programBlockInstanceId:UUID,playerUuid:UUID,
         ):CompletableFuture<ProgramHttpResult<ChildEnsureResponse>> {
             ensureCalls+=parentStageId to programBlockInstanceId
             val target=when (programBlockInstanceId) { ROOT_BLOCK->CHILD;CHILD_BLOCK->GRANDCHILD;else->error("unknown block") }
@@ -245,7 +245,7 @@ class StageNavigationCoordinatorTest {
         fun snapshot()=ProgramSnapshot(
             PROGRAM,OWNER,ROOT,0,true,links.isNotEmpty(),hierarchyRevision,PROGRAM_EPOCH,
             ProgramWorkspaceState.ACTIVE,listOf(ROOT,CHILD,GRANDCHILD).map(::summary),links.toList(),
-            listOf(ProgramMount(HALL,PROGRAM,true)),
+            listOf(ProgramMount(HALL,PROGRAM,WORKING_COPY,true)),
         )
         private fun block(id:UUID,pos:GraphPosition)=ProgramStageBlock(
             id,"PROGRAM",pos,"EAST","PROGRAM",null,
@@ -260,7 +260,7 @@ class StageNavigationCoordinatorTest {
     private class FakeNavigationGraph(
         private val store:GraphProjectionStore,private val programs:FakePrograms,
     ):GraphGateway {
-        override fun reconcile(stageId:UUID,player:ServerPlayerIdentity):CompletableFuture<ReconciliationOutcome> {
+        override fun reconcile(context: WorkingCopyTransportContext,stageId:UUID,player:ServerPlayerIdentity):CompletableFuture<ReconciliationOutcome> {
             val snapshot=snapshotFor(stageId)
             val applied=store.apply(store.begin(stageId,GraphRequestKind.RECONCILIATION),snapshot)
             return CompletableFuture.completedFuture(ReconciliationOutcome(GraphHttpResult.Success(
@@ -270,7 +270,7 @@ class StageNavigationCoordinatorTest {
                 ),
             ),applied))
         }
-        override fun send(command:GraphCommand):CompletableFuture<CommandTransportOutcome> =
+        override fun send(context: WorkingCopyTransportContext,command:GraphCommand):CompletableFuture<CommandTransportOutcome> =
             error("Navigation must not issue Graph mutations")
         fun snapshotFor(stageId:UUID):GraphStateSnapshot {
             val stage=programs.stageResponse(stageId).stage
@@ -287,6 +287,7 @@ class StageNavigationCoordinatorTest {
     companion object {
         private val HALL=UUID.fromString("20000000-0000-0000-0000-000000000001")
         private val PROGRAM=UUID.fromString("20000000-0000-0000-0000-000000000002")
+        private val WORKING_COPY=UUID.fromString("20000000-0000-0000-0000-000000000014")
         private val ROOT=UUID.fromString("20000000-0000-0000-0000-000000000003")
         private val CHILD=UUID.fromString("20000000-0000-0000-0000-000000000004")
         private val GRANDCHILD=UUID.fromString("20000000-0000-0000-0000-000000000005")

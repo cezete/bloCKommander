@@ -1,6 +1,10 @@
 package me.buciqua.blockommander.runtime.graph
 
 import com.google.gson.GsonBuilder
+import com.google.gson.JsonParser
+import me.buciqua.blockommander.runtime.TransportContextParser
+import me.buciqua.blockommander.runtime.TransportContextProtocolException
+import me.buciqua.blockommander.runtime.WorkingCopyTransportContext
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -40,19 +44,23 @@ class GraphApiClient private constructor(
 
     val isConfigured: Boolean get() = secret != null
 
-    fun getState(stageId: UUID, player: ServerPlayerIdentity): CompletableFuture<GraphHttpResult> =
-        request("GET", "/api/v1/stages/$stageId/graph?player_uuid=${player.uuid}", null)
+    fun getState(
+        context: WorkingCopyTransportContext, stageId: UUID, player: ServerPlayerIdentity,
+    ): CompletableFuture<GraphHttpResult> =
+        request(context, stageId, "GET", "/api/v1/stages/$stageId/graph?player_uuid=${player.uuid}", null)
 
-    fun send(command: GraphCommand): CompletableFuture<GraphHttpResult> {
+    fun send(context: WorkingCopyTransportContext, command: GraphCommand): CompletableFuture<GraphHttpResult> {
         val suffix = when (command) {
             is WireLayoutCommand -> "wire"
             is WirePlaceIntentCommand -> "wire/place"
             is BindEdgesCommand -> "bind"
         }
-        return request("POST", "/api/v1/stages/${command.stageId}/graph/$suffix", gson.toJson(command.toJson()))
+        return request(context, command.stageId, "POST", "/api/v1/stages/${command.stageId}/graph/$suffix", gson.toJson(command.toJson()))
     }
 
-    private fun request(method: String, path: String, body: String?): CompletableFuture<GraphHttpResult> {
+    private fun request(
+        context: WorkingCopyTransportContext, stageId: UUID, method: String, path: String, body: String?,
+    ): CompletableFuture<GraphHttpResult> {
         val configuredSecret = secret ?: return CompletableFuture.completedFuture(
             GraphHttpResult.Unavailable("A graph transport nincs konfigurálva."),
         )
@@ -60,13 +68,19 @@ class GraphApiClient private constructor(
             .timeout(Duration.ofSeconds(10))
             .header("Accept", "application/json")
             .header(GRAPH_SECRET_HEADER, configuredSecret)
+        context.addHeaders(builder)
         if (body == null) builder.GET() else builder.header("Content-Type", "application/json")
             .method(method, HttpRequest.BodyPublishers.ofString(body))
         return http.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString()).handle { response, failure ->
             if (failure != null) return@handle GraphHttpResult.Unavailable("A graph szolgáltatás nem érhető el.")
             val parsed = try {
+                if (response.statusCode() in 200..299) {
+                    TransportContextParser.validateResponse(
+                        JsonParser.parseString(response.body()).asJsonObject, context, stageId,
+                    )
+                }
                 GraphResponseParser.parse(response.statusCode(), response.body())
-            } catch (failure: GraphProtocolException) {
+            } catch (failure: Exception) {
                 return@handle GraphHttpResult.ProtocolFailure(failure.message ?: "Hibás graph API-válasz.")
             }
             when {

@@ -42,7 +42,9 @@ data class HallNavigationState(
 data class Hall(val id: String, val name: String, val ownerUuid: String, val ownerName: String,
                 val worldUuid: String, val material: String,
                 val min: BlockPos, val max: BlockPos, val door: BlockPos, val orientation: String,
-                val controls: List<Control>, val stage: Stage?, val programDirty: Boolean = true) {
+                val controls: List<Control>, val stage: Stage?,
+                val transportContext: WorkingCopyTransportContext,
+                val programDirty: Boolean = true) {
     fun contains(pos: BlockPos) = pos.x in min.x..max.x && pos.y in min.y..max.y && pos.z in min.z..max.z
 }
 
@@ -77,6 +79,7 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
         val workspace = program.stages.singleOrNull { it.stageId.toString() == stage.stageId }?.workspace
             ?: return null
         if (response.mount.hallId.toString() != hall.id || !response.mount.current ||
+            response.mount.workingCopyId != hall.transportContext.workingCopyId ||
             response.mount.programId != program.programId || program.ownerUuid.toString() != hall.ownerUuid ||
             workspace.epoch != stage.workspaceEpoch || workspace.workingRevision != stage.workingRevision ||
             (state.mountedProgramId != null && state.mountedProgramId != program.programId) ||
@@ -89,7 +92,11 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
     fun install(json: JsonObject): Hall {
         val hall = parseHall(json)
         val stage = hall.stage
-        val previous = halls.put(hall.id, hall)
+        val previous = halls[hall.id]
+        require(previous == null || previous.transportContext == hall.transportContext) {
+            "HALL_TRANSPORT_CONTEXT_CHANGED"
+        }
+        halls[hall.id] = hall
         invalidateProgramStatus(hall.id)
         if (previous?.stage?.id != null && previous.stage.id != stage?.id) {
             graphProjections.remove(UUID.fromString(previous.stage.id))
@@ -105,7 +112,8 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
     }
 
     private fun parseHall(json: JsonObject): Hall {
-        val hallId = json["hall_id"].asString
+        val transportContext = TransportContextParser.fromHall(json)
+        val hallId = transportContext.hallId.toString()
         val stage = json.getAsJsonObject("stage")?.let(::parseStage)
         return Hall(hallId, json["hall_name"].asString, json["owner_uuid"].asString,
             json["owner_name"].asString, json["world_uuid"].asString,
@@ -117,8 +125,11 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
             json.getAsJsonArray("controls").map {
                 val c = it.asJsonObject
                 Control(hallId, c["kind"].asString, BlockPos(c["x"].asInt, c["y"].asInt, c["z"].asInt))
-            }, stage, json.getAsJsonObject("stage")?.get("program_dirty")?.asBoolean ?: true)
+            }, stage, transportContext,
+            json.getAsJsonObject("stage")?.get("program_dirty")?.asBoolean ?: true)
     }
+
+    fun transportContext(hallId: String): WorkingCopyTransportContext? = halls[hallId]?.transportContext
 
     fun stageUpdateFence(stageId: String): StageUpdateFence? = halls.values
         .firstOrNull { it.stage?.id == stageId }
@@ -165,6 +176,7 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
         val incoming = parseHall(hallJson)
         val incomingStage = incoming.stage ?: return null
         val current = halls[incoming.id]
+        if (current != null && current.transportContext != incoming.transportContext) return null
 
         if (fence == null) {
             if (current != null) return null
@@ -370,6 +382,9 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
     }
     fun stageAt(worldUuid: String, pos: BlockPos) = halls.values.firstNotNullOfOrNull { hall ->
         hall.stage?.takeIf { hall.worldUuid == worldUuid && it.contains(pos) }
+    }
+    fun hallAt(worldUuid: String, pos: BlockPos): Hall? = halls.values.firstOrNull { hall ->
+        hall.worldUuid == worldUuid && hall.stage?.contains(pos) == true
     }
     fun stageBlockAt(worldUuid: String, pos: BlockPos) = stageAt(worldUuid, pos)?.let { stage ->
         stage.blocks.firstOrNull { it.pos == pos }?.let { stage to it }

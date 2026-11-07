@@ -93,16 +93,19 @@ class StageNavigationCoordinator(
     ):CompletableFuture<NavigationResult> {
         val token=registry.beginStageSwitch(hallId.toString(),player.uuid)
             ?: return completed(NavigationStatus.FORBIDDEN,hallId,null,null,"OWNER_OR_HALL_MISMATCH")
-        return programs.mountedProgram(hallId).thenCompose { mounted ->
+        val transport=registry.transportContext(token.hallId)
+            ?: return reject(token,"TRANSPORT_CONTEXT_MISSING")
+        return programs.mountedProgram(transport).thenCompose { mounted ->
             val value=mounted.valueOrFail(token) ?: return@thenCompose completedFrom(token,mounted.failureStatus(),mounted.failureDetail())
             val program=value.program
             if (value.mount.hallId!=hallId || value.mount.programId!=program.programId ||
+                value.mount.workingCopyId!=transport.workingCopyId ||
                 program.ownerUuid!=player.uuid || program.workspaceState!=ProgramWorkspaceState.ACTIVE ||
                 program.stages.none { it.stageId==token.sourceStageId }) {
                 return@thenCompose reject(token,"PROGRAM_CONTEXT_MISMATCH")
             }
             programs.ensureChild(
-                program.programId,token.sourceStageId,programBlockInstanceId,player.uuid,
+                transport,token.sourceStageId,programBlockInstanceId,player.uuid,
             ).thenCompose { ensured ->
                 val child=ensured.valueOrFail(token)
                     ?: return@thenCompose completedFrom(token,ensured.failureStatus(),ensured.failureDetail())
@@ -117,7 +120,7 @@ class StageNavigationCoordinator(
                 prepareAndCommit(
                     token,ProgramSwitchContext(
                         child.programId,child.programWorkspaceEpoch,child.hierarchyRevision,
-                    ),child.child.stageId,player,committer,
+                    ),transport,child.child.stageId,player,committer,
                 )
             }
         }
@@ -128,10 +131,13 @@ class StageNavigationCoordinator(
     ):CompletableFuture<NavigationResult> {
         val token=registry.beginStageSwitch(hallId.toString(),player.uuid)
             ?: return completed(NavigationStatus.FORBIDDEN,hallId,null,null,"OWNER_OR_HALL_MISMATCH")
-        return programs.mountedProgram(hallId).thenCompose { mounted ->
+        val transport=registry.transportContext(token.hallId)
+            ?: return reject(token,"TRANSPORT_CONTEXT_MISSING")
+        return programs.mountedProgram(transport).thenCompose { mounted ->
             val value=mounted.valueOrFail(token) ?: return@thenCompose completedFrom(token,mounted.failureStatus(),mounted.failureDetail())
             val program=value.program
-            if (value.mount.hallId!=hallId || program.ownerUuid!=player.uuid ||
+            if (value.mount.hallId!=hallId || value.mount.workingCopyId!=transport.workingCopyId ||
+                program.ownerUuid!=player.uuid ||
                 program.workspaceState!=ProgramWorkspaceState.ACTIVE ||
                 value.mount.programId!=program.programId ||
                 program.stages.none { it.stageId==token.sourceStageId }) {
@@ -148,15 +154,15 @@ class StageNavigationCoordinator(
             prepareAndCommit(
                 token,ProgramSwitchContext(
                     program.programId,program.workspaceEpoch,program.hierarchyRevision,
-                ),parents.single().parentStageId,player,committer,
+                ),transport,parents.single().parentStageId,player,committer,
             )
         }
     }
 
     private fun prepareAndCommit(
-        token:StageSwitchToken,context:ProgramSwitchContext,targetId:UUID,
+        token:StageSwitchToken,context:ProgramSwitchContext,transport:WorkingCopyTransportContext,targetId:UUID,
         player:ServerPlayerIdentity,committer:StageSwitchCommitter,
-    ):CompletableFuture<NavigationResult> = programs.stage(context.programId,targetId).thenCompose { stageResult ->
+    ):CompletableFuture<NavigationResult> = programs.stage(transport,targetId).thenCompose { stageResult ->
         val stageResponse=stageResult.valueOrFail(token)
             ?: return@thenCompose completedFrom(token,stageResult.failureStatus(),stageResult.failureDetail())
         val workspace=stageResponse.stage.summary.workspace
@@ -173,7 +179,7 @@ class StageNavigationCoordinator(
         registry.graphProjections.authoritativeStageReload(
             targetId,workspace.epoch,workspace.workingRevision,
         )
-        graph.reconcile(targetId,player).thenCompose { outcome ->
+        graph.reconcile(transport,targetId,player).thenCompose { outcome ->
             val view=registry.graphProjections.view(targetId)
             if (!registry.isStageSwitchCurrent(
                     token,context.programId,targetId,context.workspaceEpoch,context.hierarchyRevision,

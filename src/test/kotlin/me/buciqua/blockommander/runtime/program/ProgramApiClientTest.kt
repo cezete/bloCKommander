@@ -2,6 +2,10 @@ package me.buciqua.blockommander.runtime.program
 
 import com.sun.net.httpserver.HttpServer
 import me.buciqua.blockommander.runtime.graph.GRAPH_SECRET_HEADER
+import me.buciqua.blockommander.runtime.WorkingCopyTransportContext
+import me.buciqua.blockommander.runtime.HALL_ID_HEADER
+import me.buciqua.blockommander.runtime.PROGRAM_ID_HEADER
+import me.buciqua.blockommander.runtime.WORKING_COPY_ID_HEADER
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
@@ -14,6 +18,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 class ProgramApiClientTest {
     private var server:HttpServer?=null
+    private val context get()=WorkingCopyTransportContext(HALL,PROGRAM,WORKING_COPY)
 
     @AfterEach fun stopServer() { server?.stop(0) }
 
@@ -24,7 +29,7 @@ class ProgramApiClientTest {
             path.set(requestPath);header.set(requestHeader);200 to mountedJson()
         }
         val result=ProgramApiClient.configured(base,"shared-secret")
-            .mountedProgram(HALL).get(3,TimeUnit.SECONDS)
+            .mountedProgram(context).get(3,TimeUnit.SECONDS)
 
         val value=(result as ProgramHttpResult.Success).value
         assertEquals("shared-secret",header.get())
@@ -39,7 +44,7 @@ class ProgramApiClientTest {
     @Test fun `missing secret performs no request`() {
         val hits=AtomicInteger()
         val base=startServer { _,_,_ -> hits.incrementAndGet();200 to mountedJson() }
-        val result=ProgramApiClient.configured(base,"  ").mountedProgram(HALL).get(2,TimeUnit.SECONDS)
+        val result=ProgramApiClient.configured(base,"  ").mountedProgram(context).get(2,TimeUnit.SECONDS)
         assertInstanceOf(ProgramHttpResult.Unavailable::class.java,result)
         assertEquals(0,hits.get())
     }
@@ -48,7 +53,7 @@ class ProgramApiClientTest {
         val body=AtomicReference<String>()
         val base=startServer { _,_,requestBody -> body.set(requestBody);200 to childJson("RETAINED") }
         val result=ProgramApiClient.configured(base,"secret")
-            .ensureChild(PROGRAM,ROOT,BLOCK,OWNER).get(3,TimeUnit.SECONDS)
+            .ensureChild(context,ROOT,BLOCK,OWNER).get(3,TimeUnit.SECONDS)
         val value=(result as ProgramHttpResult.Success).value
         assertTrue(body.get().contains(OWNER.toString()))
         assertTrue(body.get().contains(BLOCK.toString()))
@@ -60,18 +65,18 @@ class ProgramApiClientTest {
         var response=422 to errorJson("VALIDATION_ERROR")
         val base=startServer { _,_,_ -> response }
         val client=ProgramApiClient.configured(base,"secret")
-        val error=client.program(PROGRAM).get(3,TimeUnit.SECONDS) as ProgramHttpResult.ApiError
+        val error=client.program(context).get(3,TimeUnit.SECONDS) as ProgramHttpResult.ApiError
         assertEquals(422,error.error.httpStatus)
         assertEquals("VALIDATION_ERROR",error.error.errorCode)
 
         response=200 to mountedJson().replace("ck-program-v1","ck-program-v0")
         assertInstanceOf(ProgramHttpResult.ProtocolFailure::class.java,
-            client.mountedProgram(HALL).get(3,TimeUnit.SECONDS))
+            client.mountedProgram(context).get(3,TimeUnit.SECONDS))
     }
 
     @Test fun `authoritative Stage DTO keeps domain coordinates separate from Hall coordinates`() {
         val base=startServer { _,_,_ -> 200 to stageJson() }
-        val value=(ProgramApiClient.configured(base,"secret").stage(PROGRAM,CHILD)
+        val value=(ProgramApiClient.configured(base,"secret").stage(context,CHILD)
             .get(3,TimeUnit.SECONDS) as ProgramHttpResult.Success).value
         assertEquals(1,value.stage.summary.domainLayout.origin.x)
         assertEquals(2,value.stage.blocks.single().position.x)
@@ -82,6 +87,9 @@ class ProgramApiClientTest {
     private fun startServer(response:(String,String?,String)->Pair<Int,String>):String {
         val created=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
         created.createContext("/") { exchange ->
+            assertEquals(HALL.toString(),exchange.requestHeaders.getFirst(HALL_ID_HEADER))
+            assertEquals(PROGRAM.toString(),exchange.requestHeaders.getFirst(PROGRAM_ID_HEADER))
+            assertEquals(WORKING_COPY.toString(),exchange.requestHeaders.getFirst(WORKING_COPY_ID_HEADER))
             val requestBody=exchange.requestBody.readAllBytes().toString(StandardCharsets.UTF_8)
             val (status,body)=response(
                 exchange.requestURI.path,exchange.requestHeaders.getFirst(GRAPH_SECRET_HEADER),requestBody,
@@ -96,22 +104,22 @@ class ProgramApiClientTest {
     }
 
     private fun mountedJson()="""
-      {"api_version":"ck-program-v1","status":"ok","mount":{"hall_id":"$HALL","program_id":"$PROGRAM","current":true},
+      {"api_version":"ck-program-v1","status":"ok",${transportJson()},"mount":{"hall_id":"$HALL","program_id":"$PROGRAM","working_copy_id":"$WORKING_COPY","current":true},
        "program":${programJson()}}
     """.trimIndent()
     private fun programJson()="""
       {"program_id":"$PROGRAM","owner_uuid":"$OWNER","root_stage_id":"$ROOT","saved_version":1,
        "aggregate_dirty":true,"hierarchy_dirty":true,"hierarchy_revision":2,"workspace_epoch":"$PROGRAM_EPOCH",
        "workspace_state":"ACTIVE","stages":[${summaryJson(ROOT,"ROOT",true)},${summaryJson(CHILD,"PROGRAM_BODY",false)}],
-       "links":[${linkJson("ACTIVE")}],"mounts":[{"hall_id":"$HALL","program_id":"$PROGRAM","current":true}]}
+       "links":[${linkJson("ACTIVE")}],"mounts":[{"hall_id":"$HALL","program_id":"$PROGRAM","working_copy_id":"$WORKING_COPY","current":true}]}
     """.trimIndent()
     private fun childJson(state:String)="""
-      {"api_version":"ck-program-v1","status":"ok","program_id":"$PROGRAM","program_saved_version":1,
+      {"api_version":"ck-program-v1","status":"ok",${transportJson(ROOT)},"program_id":"$PROGRAM","program_saved_version":1,
        "program_workspace_epoch":"$PROGRAM_EPOCH","hierarchy_revision":2,"created":false,
        "link":${linkJson(state)},"child":${summaryJson(CHILD,"PROGRAM_BODY",false)}}
     """.trimIndent()
     private fun stageJson()="""
-      {"api_version":"ck-program-v1","status":"ok","program_id":"$PROGRAM","program_saved_version":1,
+      {"api_version":"ck-program-v1","status":"ok",${transportJson(CHILD)},"program_id":"$PROGRAM","program_saved_version":1,
        "program_workspace_epoch":"$PROGRAM_EPOCH","hierarchy_revision":2,"aggregate_dirty":true,
        "stage":${summaryJson(CHILD,"PROGRAM_BODY",false).dropLast(1)},
          "graph_snapshot_version":1,"port_catalog_version":"ck-control-v3",
@@ -131,10 +139,12 @@ class ProgramApiClientTest {
       {"api_version":"ck-program-v1","status":"error","error_code":"$code","message":"hiba",
        "diagnostics":[{"code":"$code","severity":"ERROR","message":"hiba","field":null}]}
     """.trimIndent()
+    private fun transportJson(stageId:UUID?=null)=""""transport_context":{"mode":"explicit","hall_id":"$HALL","program_id":"$PROGRAM","working_copy_id":"$WORKING_COPY",${stageId?.let { "\"stage_id\":\"$it\"," } ?: ""}"content_scope":"SHARED_PROGRAM"}"""
 
     companion object {
         private val HALL=UUID.fromString("10000000-0000-0000-0000-000000000001")
         private val PROGRAM=UUID.fromString("10000000-0000-0000-0000-000000000002")
+        private val WORKING_COPY=UUID.fromString("10000000-0000-0000-0000-000000000009")
         private val ROOT=UUID.fromString("10000000-0000-0000-0000-000000000003")
         private val CHILD=UUID.fromString("10000000-0000-0000-0000-000000000004")
         private val BLOCK=UUID.fromString("10000000-0000-0000-0000-000000000005")

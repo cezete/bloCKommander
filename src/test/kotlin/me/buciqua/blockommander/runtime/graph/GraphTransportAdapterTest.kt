@@ -35,7 +35,7 @@ class GraphTransportAdapterTest {
             REQUEST_ID, STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID), EPOCH_A, 3,
             GraphPosition(1, 0, 0), GraphPlacementIntent.AUTO,
         )
-        val outcome = adapter.send(command).get(5, TimeUnit.SECONDS)
+        val outcome = adapter.send(TRANSPORT_CONTEXT, command).get(5, TimeUnit.SECONDS)
         assertTrue(outcome.transport is GraphHttpResult.ProtocolFailure)
         assertNotNull(outcome.reconciliation)
         assertEquals(1, postHits.get())
@@ -64,7 +64,7 @@ class GraphTransportAdapterTest {
             GraphPosition(1, 0, 0), GraphPlacementIntent.AUTO,
         )
 
-        val outcome = adapter.send(command).get(5, TimeUnit.SECONDS)
+        val outcome = adapter.send(TRANSPORT_CONTEXT, command).get(5, TimeUnit.SECONDS)
 
         assertTrue(outcome.transport is GraphHttpResult.ApiError)
         assertNotNull(outcome.reconciliation)
@@ -91,7 +91,7 @@ class GraphTransportAdapterTest {
         val command = BindEdgesCommand(
             REQUEST_ID, STAGE_ID, ServerPlayerIdentity.trustedForTest(PLAYER_ID), EPOCH_A, 3,
         )
-        val outcome = adapter.send(command).get(5, TimeUnit.SECONDS)
+        val outcome = adapter.send(TRANSPORT_CONTEXT, command).get(5, TimeUnit.SECONDS)
         assertTrue(outcome.transport is GraphHttpResult.ProtocolFailure)
         assertNotNull(outcome.reconciliation)
         assertEquals(1, getHits.get())

@@ -101,12 +101,16 @@ class Interactions(
                 }
                 return@register InteractionResult.SUCCESS
             }
-            registry.stageBlockAt(worldUuid, hit.blockPos)?.let { (stage, block) ->
+            registry.hallAt(worldUuid, hit.blockPos)?.let { hall ->
+                val stage = hall.stage ?: return@let
+                val block = stage.blocks.firstOrNull { it.pos == hit.blockPos } ?: return@let
                 if (block.type == "PROGRAM") {
-                    enterProgramBlock(serverPlayer, serverLevel, stage, block)
+                    enterProgramBlock(serverPlayer, serverLevel, hall, block)
                     return@register InteractionResult.SUCCESS
                 }
-                ServerPlayNetworking.send(serverPlayer, OpenFormPayload("block", "${stage.id}|${block.instanceId}", block.label, block.description))
+                ServerPlayNetworking.send(serverPlayer, OpenFormPayload(
+                    "block", "${hall.id}|${stage.id}|${block.instanceId}", block.label, block.description,
+                ))
                 return@register InteractionResult.SUCCESS
             }
             val type = (held.item as? BlockItem)?.block?.let(ModContent::typeOf)
@@ -125,10 +129,13 @@ class Interactions(
                 removeWire(serverPlayer, serverLevel, worldUuid, pos)
                 return@register false
             }
-            registry.stageBlockAt(worldUuid, pos)?.let { (stage, block) ->
-                val fence = registry.stageUpdateFence(stage.id) ?: return@let
+            registry.hallAt(worldUuid, pos)?.let { hall ->
+                val stage = hall.stage ?: return@let
+                val block = stage.blocks.firstOrNull { it.pos == pos } ?: return@let
+                val fence = registry.stageUpdateFenceForHall(hall.id) ?: return@let
                 val payload = playerPayload(serverPlayer, serverLevel)
-                api.post(serverPlayer, "/api/v1/stages/${stage.id}/blocks/${block.instanceId}/delete", payload) { response ->
+                api.post(serverPlayer, "/api/v1/stages/${stage.id}/blocks/${block.instanceId}/delete", payload,
+                    hall.transportContext, UUID.fromString(stage.id)) { response ->
                     registry.updateStageFromDomainResponse(response.getAsJsonObject("stage"), fence)
                         ?.let { WorldRenderer.renderStage(serverLevel, it) }
                 }
@@ -152,13 +159,16 @@ class Interactions(
                 createHall(player, level, selection, BlockPos(coordinates[0], coordinates[1], coordinates[2]), code, payload.value1, payload.value2)
             }
             "block" -> {
-                val ids = payload.contextId.split('|', limit = 2); if (ids.size != 2) return
+                val ids = payload.contextId.split('|', limit = 3); if (ids.size != 3) return
                 if (payload.value1.isBlank() || payload.value1.length > 32 || payload.value2.length > 256) {
                     player.sendSystemMessage(Component.literal("§c[CK] A felirat 1–32, a leírás legfeljebb 256 karakteres lehet.")); return
                 }
                 val body = playerPayload(player, level).apply { addProperty("label", payload.value1); addProperty("description", payload.value2) }
-                val fence = registry.stageUpdateFence(ids[0]) ?: return
-                api.post(player, "/api/v1/stages/${ids[0]}/blocks/${ids[1]}", body) { response ->
+                val hall = registry.hall(ids[0]) ?: return
+                val fence = registry.stageUpdateFenceForHall(hall.id) ?: return
+                if (fence.stageId != ids[1]) return
+                api.post(player, "/api/v1/stages/${ids[1]}/blocks/${ids[2]}", body,
+                    hall.transportContext, UUID.fromString(ids[1])) { response ->
                     registry.updateStageFromDomainResponse(response.getAsJsonObject("stage"), fence)
                         ?.let { WorldRenderer.renderStage(level, it) }
                 }
@@ -174,7 +184,7 @@ class Interactions(
                     val hall = registry.install(it.asJsonObject)
                     WorldRenderer.buildHall(level, hall)
                     val owner = level.players().firstOrNull { player -> player.uuid.toString() == hall.ownerUuid }
-                    if (owner != null) hall.stage?.let { stage -> reconcileWire(owner, level, stage) }
+                    if (owner != null && hall.stage != null) reconcileWire(owner, level, hall)
                 }
             }
         }
@@ -214,7 +224,7 @@ class Interactions(
                     if (hall.id in restoredHallIds) WorldRenderer.buildHallStructure(level, hall)
                     WorldRenderer.renderStageBlocks(level, hall)
                 },
-                reconcileGraphAndWire = { stage -> reconcileGraphAndWire(player, level, stage) },
+                reconcileGraphAndWire = { hall -> reconcileGraphAndWire(player, level, hall) },
                 projectSaveState = { hall, dirty -> WorldRenderer.renderSaveState(level, hall, dirty) },
                 diagnose = { detail ->
                     BlockCommanderMod.LOGGER.warn("Reconnect reconciliation issue for player {}: {}", player.uuid, detail)
@@ -241,7 +251,8 @@ class Interactions(
 
     private fun placeWire(player: ServerPlayer, level: ServerLevel, worldUuid: String, target: BlockPos,
                           held: net.minecraft.world.item.ItemStack, intent: GraphPlacementIntent) {
-        val stage = registry.stageAt(worldUuid, target)
+        val hall = registry.hallAt(worldUuid, target)
+        val stage = hall?.stage
         val coordinator = wireCoordinator()
         if (stage == null || coordinator == null) {
             correct(level, target)
@@ -255,43 +266,47 @@ class Interactions(
             player.sendSystemMessage(Component.literal("§c[CK] A célcellát idegen blokk foglalja."))
             return
         }
-        coordinator.place(stage.wireContext(), ServerPlayerIdentity.from(player), target.graphPosition(),
+        coordinator.place(hall.wireContext(), ServerPlayerIdentity.from(player), target.graphPosition(),
             MinecraftWireWorldAccess(level), intent).thenAccept { result ->
             if ((result.status == WireActionStatus.SUCCESS || result.status == WireActionStatus.RECOVERED) && !alreadyWire &&
                 !player.abilities.instabuild) held.shrink(1)
-            refreshSaveSign(level, stage.id)
+            refreshSaveSign(level, hall.id)
             wireFeedback(player, result)
         }
     }
 
     private fun removeWire(player: ServerPlayer, level: ServerLevel, worldUuid: String, target: BlockPos) {
-        val stage = registry.stageAt(worldUuid, target)
+        val hall = registry.hallAt(worldUuid, target)
+        val stage = hall?.stage
         val coordinator = wireCoordinator()
         if (stage == null || coordinator == null) {
             correct(level, target)
             player.sendSystemMessage(Component.literal("§c[CK] A CK Wire eltávolításához szinkronizált Stage szükséges."))
             return
         }
-        coordinator.remove(stage.wireContext(), ServerPlayerIdentity.from(player), target.graphPosition(),
+        coordinator.remove(hall.wireContext(), ServerPlayerIdentity.from(player), target.graphPosition(),
             MinecraftWireWorldAccess(level)).thenAccept {
-            refreshSaveSign(level, stage.id)
+            refreshSaveSign(level, hall.id)
             wireFeedback(player, it)
         }
     }
 
-    private fun reconcileWire(player: ServerPlayer, level: ServerLevel, stage: Stage) {
-        reconcileGraphAndWire(player, level, stage).thenAccept {
-            refreshSaveSign(level, stage.id)
+    private fun reconcileWire(player: ServerPlayer, level: ServerLevel, hall: Hall) {
+        reconcileGraphAndWire(player, level, hall).thenAccept {
+            refreshSaveSign(level, hall.id)
         }
     }
 
     private fun reconcileGraphAndWire(player: ServerPlayer, level: ServerLevel,
-                                      stage: Stage, projectionAllowed: () -> Boolean = { true }): CompletableFuture<ReconnectGraphResult> {
+                                      hall: Hall, projectionAllowed: () -> Boolean = { true }): CompletableFuture<ReconnectGraphResult> {
+        val stage = hall.stage ?: return CompletableFuture.completedFuture(
+            ReconnectGraphResult(false, "STAGE_MISSING"),
+        )
         val coordinator = wireCoordinator() ?: return CompletableFuture.completedFuture(
             ReconnectGraphResult(false, "GRAPH_COORDINATOR_UNAVAILABLE"),
         )
         return coordinator.reconcileAndRender(
-            stage.wireContext(), ServerPlayerIdentity.from(player), MinecraftWireWorldAccess(level),
+            hall.wireContext(), ServerPlayerIdentity.from(player), MinecraftWireWorldAccess(level),
             projectionAllowed,
         ).thenApply { result ->
             val synchronized = result.status == WireActionStatus.SUCCESS || result.status == WireActionStatus.RECOVERED
@@ -309,7 +324,8 @@ class Interactions(
     private fun bindCurrentStage(player: ServerPlayer) {
         val level = player.level()
         val worldUuid = WorldIdentity.uuid(level).toString()
-        val stage = registry.stageAt(worldUuid, player.blockPosition())
+        val hall = registry.hallAt(worldUuid, player.blockPosition())
+        val stage = hall?.stage
         val coordinator = wireCoordinator()
         if (stage == null || coordinator == null) {
             player.sendSystemMessage(Component.literal("§c[CK] Az Élbekötéshez állj az aktuális Stage területére."))
@@ -317,19 +333,18 @@ class Interactions(
         }
         player.sendSystemMessage(Component.literal("§e[CK] Élbekötés indítása a Python graph szolgáltatáson keresztül…"))
         coordinator.bind(
-            stage.wireContext(), ServerPlayerIdentity.from(player), MinecraftWireWorldAccess(level),
+            hall.wireContext(), ServerPlayerIdentity.from(player), MinecraftWireWorldAccess(level),
         ).thenAccept {
-            refreshSaveSign(level, stage.id)
+            refreshSaveSign(level, hall.id)
             wireFeedback(player, it)
         }
     }
 
     private fun enterProgramBlock(
-        player: ServerPlayer, level: ServerLevel, stage: Stage, block: StageBlock,
+        player: ServerPlayer, level: ServerLevel, hall: Hall, block: StageBlock,
     ) {
-        val hall = registry.hallForStage(stage.id)
         val navigation = stageNavigation()
-        if (hall == null || navigation == null) {
+        if (navigation == null) {
             player.sendSystemMessage(Component.literal("§c[CK] A Program-navigáció jelenleg nem érhető el."))
             return
         }
@@ -348,8 +363,7 @@ class Interactions(
     private fun navigateBack(player: ServerPlayer) {
         val level = player.level()
         val worldUuid = WorldIdentity.uuid(level).toString()
-        val hall = registry.stageAt(worldUuid, player.blockPosition())
-            ?.let { registry.hallForStage(it.id) }
+        val hall = registry.hallAt(worldUuid, player.blockPosition())
         val navigation = stageNavigation()
         if (hall == null || navigation == null) {
             player.sendSystemMessage(Component.literal("§c[CK] A visszalépéshez állj az aktív Stage területére."))
@@ -374,14 +388,14 @@ class Interactions(
         player.sendSystemMessage(Component.literal(message))
     }
 
-    private fun refreshSaveSign(level: ServerLevel, stageId: String) {
+    private fun refreshSaveSign(level: ServerLevel, hallId: String) {
         level.server.execute {
-            val hall = registry.hallForStage(stageId) ?: return@execute
+            val hall = registry.hall(hallId) ?: return@execute
             val fence = registry.beginProgramStatus(hall.id)
             val current = registry.hall(hall.id) ?: return@execute
             WorldRenderer.renderSaveState(level, current, current.programDirty)
             if (fence == null) return@execute
-            programs.mountedProgram(UUID.fromString(hall.id)).thenAccept { result ->
+            programs.mountedProgram(hall.transportContext).thenAccept { result ->
                 level.server.execute {
                     if (result is ProgramHttpResult.Success) {
                         registry.applyProgramStatus(fence, result.value)?.let { updated ->
@@ -437,7 +451,8 @@ class Interactions(
     }
 
     private fun placeProgramBlock(player: ServerPlayer, level: ServerLevel, worldUuid: String, target: BlockPos, type: String) {
-        val stage = registry.stageAt(worldUuid, target)
+        val hall = registry.hallAt(worldUuid, target)
+        val stage = hall?.stage
         if (stage == null) { player.sendSystemMessage(Component.literal("§c[CK] CK-blokk csak a saját stage területére helyezhető.")); return }
         val payload = playerPayload(player, level).apply {
             addProperty("type_key",type);addProperty("coordinate_space","STAGE_RELATIVE")
@@ -445,8 +460,9 @@ class Interactions(
             addProperty("z",target.z-stage.origin.z)
             addProperty("orientation", ModContent.placementFacing(type, player.direction).name)
         }
-        val fence = registry.stageUpdateFence(stage.id) ?: return
-        api.post(player, "/api/v1/stages/${stage.id}/blocks", payload) { response ->
+        val fence = registry.stageUpdateFenceForHall(hall.id) ?: return
+        api.post(player, "/api/v1/stages/${stage.id}/blocks", payload,
+            hall.transportContext, UUID.fromString(stage.id)) { response ->
             registry.updateStageFromDomainResponse(response.getAsJsonObject("stage"), fence)
                 ?.let { WorldRenderer.renderStage(level, it) }
         }
@@ -465,17 +481,19 @@ class Interactions(
                 payload.addProperty("active_stage_id", fence.stageId)
                 payload.addProperty("workspace_epoch", fence.workspaceEpoch.toString())
                 payload.addProperty("expected_working_revision", fence.workingRevision)
-                api.post(player, "/api/v1/halls/save-button", payload) { response ->
+                val hall = registry.hall(control.hallId) ?: return@let
+                api.post(player, "/api/v1/halls/save-button", payload,
+                    hall.transportContext, UUID.fromString(fence.stageId)) { response ->
                     registry.updateStageAfterSave(response.getAsJsonObject("stage"), fence)?.let { hall ->
                         WorldRenderer.renderStage(level, hall)
                         hall.stage?.let { savedStage ->
                             val savedFence = registry.saveFenceForHall(hall.id) ?: return@let
-                            reconcileGraphAndWire(player, level, savedStage) {
+                            reconcileGraphAndWire(player, level, hall) {
                                 registry.isSaveFenceCurrent(savedFence)
                             }.thenAccept {
                                 level.server.execute {
                                     if (registry.isSaveFenceCurrent(savedFence)) {
-                                        registry.saveDirty(savedStage.id)?.let { dirty ->
+                                        registry.hall(hall.id)?.programDirty?.let { dirty ->
                                             WorldRenderer.renderSaveState(level, hall, dirty)
                                         }
                                     }
@@ -496,7 +514,11 @@ class Interactions(
     private fun pos(pos: BlockPos) = JsonObject().apply { addProperty("x", pos.x); addProperty("y", pos.y); addProperty("z", pos.z) }
 }
 
-private fun Stage.wireContext() = WireStageContext(
-    UUID.fromString(id), origin.graphPosition(), GraphPosition(sizeX, sizeY, sizeZ), workspaceEpoch,
-)
+private fun Hall.wireContext(): WireStageContext {
+    val stage = requireNotNull(stage)
+    return WireStageContext(
+        transportContext, UUID.fromString(stage.id), stage.origin.graphPosition(),
+        GraphPosition(stage.sizeX, stage.sizeY, stage.sizeZ), stage.workspaceEpoch,
+    )
+}
 private fun BlockPos.graphPosition() = GraphPosition(x, y, z)
