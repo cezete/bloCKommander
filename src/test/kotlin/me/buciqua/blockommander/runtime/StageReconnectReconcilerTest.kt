@@ -69,7 +69,7 @@ class StageReconnectReconcilerTest {
         assertFalse(reconciler.reconcile(hall(EPOCH_A, 9, dirty = true, blocks = fourStarts()), oldFence))
 
         assertEquals(1, projections)
-        assertEquals(EPOCH_B, registry.hallForStage(STAGE_ID)!!.stage!!.workspaceEpoch)
+        assertEquals(EPOCH_B, registry.hall(HALL_ID)!!.stage!!.workspaceEpoch)
     }
 
     @Test fun `partial failures are diagnosed and never project an unaccepted Stage`() {

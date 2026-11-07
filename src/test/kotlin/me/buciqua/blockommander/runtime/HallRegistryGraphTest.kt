@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test
 import java.util.UUID
 
 class HallRegistryGraphTest {
+    private fun testKey(stageId:UUID)=WorkingCopyTransportContext(HALL_ID,EPOCH_B,WORKING_COPY_ID).projectionKey(stageId)
     private fun programStatus(dirty: Boolean, revision: Long = 0): MountedProgramResponse {
         val summary=ProgramStageSummary(STAGE_ID,EPOCH_B,"ROOT","root",true,0,ProgramStageWorkspace(EPOCH_A,revision,false),
             ProgramDomainLayout(GraphPosition(1,1,1),GraphPosition(7,5,7)),emptyList(),emptyList())
@@ -27,21 +28,21 @@ class HallRegistryGraphTest {
         assertNull(registry.applyProgramStatus(old,programStatus(false,4)))
         assertNull(registry.updateStageAfterSave(
             JsonParser.parseString(stageJson(EPOCH_A,4,false)).asJsonObject,savedFence))
-        assertTrue(registry.saveDirty(STAGE_ID.toString())!!)
+        assertTrue(registry.saveDirty(HALL_ID.toString())!!)
     }
 
     @Test fun `Program status is authoritative when active Stage is clean and ignores late clean graph`() {
         val registry=HallRegistry()
         registry.install(JsonParser.parseString(hallJson(EPOCH_A,0,false)).asJsonObject)
         val pending=registry.beginProgramStatus(HALL_ID.toString())!!
-        assertTrue(registry.saveDirty(STAGE_ID.toString())!!)
+        assertTrue(registry.saveDirty(HALL_ID.toString())!!)
         assertNotNull(registry.applyProgramStatus(pending,programStatus(true)))
         val store=registry.graphProjections
-        store.apply(store.begin(STAGE_ID,GraphRequestKind.RECONCILIATION),snapshot(revision=0,dirty=false))
-        assertTrue(registry.saveDirty(STAGE_ID.toString())!!)
+        store.apply(store.begin(testKey(STAGE_ID),GraphRequestKind.RECONCILIATION),snapshot(revision=0,dirty=false))
+        assertTrue(registry.saveDirty(HALL_ID.toString())!!)
         val clean=registry.beginProgramStatus(HALL_ID.toString())!!
         assertNotNull(registry.applyProgramStatus(clean,programStatus(false)))
-        assertFalse(registry.saveDirty(STAGE_ID.toString())!!)
+        assertFalse(registry.saveDirty(HALL_ID.toString())!!)
     }
 
     @Test fun `Program status requested before navigation cannot mark new projection clean`() {
@@ -50,7 +51,7 @@ class HallRegistryGraphTest {
         val old=registry.beginProgramStatus(HALL_ID.toString())!!
         switchTo(registry,OTHER_STAGE_ID,false)
         assertNull(registry.applyProgramStatus(old,programStatus(false)))
-        assertTrue(registry.saveDirty(OTHER_STAGE_ID.toString())!!)
+        assertTrue(registry.saveDirty(HALL_ID.toString())!!)
     }
     @Test fun `HallRegistry preserves envelope and legacy update invalidates graph`() {
         val registry = HallRegistry()
@@ -58,27 +59,27 @@ class HallRegistryGraphTest {
         assertEquals(EPOCH_A, hall.stage!!.workspaceEpoch)
         assertEquals(0, hall.stage.workingRevision)
         val store = registry.graphProjections
-        store.apply(store.begin(STAGE_ID, GraphRequestKind.RECONCILIATION), snapshot(revision = 0))
-        val fence = registry.stageUpdateFence(STAGE_ID.toString())!!
+        store.apply(store.begin(testKey(STAGE_ID), GraphRequestKind.RECONCILIATION), snapshot(revision = 0))
+        val fence = registry.stageUpdateFenceForHall(HALL_ID.toString())!!
         registry.updateStage(JsonParser.parseString(stageJson(EPOCH_A, 1)).asJsonObject, fence)
-        assertEquals(GraphSyncStatus.STALE, registry.graph(STAGE_ID.toString())!!.status)
-        assertEquals(1, registry.graph(STAGE_ID.toString())!!.stageRevision)
+        assertEquals(GraphSyncStatus.STALE, registry.graph(HALL_ID.toString())!!.status)
+        assertEquals(1, registry.graph(HALL_ID.toString())!!.stageRevision)
     }
 
     @Test fun `HallRegistry authoritative reload accepts epoch change and drops snapshot`() {
         val registry = HallRegistry()
         registry.install(JsonParser.parseString(hallJson(EPOCH_A, 0)).asJsonObject)
         val store = registry.graphProjections
-        store.apply(store.begin(STAGE_ID, GraphRequestKind.RECONCILIATION), snapshot(revision = 0))
+        store.apply(store.begin(testKey(STAGE_ID), GraphRequestKind.RECONCILIATION), snapshot(revision = 0))
         registry.install(JsonParser.parseString(hallJson(EPOCH_B, 0)).asJsonObject)
-        assertEquals(EPOCH_B, registry.graph(STAGE_ID.toString())!!.stageEpoch)
-        assertNull(registry.graph(STAGE_ID.toString())!!.snapshot)
+        assertEquals(EPOCH_B, registry.graph(HALL_ID.toString())!!.stageEpoch)
+        assertNull(registry.graph(HALL_ID.toString())!!.snapshot)
     }
 
     @Test fun `fenced CRUD response accepts a new epoch and dirty block projection`() {
         val registry = HallRegistry()
         registry.install(JsonParser.parseString(hallJson(EPOCH_A, 0, dirty = false)).asJsonObject)
-        val fence = registry.stageUpdateFence(STAGE_ID.toString())!!
+        val fence = registry.stageUpdateFenceForHall(HALL_ID.toString())!!
 
         val returned = registry.updateStage(
             JsonParser.parseString(stageJson(EPOCH_B, 1, dirty = true, withBlock = true)).asJsonObject,
@@ -90,15 +91,15 @@ class HallRegistryGraphTest {
         assertEquals(1, returned.stage.workingRevision)
         assertTrue(returned.stage.dirty)
         assertEquals(BlockPos(2, 1, 1), returned.stage.blocks.single().pos)
-        assertEquals(EPOCH_B, registry.graph(STAGE_ID.toString())!!.stageEpoch)
-        assertEquals(1, registry.graph(STAGE_ID.toString())!!.stageRevision)
-        assertEquals(GraphSyncStatus.NOT_REQUESTED, registry.graph(STAGE_ID.toString())!!.status)
+        assertEquals(EPOCH_B, registry.graph(HALL_ID.toString())!!.stageEpoch)
+        assertEquals(1, registry.graph(HALL_ID.toString())!!.stageRevision)
+        assertEquals(GraphSyncStatus.NOT_REQUESTED, registry.graph(HALL_ID.toString())!!.status)
     }
 
     @Test fun `same epoch newer revision remains a normal legacy update`() {
         val registry = HallRegistry()
         registry.install(JsonParser.parseString(hallJson(EPOCH_A, 2)).asJsonObject)
-        val fence = registry.stageUpdateFence(STAGE_ID.toString())!!
+        val fence = registry.stageUpdateFenceForHall(HALL_ID.toString())!!
 
         val returned = registry.updateStage(
             JsonParser.parseString(stageJson(EPOCH_A, 3, withBlock = true)).asJsonObject,
@@ -107,13 +108,13 @@ class HallRegistryGraphTest {
 
         assertEquals(3, returned!!.stage!!.workingRevision)
         assertEquals(EPOCH_A, returned.stage.workspaceEpoch)
-        assertEquals(GraphSyncStatus.STALE, registry.graph(STAGE_ID.toString())!!.status)
+        assertEquals(GraphSyncStatus.STALE, registry.graph(HALL_ID.toString())!!.status)
     }
 
     @Test fun `domain relative CRUD response is projected into active Hall coordinates`() {
         val registry=HallRegistry()
         registry.install(JsonParser.parseString(hallJson(EPOCH_A,0)).asJsonObject)
-        val fence=registry.stageUpdateFence(STAGE_ID.toString())!!
+        val fence=registry.stageUpdateFenceForHall(HALL_ID.toString())!!
         val response=JsonParser.parseString(stageJson(EPOCH_A,1,withBlock=true)).asJsonObject
         response.add("hall_id",com.google.gson.JsonNull.INSTANCE)
         response.getAsJsonArray("blocks")[0].asJsonObject.addProperty("x",999)
@@ -122,13 +123,13 @@ class HallRegistryGraphTest {
 
         assertNotNull(updated)
         assertEquals(BlockPos(2,1,1),updated!!.stage!!.blocks.single().pos)
-        assertEquals(GraphSyncStatus.STALE,registry.graph(STAGE_ID.toString())!!.status)
+        assertEquals(GraphSyncStatus.STALE,registry.graph(HALL_ID.toString())!!.status)
     }
 
     @Test fun `stale revision is rejected instead of returning a renderable old Hall`() {
         val registry = HallRegistry()
         registry.install(JsonParser.parseString(hallJson(EPOCH_A, 5)).asJsonObject)
-        val fence = registry.stageUpdateFence(STAGE_ID.toString())!!
+        val fence = registry.stageUpdateFenceForHall(HALL_ID.toString())!!
 
         val returned = registry.updateStage(
             JsonParser.parseString(stageJson(EPOCH_A, 4, withBlock = true)).asJsonObject,
@@ -136,14 +137,14 @@ class HallRegistryGraphTest {
         )
 
         assertNull(returned)
-        assertEquals(5, registry.hallForStage(STAGE_ID.toString())!!.stage!!.workingRevision)
-        assertTrue(registry.hallForStage(STAGE_ID.toString())!!.stage!!.blocks.isEmpty())
+        assertEquals(5, registry.hall(HALL_ID.toString())!!.stage!!.workingRevision)
+        assertTrue(registry.hall(HALL_ID.toString())!!.stage!!.blocks.isEmpty())
     }
 
     @Test fun `late old epoch response cannot roll HallRegistry lifecycle backward`() {
         val registry = HallRegistry()
         registry.install(JsonParser.parseString(hallJson(EPOCH_A, 0)).asJsonObject)
-        val oldFence = registry.stageUpdateFence(STAGE_ID.toString())!!
+        val oldFence = registry.stageUpdateFenceForHall(HALL_ID.toString())!!
         val switched = registry.updateStage(
             JsonParser.parseString(stageJson(EPOCH_B, 1, withBlock = true)).asJsonObject,
             oldFence,
@@ -155,15 +156,15 @@ class HallRegistryGraphTest {
             oldFence,
         )
         assertNull(returned)
-        assertEquals(EPOCH_B, registry.graph(STAGE_ID.toString())!!.stageEpoch)
-        assertEquals(1, registry.hallForStage(STAGE_ID.toString())!!.stage!!.workingRevision)
+        assertEquals(EPOCH_B, registry.graph(HALL_ID.toString())!!.stageEpoch)
+        assertEquals(1, registry.hall(HALL_ID.toString())!!.stage!!.workingRevision)
     }
 
     @Test fun `epoch switch is rejected when its request fence is no longer current`() {
         val registry = HallRegistry()
         registry.install(JsonParser.parseString(hallJson(EPOCH_A, 0)).asJsonObject)
-        val staleFence = registry.stageUpdateFence(STAGE_ID.toString())!!
-        val currentFence = registry.stageUpdateFence(STAGE_ID.toString())!!
+        val staleFence = registry.stageUpdateFenceForHall(HALL_ID.toString())!!
+        val currentFence = registry.stageUpdateFenceForHall(HALL_ID.toString())!!
         registry.updateStage(JsonParser.parseString(stageJson(EPOCH_A, 1)).asJsonObject, currentFence)
 
         val returned = registry.updateStage(
@@ -172,8 +173,8 @@ class HallRegistryGraphTest {
         )
 
         assertNull(returned)
-        assertEquals(EPOCH_A, registry.hallForStage(STAGE_ID.toString())!!.stage!!.workspaceEpoch)
-        assertEquals(EPOCH_A, registry.graph(STAGE_ID.toString())!!.stageEpoch)
+        assertEquals(EPOCH_A, registry.hall(HALL_ID.toString())!!.stage!!.workspaceEpoch)
+        assertEquals(EPOCH_A, registry.graph(HALL_ID.toString())!!.stageEpoch)
     }
 
     @Test fun `authoritative Hall reload accepts new lifecycle only under its captured fence`() {
@@ -193,28 +194,28 @@ class HallRegistryGraphTest {
         assertNotNull(reloaded)
         assertFalse(reloaded!!.stage!!.dirty)
         assertNull(late)
-        assertEquals(EPOCH_B, registry.hallForStage(STAGE_ID.toString())!!.stage!!.workspaceEpoch)
-        assertEquals(GraphSyncStatus.NOT_REQUESTED, registry.graph(STAGE_ID.toString())!!.status)
+        assertEquals(EPOCH_B, registry.hall(HALL_ID.toString())!!.stage!!.workspaceEpoch)
+        assertEquals(GraphSyncStatus.NOT_REQUESTED, registry.graph(HALL_ID.toString())!!.status)
     }
 
     @Test fun `save dirty ignores graph dirty and uses Python Program state`() {
         val registry = HallRegistry()
         registry.install(JsonParser.parseString(hallJson(EPOCH_A, 0, dirty = false)).asJsonObject)
         val store = registry.graphProjections
-        store.apply(store.begin(STAGE_ID, GraphRequestKind.RECONCILIATION), snapshot(epoch = EPOCH_A, revision = 0, dirty = true))
-        assertFalse(registry.saveDirty(STAGE_ID.toString())!!)
+        store.apply(store.begin(testKey(STAGE_ID), GraphRequestKind.RECONCILIATION), snapshot(epoch = EPOCH_A, revision = 0, dirty = true))
+        assertFalse(registry.saveDirty(HALL_ID.toString())!!)
 
-        store.legacyStageUpdated(STAGE_ID, EPOCH_A, 0)
+        store.legacyStageUpdated(testKey(STAGE_ID), EPOCH_A, 0)
 
-        assertEquals(GraphSyncStatus.STALE, registry.graph(STAGE_ID.toString())!!.status)
-        assertFalse(registry.saveDirty(STAGE_ID.toString())!!)
+        assertEquals(GraphSyncStatus.STALE, registry.graph(HALL_ID.toString())!!.status)
+        assertFalse(registry.saveDirty(HALL_ID.toString())!!)
     }
 
     @Test fun `authoritative reconnect discards same epoch dirty graph snapshot before clean fallback`() {
         val registry = HallRegistry()
         registry.install(JsonParser.parseString(hallJson(EPOCH_A, 0, dirty = true)).asJsonObject)
         val store = registry.graphProjections
-        store.apply(store.begin(STAGE_ID, GraphRequestKind.RECONCILIATION), snapshot(epoch = EPOCH_A, revision = 0, dirty = true))
+        store.apply(store.begin(testKey(STAGE_ID), GraphRequestKind.RECONCILIATION), snapshot(epoch = EPOCH_A, revision = 0, dirty = true))
         val fence = registry.stageUpdateFenceForHall(HALL_ID.toString())!!
 
         val reloaded = registry.authoritativeReload(
@@ -223,9 +224,9 @@ class HallRegistryGraphTest {
         )
 
         assertNotNull(reloaded)
-        assertEquals(GraphSyncStatus.NOT_REQUESTED, registry.graph(STAGE_ID.toString())!!.status)
-        assertNull(registry.graph(STAGE_ID.toString())!!.snapshot)
-        assertFalse(registry.saveDirty(STAGE_ID.toString())!!)
+        assertEquals(GraphSyncStatus.NOT_REQUESTED, registry.graph(HALL_ID.toString())!!.status)
+        assertNull(registry.graph(HALL_ID.toString())!!.snapshot)
+        assertFalse(registry.saveDirty(HALL_ID.toString())!!)
     }
 
     @Test fun `SAVE response permits same revision clean graph reconciliation`() {
@@ -233,7 +234,7 @@ class HallRegistryGraphTest {
         registry.install(JsonParser.parseString(hallJson(EPOCH_A, 4, dirty = true)).asJsonObject)
         val store = registry.graphProjections
         store.apply(
-            store.begin(STAGE_ID, GraphRequestKind.RECONCILIATION),
+            store.begin(testKey(STAGE_ID), GraphRequestKind.RECONCILIATION),
             snapshot(epoch = EPOCH_A, revision = 4, dirty = true),
         )
         val fence = registry.stageUpdateFenceForHall(HALL_ID.toString())!!
@@ -245,29 +246,31 @@ class HallRegistryGraphTest {
 
         assertNotNull(saved)
         assertFalse(saved!!.stage!!.dirty)
-        assertEquals(GraphSyncStatus.NOT_REQUESTED, registry.graph(STAGE_ID.toString())!!.status)
-        assertNull(registry.graph(STAGE_ID.toString())!!.snapshot)
+        assertEquals(GraphSyncStatus.NOT_REQUESTED, registry.graph(HALL_ID.toString())!!.status)
+        assertNull(registry.graph(HALL_ID.toString())!!.snapshot)
 
         val applied = store.apply(
-            store.begin(STAGE_ID, GraphRequestKind.RECONCILIATION),
+            store.begin(testKey(STAGE_ID), GraphRequestKind.RECONCILIATION),
             snapshot(epoch = EPOCH_A, revision = 4, dirty = false),
         )
         assertInstanceOf(GraphApplyResult.Applied::class.java, applied)
-        assertEquals(GraphSyncStatus.SYNCED, registry.graph(STAGE_ID.toString())!!.status)
-        assertFalse(registry.saveDirty(STAGE_ID.toString())!!)
+        assertEquals(GraphSyncStatus.SYNCED, registry.graph(HALL_ID.toString())!!.status)
+        assertFalse(registry.saveDirty(HALL_ID.toString())!!)
     }
 
     @Test fun `HallRegistry resolves the Hall owning a Stage for graph status projection`() {
         val registry = HallRegistry()
         val installed = registry.install(JsonParser.parseString(hallJson(EPOCH_A, 0)).asJsonObject)
-        assertSame(installed, registry.hallForStage(STAGE_ID.toString()))
-        assertNull(registry.hallForStage(OTHER_STAGE_ID.toString()))
+        assertSame(installed, registry.hall(HALL_ID.toString()))
+        assertNull(registry.hall(OTHER_STAGE_ID.toString()))
     }
 
     private fun switchTo(registry: HallRegistry, id: UUID, dirty: Boolean = true) {
         val token=registry.beginStageSwitch(HALL_ID.toString(),PLAYER_ID)!!
         assertTrue(registry.bindStageSwitch(token,EPOCH_B,EPOCH_A,0,id))
         val old=registry.hall(HALL_ID.toString())!!.stage!!
+        registry.graphProjections.authoritativeStageReconciliation(
+            registry.hall(HALL_ID.toString())!!.projectionKey(id),old.workspaceEpoch,old.workingRevision)
         assertNotNull(registry.commitStageSwitch(token,EPOCH_B,EPOCH_A,0,
             old.copy(id=id.toString(),dirty=dirty)))
     }
@@ -285,12 +288,12 @@ class HallRegistryGraphTest {
         assertNotNull(saved)
         assertEquals(OTHER_STAGE_ID.toString(),saved!!.stage!!.id)
         assertEquals(BlockPos(2,1,1),saved.stage!!.blocks.single().pos)
-        assertFalse(registry.saveDirty(OTHER_STAGE_ID.toString())!!)
+        assertFalse(registry.saveDirty(HALL_ID.toString())!!)
         val store=registry.graphProjections
         assertInstanceOf(GraphApplyResult.Applied::class.java,store.apply(
-            store.begin(OTHER_STAGE_ID,GraphRequestKind.RECONCILIATION),
+            store.begin(testKey(OTHER_STAGE_ID),GraphRequestKind.RECONCILIATION),
             snapshot(epoch=EPOCH_A,revision=4,dirty=false).copy(stageId=OTHER_STAGE_ID)))
-        assertFalse(registry.saveDirty(OTHER_STAGE_ID.toString())!!)
+        assertFalse(registry.saveDirty(HALL_ID.toString())!!)
     }
 
     @Test fun `SAVE response is rejected during navigation and after returning to same Stage`() {
@@ -319,21 +322,21 @@ class HallRegistryGraphTest {
         val current=registry.stageUpdateFenceForHall(HALL_ID.toString())!!
         assertNull(registry.updateStageAfterSave(
             JsonParser.parseString(stageJson(EPOCH_B,5,false)).asJsonObject,current))
-        assertTrue(registry.saveDirty(STAGE_ID.toString())!!)
+        assertTrue(registry.saveDirty(HALL_ID.toString())!!)
     }
 
     @Test fun `SAVE captures latest Graph revision after wire edits`() {
         val registry=HallRegistry()
         registry.install(JsonParser.parseString(hallJson(EPOCH_A,0,false)).asJsonObject)
         val store=registry.graphProjections
-        store.apply(store.begin(STAGE_ID,GraphRequestKind.RECONCILIATION),
+        store.apply(store.begin(testKey(STAGE_ID),GraphRequestKind.RECONCILIATION),
             snapshot(epoch=EPOCH_A,revision=2,dirty=true))
         val fence=registry.saveFenceForHall(HALL_ID.toString())!!
         assertEquals(2,fence.workingRevision)
         assertTrue(registry.isSaveFenceCurrent(fence))
         assertNotNull(registry.updateStageAfterSave(
             JsonParser.parseString(stageJson(EPOCH_A,2,false)).asJsonObject,fence))
-        assertFalse(registry.saveDirty(STAGE_ID.toString())!!)
+        assertFalse(registry.saveDirty(HALL_ID.toString())!!)
     }
 
     private fun hallJson(epoch: UUID, revision: Long, dirty: Boolean = true) = """

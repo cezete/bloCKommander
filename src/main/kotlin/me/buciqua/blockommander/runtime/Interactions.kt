@@ -178,15 +178,14 @@ class Interactions(
 
     private fun refresh(level: ServerLevel) {
         val worldUuid = WorldIdentity.uuid(level).toString()
+        val projection=StartupHallProjection(registry,java.util.concurrent.Executor(level.server::execute)) { hall ->
+            WorldRenderer.buildHall(level,hall)
+            val owner=level.players().firstOrNull { it.uuid.toString()==hall.ownerUuid }
+            if (owner!=null && hall.stage!=null) reconcileWire(owner,level,hall)
+        }
+        val fence=projection.begin(worldUuid)
         api.get(null, "/api/v1/worlds/$worldUuid/halls") { response ->
-            level.server.execute {
-                response.getAsJsonArray("halls").forEach {
-                    val hall = registry.install(it.asJsonObject)
-                    WorldRenderer.buildHall(level, hall)
-                    val owner = level.players().firstOrNull { player -> player.uuid.toString() == hall.ownerUuid }
-                    if (owner != null && hall.stage != null) reconcileWire(owner, level, hall)
-                }
-            }
+            response.getAsJsonArray("halls").forEach { projection.apply(fence,it.asJsonObject) }
         }
     }
 
@@ -266,11 +265,13 @@ class Interactions(
             player.sendSystemMessage(Component.literal("§c[CK] A célcellát idegen blokk foglalja."))
             return
         }
-        coordinator.place(hall.wireContext(), ServerPlayerIdentity.from(player), target.graphPosition(),
+        val completionFence=registry.wireCompletionFence(hall.id,worldUuid) ?: return
+        coordinator.place(hall.wireContext(registry), ServerPlayerIdentity.from(player), target.graphPosition(),
             MinecraftWireWorldAccess(level), intent).thenAccept { result ->
-            if ((result.status == WireActionStatus.SUCCESS || result.status == WireActionStatus.RECOVERED) && !alreadyWire &&
-                !player.abilities.instabuild) held.shrink(1)
-            refreshSaveSign(level, hall.id)
+            wireCompletion(level).complete(completionFence,result) {
+                if ((result.status == WireActionStatus.SUCCESS || result.status == WireActionStatus.RECOVERED) && !alreadyWire &&
+                    !player.abilities.instabuild) held.shrink(1)
+            }
             wireFeedback(player, result)
         }
     }
@@ -284,16 +285,20 @@ class Interactions(
             player.sendSystemMessage(Component.literal("§c[CK] A CK Wire eltávolításához szinkronizált Stage szükséges."))
             return
         }
-        coordinator.remove(hall.wireContext(), ServerPlayerIdentity.from(player), target.graphPosition(),
+        val completionFence=registry.wireCompletionFence(hall.id,worldUuid) ?: return
+        coordinator.remove(hall.wireContext(registry), ServerPlayerIdentity.from(player), target.graphPosition(),
             MinecraftWireWorldAccess(level)).thenAccept {
-            refreshSaveSign(level, hall.id)
+            wireCompletion(level).complete(completionFence,it)
             wireFeedback(player, it)
         }
     }
 
     private fun reconcileWire(player: ServerPlayer, level: ServerLevel, hall: Hall) {
+        val fence=registry.wireCompletionFence(hall.id,WorldIdentity.uuid(level).toString()) ?: return
         reconcileGraphAndWire(player, level, hall).thenAccept {
-            refreshSaveSign(level, hall.id)
+            level.server.execute {
+                registry.completeWire(fence,WorldIdentity.uuid(level).toString()) { refreshSaveSign(level,hall.id) }
+            }
         }
     }
 
@@ -306,7 +311,7 @@ class Interactions(
             ReconnectGraphResult(false, "GRAPH_COORDINATOR_UNAVAILABLE"),
         )
         return coordinator.reconcileAndRender(
-            hall.wireContext(), ServerPlayerIdentity.from(player), MinecraftWireWorldAccess(level),
+            hall.wireContext(registry), ServerPlayerIdentity.from(player), MinecraftWireWorldAccess(level),
             projectionAllowed,
         ).thenApply { result ->
             val synchronized = result.status == WireActionStatus.SUCCESS || result.status == WireActionStatus.RECOVERED
@@ -332,10 +337,11 @@ class Interactions(
             return
         }
         player.sendSystemMessage(Component.literal("§e[CK] Élbekötés indítása a Python graph szolgáltatáson keresztül…"))
+        val completionFence=registry.wireCompletionFence(hall.id,worldUuid) ?: return
         coordinator.bind(
-            hall.wireContext(), ServerPlayerIdentity.from(player), MinecraftWireWorldAccess(level),
+            hall.wireContext(registry), ServerPlayerIdentity.from(player), MinecraftWireWorldAccess(level),
         ).thenAccept {
-            refreshSaveSign(level, hall.id)
+            wireCompletion(level).complete(completionFence,it)
             wireFeedback(player, it)
         }
     }
@@ -389,23 +395,27 @@ class Interactions(
     }
 
     private fun refreshSaveSign(level: ServerLevel, hallId: String) {
-        level.server.execute {
-            val hall = registry.hall(hallId) ?: return@execute
-            val fence = registry.beginProgramStatus(hall.id)
-            val current = registry.hall(hall.id) ?: return@execute
-            WorldRenderer.renderSaveState(level, current, current.programDirty)
-            if (fence == null) return@execute
-            programs.mountedProgram(hall.transportContext).thenAccept { result ->
-                level.server.execute {
-                    if (result is ProgramHttpResult.Success) {
-                        registry.applyProgramStatus(fence, result.value)?.let { updated ->
-                            WorldRenderer.renderSaveState(level, updated, updated.programDirty)
-                        }
+        // Callers have already crossed the server-thread completion fence; do not enqueue again.
+        val hall = registry.hall(hallId) ?: return
+        val fence = registry.beginProgramStatus(hall.id)
+        val current = registry.hall(hall.id) ?: return
+        WorldRenderer.renderSaveState(level, current, current.programDirty)
+        if (fence == null) return
+        programs.mountedProgram(hall.transportContext).thenAccept { result ->
+            level.server.execute {
+                if (result is ProgramHttpResult.Success) {
+                    registry.applyProgramStatus(fence, result.value)?.let { updated ->
+                        WorldRenderer.renderSaveState(level, updated, updated.programDirty)
                     }
                 }
             }
         }
     }
+
+    private fun wireCompletion(level: ServerLevel)=WireProjectionCompletion(
+        registry,java.util.concurrent.Executor(level.server::execute),
+        { WorldIdentity.uuid(level).toString() },{ refreshSaveSign(level,it) },
+    )
 
     private fun wireFeedback(player: ServerPlayer, result: WireActionResult) {
         val message = when (result.status) {
@@ -514,11 +524,12 @@ class Interactions(
     private fun pos(pos: BlockPos) = JsonObject().apply { addProperty("x", pos.x); addProperty("y", pos.y); addProperty("z", pos.z) }
 }
 
-private fun Hall.wireContext(): WireStageContext {
+private fun Hall.wireContext(registry: HallRegistry): WireStageContext {
     val stage = requireNotNull(stage)
     return WireStageContext(
         transportContext, UUID.fromString(stage.id), stage.origin.graphPosition(),
         GraphPosition(stage.sizeX, stage.sizeY, stage.sizeZ), stage.workspaceEpoch,
+        requireNotNull(registry.graphProjections.view(projectionKey())).lifecycleGeneration,
     )
 }
 private fun BlockPos.graphPosition() = GraphPosition(x, y, z)

@@ -2,6 +2,7 @@ package me.buciqua.blockommander.runtime.wire
 
 import me.buciqua.blockommander.CkWireGeometry
 import me.buciqua.blockommander.runtime.graph.*
+import me.buciqua.blockommander.runtime.projectionKey
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import java.util.UUID
@@ -11,7 +12,7 @@ import java.util.concurrent.TimeUnit
 
 class WireInteractionCoordinatorTest {
     private val direct = Executor(Runnable::run)
-    private val stage = WireStageContext(TRANSPORT_CONTEXT, STAGE_ID, GraphPosition(10, 20, 30), GraphPosition(7, 5, 7), EPOCH_A)
+    private val stage = WireStageContext(TRANSPORT_CONTEXT, STAGE_ID, GraphPosition(10, 20, 30), GraphPosition(7, 5, 7), EPOCH_A, 1)
     private val target = GraphPosition(11, 20, 30)
     private val player = ServerPlayerIdentity.trustedForTest(PLAYER_ID)
 
@@ -38,14 +39,15 @@ class WireInteractionCoordinatorTest {
 
     @Test fun `stale projection reconciles before placement and uses stable server identity request`() {
         val store = syncedStore(0)
-        store.legacyStageUpdated(STAGE_ID, EPOCH_A, 1)
+        store.legacyStageUpdated(testKey(STAGE_ID), EPOCH_A, 1)
         val gateway = FakeGraphGateway(store).apply {
             reconcileSnapshot = wireSnapshot(1, withWire = false)
             sendSnapshot = wireSnapshot(2)
         }
         val fixedRequest = UUID.fromString("12121212-1212-1212-1212-121212121212")
         val world = FakeWireWorld()
-        val result = coordinator(store, gateway, fixedRequest).place(stage, player, target, world).get(3, TimeUnit.SECONDS)
+        val currentStage=stage.copy(lifecycleGeneration=store.view(stage.key)!!.lifecycleGeneration)
+        val result = coordinator(store, gateway, fixedRequest).place(currentStage, player, target, world).get(3, TimeUnit.SECONDS)
         assertEquals(1, gateway.reconcileCalls)
         assertEquals(fixedRequest, gateway.commands.single().requestId)
         assertEquals(PLAYER_ID, gateway.commands.single().player.uuid)
@@ -57,7 +59,7 @@ class WireInteractionCoordinatorTest {
     }
 
     @Test fun `unsynchronized Stage never sends modifying command when reconciliation fails`() {
-        val store = GraphProjectionStore().also { it.authoritativeStageReload(STAGE_ID, EPOCH_A, 0) }
+        val store = GraphProjectionStore().also { it.authoritativeStageReload(testKey(STAGE_ID), EPOCH_A, 0) }
         val gateway = FakeGraphGateway(store)
         val world = FakeWireWorld()
         val result = coordinator(store, gateway).place(stage, player, target, world).get(3, TimeUnit.SECONDS)
@@ -222,7 +224,7 @@ class WireInteractionCoordinatorTest {
         assertEquals(0, world.setCalls)
         assertFalse(future.isDone)
         val authoritative = wireSnapshot(1)
-        val applied = store.apply(store.begin(STAGE_ID, GraphRequestKind.COMMAND), authoritative)
+        val applied = store.apply(store.begin(testKey(STAGE_ID), GraphRequestKind.COMMAND), authoritative)
         pending.complete(CommandTransportOutcome(
             GraphHttpResult.Success(GraphSuccessResponse(
                 GRAPH_API_VERSION, "ok", captured.requestId, STAGE_ID, EPOCH_A, 1, true,
@@ -261,7 +263,7 @@ class WireInteractionCoordinatorTest {
         val store = syncedStore(0)
         val gateway = FakeGraphGateway(store).apply {
             sendSnapshot = wireSnapshot(1)
-            afterSend = { store.authoritativeStageReload(STAGE_ID, EPOCH_B, 0) }
+            afterSend = { store.authoritativeStageReload(testKey(STAGE_ID), EPOCH_B, 0) }
         }
         val world = FakeWireWorld()
         val result = coordinator(store, gateway).place(stage, player, target, world).get(3, TimeUnit.SECONDS)
@@ -283,7 +285,7 @@ class WireInteractionCoordinatorTest {
         val result = coordinator.reconcileAndRender(stage, player, world).get(3, TimeUnit.SECONDS)
 
         assertEquals(WireActionStatus.STALE, result.status)
-        assertEquals("STAGE_NOT_ACTIVE", result.detail)
+        assertEquals("STAGE_LIFECYCLE_CHANGED", result.detail)
         assertEquals(0, world.setCalls)
     }
 
@@ -306,7 +308,7 @@ class WireInteractionCoordinatorTest {
         assertEquals(WireWorldCell.REPLACEABLE, successWorld.cell(target))
         assertTrue(success.commands.single() is WireLayoutCommand)
         assertNull((success.commands.single() as WireLayoutCommand).changes.single().cell)
-        assertEquals(listOf(retainedEdge), successStore.view(STAGE_ID)!!.snapshot!!.edges)
+        assertEquals(listOf(retainedEdge), successStore.view(testKey(STAGE_ID))!!.snapshot!!.edges)
     }
 
     @Test fun `render failure keeps Python authoritative and triggers bounded reconciliation`() {
@@ -320,8 +322,8 @@ class WireInteractionCoordinatorTest {
         val result = coordinator.place(stage, player, target, world).get(3, TimeUnit.SECONDS)
         assertEquals(WireActionStatus.NEEDS_REPAIR, result.status)
         assertEquals(1, gateway.reconcileCalls)
-        assertEquals(1, store.view(STAGE_ID)!!.snapshot!!.wireCells.size)
-        assertEquals(WireWorldStatus.NEEDS_REPAIR, coordinator.worldStatus(STAGE_ID))
+        assertEquals(1, store.view(testKey(STAGE_ID))!!.snapshot!!.wireCells.size)
+        assertEquals(WireWorldStatus.NEEDS_REPAIR, coordinator.worldStatus(testKey(STAGE_ID)))
     }
 
     @Test fun `bind uses player identity renders green and repeated bind remains one edge`() {
@@ -338,7 +340,7 @@ class WireInteractionCoordinatorTest {
         assertEquals(WireActionStatus.SUCCESS, coordinator.bind(stage, player, world).get(3, TimeUnit.SECONDS).status)
         assertEquals(2, gateway.commands.size)
         assertTrue(gateway.commands.all { it is BindEdgesCommand && it.player.uuid == PLAYER_ID })
-        assertEquals(1, store.view(STAGE_ID)!!.snapshot!!.edges.size)
+        assertEquals(1, store.view(testKey(STAGE_ID))!!.snapshot!!.edges.size)
         assertEquals(1, world.setCalls)
     }
 
@@ -387,8 +389,8 @@ class WireInteractionCoordinatorTest {
     ) = WireInteractionCoordinator(store, gateway, WireWorldProjector(), direct) { requestId }
 
     private fun syncedStore(revision: Long, withWire: Boolean = false) = GraphProjectionStore().also { store ->
-        store.authoritativeStageReload(STAGE_ID, EPOCH_A, 0)
-        store.apply(store.begin(STAGE_ID, GraphRequestKind.RECONCILIATION), wireSnapshot(revision, withWire = withWire))
+        store.authoritativeStageReload(testKey(STAGE_ID), EPOCH_A, 0)
+        store.apply(store.begin(testKey(STAGE_ID), GraphRequestKind.RECONCILIATION), wireSnapshot(revision, withWire = withWire))
     }
 }
 
@@ -406,9 +408,9 @@ private class FakeGraphGateway(private val store: GraphProjectionStore) : GraphG
 
     override fun reconcile(context: me.buciqua.blockommander.runtime.WorkingCopyTransportContext, stageId: UUID, player: ServerPlayerIdentity): CompletableFuture<ReconciliationOutcome> {
         reconcileCalls++
-        val snapshot = reconcileSnapshot ?: store.view(stageId)?.snapshot
+        val snapshot = reconcileSnapshot ?: store.view(context.projectionKey(stageId))?.snapshot
             ?: return CompletableFuture.completedFuture(ReconciliationOutcome(GraphHttpResult.Unavailable("missing"), null))
-        val applied = store.apply(store.begin(stageId, GraphRequestKind.RECONCILIATION), snapshot)
+        val applied = store.apply(store.begin(context.projectionKey(stageId), GraphRequestKind.RECONCILIATION), snapshot)
         return CompletableFuture.completedFuture(ReconciliationOutcome(GraphHttpResult.Success(success(snapshot, null)), applied))
     }
 
@@ -426,7 +428,7 @@ private class FakeGraphGateway(private val store: GraphProjectionStore) : GraphG
             } else CompletableFuture.completedFuture(CommandTransportOutcome(transport, null, null))
         }
         val snapshot = if (sendSnapshots.isEmpty()) requireNotNull(sendSnapshot) else sendSnapshots.removeFirst()
-        val applied = store.apply(store.begin(command.stageId, GraphRequestKind.COMMAND), snapshot)
+        val applied = store.apply(store.begin(context.projectionKey(command.stageId), GraphRequestKind.COMMAND), snapshot)
         afterSend()
         return CompletableFuture.completedFuture(CommandTransportOutcome(
             GraphHttpResult.Success(success(snapshot, command.requestId)), applied, null,

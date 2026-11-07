@@ -1,22 +1,27 @@
 package me.buciqua.blockommander.runtime.graph
 
 import java.util.UUID
+import me.buciqua.blockommander.runtime.ProjectionKey
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 enum class GraphSyncStatus { NOT_REQUESTED, RECONCILING, SYNCED, STALE, CONFLICT, ERROR }
 enum class GraphRequestKind { RECONCILIATION, COMMAND }
 
 data class StageGraphView(
-    val stageId: UUID,
+    val key: ProjectionKey,
     val stageEpoch: UUID,
     val stageRevision: Long,
     val status: GraphSyncStatus,
     val snapshot: GraphStateSnapshot?,
     val problem: String?,
-)
+    val lifecycleGeneration: Long,
+) {
+    val stageId get() = key.stageId
+}
 
 class GraphRequestToken internal constructor(
-    val stageId: UUID,
+    val key: ProjectionKey,
     internal val lifecycleGeneration: Long,
     internal val requestGeneration: Long,
     val kind: GraphRequestKind,
@@ -39,18 +44,20 @@ class GraphProjectionStore {
         var problem: String?,
     )
 
-    private val slots = ConcurrentHashMap<UUID, Slot>()
+    private val slots = ConcurrentHashMap<ProjectionKey, Slot>()
+    private val lifecycles = AtomicLong()
+    private fun nextLifecycle() = lifecycles.incrementAndGet()
 
     /** A hiteles Stage reload az egyetlen belépési pont, amely epochváltást fogadhat el. */
-    fun authoritativeStageReload(stageId: UUID, epoch: UUID, revision: Long): StageGraphView = synchronized(slots) {
+    fun authoritativeStageReload(key: ProjectionKey, epoch: UUID, revision: Long): StageGraphView = synchronized(slots) {
         require(revision >= 0) { "A Stage revision nem lehet negatív." }
-        val current = slots[stageId]
+        val current = slots[key]
         if (current == null) {
-            slots[stageId] = Slot(epoch, revision, 1, 0, GraphSyncStatus.NOT_REQUESTED, null, null)
+            slots[key] = Slot(epoch, revision, nextLifecycle(), 0, GraphSyncStatus.NOT_REQUESTED, null, null)
         } else if (current.stageEpoch != epoch) {
             current.stageEpoch = epoch
             current.stageRevision = revision
-            current.lifecycleGeneration++
+            current.lifecycleGeneration = nextLifecycle()
             current.requestGeneration++
             current.status = GraphSyncStatus.NOT_REQUESTED
             current.snapshot = null
@@ -62,81 +69,92 @@ class GraphProjectionStore {
                 current.problem = "STAGE_AHEAD_OF_GRAPH"
             }
         }
-        view(stageId, slots.getValue(stageId))
+        view(key, slots.getValue(key))
     }
 
     /**
      * A reconnect authoritative Stage GET-je után a következő Graph GET új vetítést épít.
      * Azonos epochnál is leválasztja a reconnect előtt indult kéréseket és snapshotot.
      */
-    fun authoritativeStageReconciliation(stageId: UUID, epoch: UUID, revision: Long): StageGraphView = synchronized(slots) {
+    fun authoritativeStageReconciliation(key: ProjectionKey, epoch: UUID, revision: Long): StageGraphView = synchronized(slots) {
         require(revision >= 0) { "A Stage revision nem lehet negatív." }
-        val current = slots[stageId]
+        val current = slots[key]
         if (current == null) {
-            slots[stageId] = Slot(epoch, revision, 1, 0, GraphSyncStatus.NOT_REQUESTED, null, null)
+            slots[key] = Slot(epoch, revision, nextLifecycle(), 0, GraphSyncStatus.NOT_REQUESTED, null, null)
         } else {
             current.stageEpoch = epoch
             current.stageRevision = revision
-            current.lifecycleGeneration++
+            current.lifecycleGeneration = nextLifecycle()
             current.requestGeneration++
             current.status = GraphSyncStatus.NOT_REQUESTED
             current.snapshot = null
             current.problem = null
         }
-        view(stageId, slots.getValue(stageId))
+        view(key, slots.getValue(key))
     }
 
     /** Legacy block CRUD után a korábbi graph vetítés többé nem jelölhető aktuálisnak. */
-    fun legacyStageUpdated(stageId: UUID, epoch: UUID, revision: Long): StageGraphView = synchronized(slots) {
-        val current = slots[stageId]
+    fun legacyStageUpdated(key: ProjectionKey, epoch: UUID, revision: Long): StageGraphView = synchronized(slots) {
+        val current = slots[key]
         if (current == null) {
-            val created = Slot(epoch, revision, 1, 0, GraphSyncStatus.STALE, null, "LEGACY_STAGE_UPDATED")
-            slots[stageId] = created
-            return@synchronized view(stageId, created)
+            val created = Slot(epoch, revision, nextLifecycle(), 0, GraphSyncStatus.STALE, null, "LEGACY_STAGE_UPDATED")
+            slots[key] = created
+            return@synchronized view(key, created)
         }
         if (current.stageEpoch != epoch) {
-            current.lifecycleGeneration++
+            current.lifecycleGeneration = nextLifecycle()
             current.requestGeneration++
             current.status = GraphSyncStatus.CONFLICT
             current.problem = "LEGACY_EPOCH_CONFLICT"
-            return@synchronized view(stageId, current)
+            return@synchronized view(key, current)
         }
         if (revision < current.stageRevision) {
-            return@synchronized view(stageId, current)
+            return@synchronized view(key, current)
         }
         current.stageRevision = revision
-        current.lifecycleGeneration++
+        current.lifecycleGeneration = nextLifecycle()
         current.requestGeneration++
         current.status = GraphSyncStatus.STALE
         current.problem = "LEGACY_STAGE_UPDATED"
-        view(stageId, current)
+        view(key, current)
     }
 
-    fun remove(stageId: UUID) {
-        synchronized(slots) { slots.remove(stageId) }
+    fun remove(key: ProjectionKey) {
+        synchronized(slots) { slots.remove(key) }
     }
 
-    fun begin(stageId: UUID, kind: GraphRequestKind): GraphRequestToken = synchronized(slots) {
-        val slot = slots[stageId] ?: throw IllegalStateException("Ismeretlen Stage graph kéréshez: $stageId")
+    fun begin(key: ProjectionKey, kind: GraphRequestKind): GraphRequestToken = synchronized(slots) {
+        val slot = slots[key] ?: throw IllegalStateException("Ismeretlen Stage graph kéréshez: $key")
         slot.requestGeneration++
         if (kind == GraphRequestKind.RECONCILIATION) slot.status = GraphSyncStatus.RECONCILING
         slot.problem = null
-        GraphRequestToken(stageId, slot.lifecycleGeneration, slot.requestGeneration, kind)
+        GraphRequestToken(key, slot.lifecycleGeneration, slot.requestGeneration, kind)
+    }
+
+    /** The returned token belongs to the checked incarnation; callers must not reserve again. */
+    fun beginIfLifecycleCurrent(key: ProjectionKey, expected: Long, kind: GraphRequestKind): GraphRequestToken? =
+        synchronized(slots) {
+            if (slots[key]?.lifecycleGeneration!=expected) null else begin(key,kind)
+        }
+
+    fun removeIfLifecycleCurrent(key: ProjectionKey, expected: Long): Boolean = synchronized(slots) {
+        if (slots[key]?.lifecycleGeneration!=expected) false
+        else { slots.remove(key); true }
     }
 
     fun apply(token: GraphRequestToken, snapshot: GraphStateSnapshot): GraphApplyResult = synchronized(slots) {
-        val slot = slots[token.stageId] ?: return@synchronized GraphApplyResult.Rejected(
-            "UNKNOWN_STAGE", missingView(token.stageId),
+        val slot = slots[token.key] ?: return@synchronized GraphApplyResult.Rejected(
+            "UNKNOWN_STAGE", missingView(token.key),
         )
         if (token.lifecycleGeneration != slot.lifecycleGeneration || token.requestGeneration != slot.requestGeneration) {
-            return@synchronized GraphApplyResult.IgnoredStaleRequest(view(token.stageId, slot))
+            return@synchronized GraphApplyResult.IgnoredStaleRequest(view(token.key, slot))
         }
         fun reject(code: String): GraphApplyResult.Rejected {
             slot.status = GraphSyncStatus.CONFLICT
             slot.problem = code
-            return GraphApplyResult.Rejected(code, view(token.stageId, slot))
+            return GraphApplyResult.Rejected(code, view(token.key, slot))
         }
-        if (snapshot.stageId != token.stageId) return@synchronized reject("STAGE_ID_MISMATCH")
+        if (snapshot.stageId != token.key.stageId) return@synchronized reject("STAGE_ID_MISMATCH")
         if (snapshot.workspaceEpoch != slot.stageEpoch) return@synchronized reject("EPOCH_CONFLICT")
         if (snapshot.workingRevision < slot.stageRevision) return@synchronized reject("STALE_REVISION")
         val previous = slot.snapshot
@@ -150,25 +168,33 @@ class GraphProjectionStore {
         slot.stageRevision = snapshot.workingRevision
         slot.status = GraphSyncStatus.SYNCED
         slot.problem = null
-        GraphApplyResult.Applied(view(token.stageId, slot))
+        GraphApplyResult.Applied(view(token.key, slot))
     }
 
     fun fail(token: GraphRequestToken, code: String, uncertain: Boolean): StageGraphView = synchronized(slots) {
-        val slot = slots[token.stageId] ?: return@synchronized missingView(token.stageId)
+        val slot = slots[token.key] ?: return@synchronized missingView(token.key)
         if (token.lifecycleGeneration == slot.lifecycleGeneration && token.requestGeneration == slot.requestGeneration) {
             slot.status = if (uncertain) GraphSyncStatus.STALE else GraphSyncStatus.ERROR
             slot.problem = code
         }
-        view(token.stageId, slot)
+        view(token.key, slot)
     }
 
-    fun view(stageId: UUID): StageGraphView? = synchronized(slots) { slots[stageId]?.let { view(stageId, it) } }
+    fun view(key: ProjectionKey): StageGraphView? = synchronized(slots) { slots[key]?.let { view(key, it) } }
 
-    private fun view(stageId: UUID, slot: Slot) = StageGraphView(
-        stageId, slot.stageEpoch, slot.stageRevision, slot.status, slot.snapshot, slot.problem,
+    fun removeHall(hallId: UUID) = synchronized(slots) {
+        slots.keys.removeIf { it.hallId == hallId }
+    }
+
+    fun isLifecycleCurrent(key: ProjectionKey, generation: Long): Boolean = synchronized(slots) {
+        slots[key]?.lifecycleGeneration == generation
+    }
+
+    private fun view(key: ProjectionKey, slot: Slot) = StageGraphView(
+        key, slot.stageEpoch, slot.stageRevision, slot.status, slot.snapshot, slot.problem, slot.lifecycleGeneration,
     )
 
-    private fun missingView(stageId: UUID) = StageGraphView(
-        stageId, UUID(0, 0), 0, GraphSyncStatus.ERROR, null, "UNKNOWN_STAGE",
+    private fun missingView(key: ProjectionKey) = StageGraphView(
+        key, UUID(0, 0), 0, GraphSyncStatus.ERROR, null, "UNKNOWN_STAGE", -1,
     )
 }

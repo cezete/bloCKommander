@@ -26,6 +26,7 @@ class StageReconnectReconciler(
             diagnose("STAGE_RELOAD_MISSING_STAGE")
             return false
         }
+        val completionFence=registry.saveFenceForHall(hall.id) ?: return false
         try {
             projectStage(hall)
         } catch (failure: Exception) {
@@ -34,30 +35,28 @@ class StageReconnectReconciler(
         }
 
         val graphFuture = runCatching { reconcileGraphAndWire(hall) }.getOrElse {
-            completeAfterGraph(hall.id, stage, ReconnectGraphResult(false, "GRAPH_RECONCILIATION_FAILED: ${it.message}"))
+            completeAfterGraph(completionFence, ReconnectGraphResult(false, "GRAPH_RECONCILIATION_FAILED: ${it.message}"))
             return true
         }
         graphFuture.whenComplete { result, failure ->
             completeAfterGraph(
-                hall.id, stage,
+                completionFence,
                 if (failure == null) result else ReconnectGraphResult(false, "GRAPH_RECONCILIATION_FAILED: ${failure.message}"),
             )
         }
         return true
     }
 
-    private fun completeAfterGraph(hallId: String, stage: Stage, result: ReconnectGraphResult) {
+    private fun completeAfterGraph(fence: StageUpdateFence, result: ReconnectGraphResult) {
         if (!result.synchronized) diagnose(result.detail ?: "GRAPH_RECONCILIATION_NOT_SYNCED")
-        val currentHall = registry.hall(hallId) ?: run {
+        val currentHall = registry.hall(fence.hallId) ?: run {
             diagnose("STAGE_LIFECYCLE_CHANGED")
             return
         }
-        val currentStage = currentHall.stage ?: return
-        if (currentStage.workspaceEpoch != stage.workspaceEpoch ||
-            currentStage.workingRevision != stage.workingRevision) {
+        if (!registry.isSaveFenceCurrent(fence)) {
             diagnose("STAGE_LIFECYCLE_CHANGED")
             return
         }
-        projectSaveState(currentHall, currentHall.programDirty)
+        projectSaveState(currentHall, !result.synchronized || currentHall.programDirty)
     }
 }

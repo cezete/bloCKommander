@@ -7,6 +7,7 @@ import me.buciqua.blockommander.ModContent
 import me.buciqua.blockommander.runtime.graph.GraphPosition
 import me.buciqua.blockommander.runtime.graph.GraphStateSnapshot
 import me.buciqua.blockommander.runtime.WorkingCopyTransportContext
+import me.buciqua.blockommander.runtime.projectionKey
 import net.minecraft.core.BlockPos
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.level.block.Block
@@ -19,7 +20,10 @@ data class WireStageContext(
     val origin: GraphPosition,
     val size: GraphPosition,
     val workspaceEpoch: UUID,
-)
+    val lifecycleGeneration: Long,
+) {
+    val key get() = transportContext.projectionKey(stageId)
+}
 
 enum class WireWorldCell {
     REPLACEABLE,
@@ -50,22 +54,29 @@ data class WireProjectionResult(
     val complete: Boolean get() = issues.isEmpty()
 }
 
+class WireProjectionPlan internal constructor(
+    internal val desired: Map<GraphPosition,PlannedWire>,
+    internal val removals: Set<GraphPosition>,
+    val issues: List<WireProjectionIssue>,
+)
+internal data class PlannedWire(val geometry: CkWireGeometry, val visual: WireVisualState)
+
 class WireWorldProjector {
-    fun apply(
+    fun prepare(
         stage: WireStageContext,
         authoritativeRevision: Long,
         snapshot: GraphStateSnapshot,
         world: WireWorldAccess,
-    ): WireProjectionResult {
+    ): WireProjectionPlan {
         if (snapshot.stageId != stage.stageId || snapshot.workspaceEpoch != stage.workspaceEpoch ||
             snapshot.workingRevision != authoritativeRevision) {
-            return WireProjectionResult(emptySet(), emptySet(), listOf(
+            return WireProjectionPlan(emptyMap(), emptySet(), listOf(
                 WireProjectionIssue("STALE_WORLD_PROJECTION", null, "A graph snapshot nem az aktuális Stage lifecycle-hoz tartozik."),
             ))
         }
 
         val issues = mutableListOf<WireProjectionIssue>()
-        val desired = linkedMapOf<GraphPosition, DesiredWire>()
+        val desired = linkedMapOf<GraphPosition, PlannedWire>()
         val visualStates = WireVisualProjection.states(snapshot)
         snapshot.wireCells.forEach { cell ->
             val relative = cell.position
@@ -84,7 +95,7 @@ class WireWorldProjector {
                 desired.containsKey(absolute) -> issues += WireProjectionIssue(
                     "DUPLICATE_WIRE_POSITION", absolute, "A snapshot ugyanazt a WireCell pozíciót többször tartalmazza.",
                 )
-                else -> desired[absolute] = DesiredWire(geometry, visualStates[relative] ?: WireVisualState.UNKNOWN)
+                else -> desired[absolute] = PlannedWire(geometry, visualStates[relative] ?: WireVisualState.UNKNOWN)
             }
         }
 
@@ -97,10 +108,23 @@ class WireWorldProjector {
         }
         // A teljes snapshot preflightja megelőz minden világírást, így hibás geometriából vagy
         // idegen blokkal ütköző snapshotból nem maradhat részlegesen frissített projekció.
-        if (issues.isNotEmpty()) return WireProjectionResult(emptySet(), emptySet(), issues)
+        val removals=(world.ckWirePositions(stage)-desired.keys).filter { position ->
+            position.x.toLong()-stage.origin.x in 0L until stage.size.x.toLong() &&
+                position.y.toLong()-stage.origin.y in 0L until stage.size.y.toLong() &&
+                position.z.toLong()-stage.origin.z in 0L until stage.size.z.toLong()
+        }.toSet()
+        return WireProjectionPlan(desired.toMap(),removals,issues.toList())
+    }
+
+    fun apply(
+        stage:WireStageContext, authoritativeRevision:Long, snapshot:GraphStateSnapshot, world:WireWorldAccess,
+    ) = applyPrepared(prepare(stage,authoritativeRevision,snapshot,world),world)
+
+    fun applyPrepared(plan:WireProjectionPlan, world:WireWorldAccess):WireProjectionResult {
+        if (plan.issues.isNotEmpty()) return WireProjectionResult(emptySet(),emptySet(),plan.issues)
 
         val rendered = linkedSetOf<GraphPosition>()
-        desired.forEach { (position, desiredWire) ->
+        plan.desired.forEach { (position, desiredWire) ->
             val expected = desiredWire.visual.worldCell()
             when {
                 world.cell(position) == expected && world.geometry(position) == desiredWire.geometry -> rendered += position
@@ -117,13 +141,13 @@ class WireWorldProjector {
         }
 
         val removed = linkedSetOf<GraphPosition>()
-        (world.ckWirePositions(stage) - desired.keys).forEach { position ->
+        plan.removals.forEach { position ->
             if (world.cell(position).isCkWire) {
                 world.removeWire(position)
                 removed += position
             }
         }
-        return WireProjectionResult(rendered, removed, issues)
+        return WireProjectionResult(rendered, removed, emptyList())
     }
 }
 
@@ -191,8 +215,6 @@ private fun WireVisualState.worldCell(): WireWorldCell = when (this) {
     WireVisualState.BOUND_NEEDS_REPAIR -> WireWorldCell.CK_WIRE_BOUND_NEEDS_REPAIR
     WireVisualState.UNKNOWN -> WireWorldCell.CK_WIRE_BOUND_NEEDS_REPAIR
 }
-
-private data class DesiredWire(val geometry: CkWireGeometry, val visual: WireVisualState)
 
 private fun me.buciqua.blockommander.runtime.graph.GraphWireCell.geometry(): CkWireGeometry? {
     if (channels.size == 1 && channels.single().channel == "SINGLE") {

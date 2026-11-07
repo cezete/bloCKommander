@@ -40,7 +40,7 @@ class BlockCommanderMod : ModInitializer {
             graphTransport = transport
             wireCoordinator.set(WireInteractionCoordinator(
                 registry.graphProjections, transport, WireWorldProjector(), mainThread,
-                projectionFence = { stage -> registry.isActiveStage(stage.stageId, stage.workspaceEpoch) },
+                projectionFence = registry::permitsWireProjection,
             ))
             stageNavigation.set(StageNavigationCoordinator(
                 registry, ProgramApiClient.fromEnvironment(), transport, mainThread,

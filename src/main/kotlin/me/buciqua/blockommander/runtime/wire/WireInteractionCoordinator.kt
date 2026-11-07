@@ -1,6 +1,7 @@
 package me.buciqua.blockommander.runtime.wire
 
 import me.buciqua.blockommander.runtime.graph.*
+import me.buciqua.blockommander.runtime.ProjectionKey
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -31,9 +32,10 @@ class WireInteractionCoordinator(
         const val AUTOMATIC_NEIGHBOR_PLACEMENT_STATUS = "SUPPORTED_WIRE_PLACE_INTENT"
     }
 
-    private val worldStates = ConcurrentHashMap<UUID, WireWorldStatus>()
+    private val worldStates = ConcurrentHashMap<ProjectionKey, Pair<Long, WireWorldStatus>>()
 
-    fun worldStatus(stageId: UUID): WireWorldStatus = worldStates[stageId] ?: WireWorldStatus.NEEDS_REPAIR
+    fun worldStatus(key: ProjectionKey): WireWorldStatus = worldStates[key]
+        ?.takeIf { projections.isLifecycleCurrent(key,it.first) }?.second ?: WireWorldStatus.NEEDS_REPAIR
 
     fun place(
         stage: WireStageContext,
@@ -61,6 +63,9 @@ class WireInteractionCoordinator(
         projectionAllowed: () -> Boolean = { true },
     ): CompletableFuture<WireActionResult> {
         val requestId = requestIdFactory()
+        if (!validLifecycle(stage)) return CompletableFuture.completedFuture(
+            WireActionResult(WireAction.PLACE,WireActionStatus.STALE,requestId,detail="STAGE_LIFECYCLE_CHANGED"),
+        )
         return gateway.reconcile(stage.transportContext, stage.stageId, player).thenCompose {
             renderCurrent(stage, world, WireAction.PLACE, requestId, null, recovered = true,
                 projectionAllowed = projectionAllowed)
@@ -199,6 +204,7 @@ class WireInteractionCoordinator(
         stage: WireStageContext,
         player: ServerPlayerIdentity,
     ): CompletableFuture<SyncCheck> {
+        if (!validLifecycle(stage)) return CompletableFuture.completedFuture(SyncCheck(null))
         current(stage)?.let { return CompletableFuture.completedFuture(SyncCheck(it)) }
         return gateway.reconcile(stage.transportContext, stage.stageId, player).thenApply { outcome ->
             val forbidden=outcome.transport is GraphHttpResult.ApiError &&
@@ -207,8 +213,12 @@ class WireInteractionCoordinator(
         }
     }
 
-    private fun current(stage: WireStageContext): StageGraphView? = projections.view(stage.stageId)?.takeIf {
-        it.status == GraphSyncStatus.SYNCED && it.stageEpoch == stage.workspaceEpoch && it.snapshot != null
+    private fun validLifecycle(stage: WireStageContext) =
+        projections.isLifecycleCurrent(stage.key,stage.lifecycleGeneration) && projectionFence(stage)
+
+    private fun current(stage: WireStageContext): StageGraphView? = projections.view(stage.key)?.takeIf {
+        validLifecycle(stage) && it.lifecycleGeneration==stage.lifecycleGeneration &&
+            it.status == GraphSyncStatus.SYNCED && it.stageEpoch == stage.workspaceEpoch && it.snapshot != null
     }
 
     private fun renderCurrent(
@@ -222,7 +232,7 @@ class WireInteractionCoordinator(
         discoveryDiagnostics: List<GraphDiscoveryDiagnostic> = emptyList(),
         projectionAllowed: () -> Boolean = { true },
     ): CompletableFuture<WireActionResult> = CompletableFuture.supplyAsync({
-        if (!projectionFence(stage) || !projectionAllowed()) return@supplyAsync WireActionResult(
+        if (!validLifecycle(stage) || !projectionAllowed()) return@supplyAsync WireActionResult(
             action, WireActionStatus.STALE, requestId, detail = "STAGE_NOT_ACTIVE",
         )
         val view = current(stage) ?: return@supplyAsync WireActionResult(
@@ -236,27 +246,27 @@ class WireInteractionCoordinator(
                 WireAction.BIND -> true
             }
             if (result.complete && targetMatches && !forceRejected) {
-                worldStates[stage.stageId] = WireWorldStatus.SYNCED
+                worldStates[stage.key] = stage.lifecycleGeneration to WireWorldStatus.SYNCED
                 WireActionResult(
                     action, if (recovered) WireActionStatus.RECOVERED else WireActionStatus.SUCCESS,
                     requestId, result, discoveryDiagnostics = discoveryDiagnostics,
                 )
             } else if (result.complete) {
-                worldStates[stage.stageId] = WireWorldStatus.SYNCED
+                worldStates[stage.key] = stage.lifecycleGeneration to WireWorldStatus.SYNCED
                 target?.let(world::correct)
                 WireActionResult(
                     action, WireActionStatus.REJECTED, requestId, result,
                     "COMMAND_NOT_PRESENT_AFTER_RECONCILIATION", discoveryDiagnostics,
                 )
             } else {
-                worldStates[stage.stageId] = WireWorldStatus.NEEDS_REPAIR
+                worldStates[stage.key] = stage.lifecycleGeneration to WireWorldStatus.NEEDS_REPAIR
                 WireActionResult(
                     action, WireActionStatus.NEEDS_REPAIR, requestId, result,
                     "WORLD_PROJECTION_INCOMPLETE", discoveryDiagnostics,
                 )
             }
         } catch (_: Exception) {
-            worldStates[stage.stageId] = WireWorldStatus.NEEDS_REPAIR
+            worldStates[stage.key] = stage.lifecycleGeneration to WireWorldStatus.NEEDS_REPAIR
             WireActionResult(action, WireActionStatus.NEEDS_REPAIR, requestId, detail = "WORLD_RENDER_FAILED")
         }
     }, mainThread)

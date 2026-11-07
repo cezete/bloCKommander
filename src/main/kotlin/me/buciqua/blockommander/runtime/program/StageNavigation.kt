@@ -24,6 +24,7 @@ data class PreparedStageSwitch(
     val graph:GraphStateSnapshot,
     val program:ProgramSwitchContext,
     val programDirty:Boolean = true,
+    val projectionLifecycle:Long,
 )
 
 interface StageSwitchCommitter {
@@ -32,7 +33,7 @@ interface StageSwitchCommitter {
 
 object StageProjectionAssembler {
     fun assemble(
-        hall:Hall,response:ProgramStageResponse,graph:GraphStateSnapshot,
+        hall:Hall,response:ProgramStageResponse,graph:GraphStateSnapshot,projectionLifecycle:Long,
     ):PreparedStageSwitch {
         val summary=response.stage.summary
         val workspace=summary.workspace ?: throw IllegalArgumentException("A cél-Stage nincs betöltött workspace-ben.")
@@ -76,7 +77,7 @@ object StageProjectionAssembler {
         return PreparedStageSwitch(
             target,graph,ProgramSwitchContext(
                 response.programId,response.programWorkspaceEpoch,response.hierarchyRevision,
-            ),response.aggregateDirty,
+            ),response.aggregateDirty,projectionLifecycle,
         )
     }
 }
@@ -95,7 +96,7 @@ class StageNavigationCoordinator(
             ?: return completed(NavigationStatus.FORBIDDEN,hallId,null,null,"OWNER_OR_HALL_MISMATCH")
         val transport=registry.transportContext(token.hallId)
             ?: return reject(token,"TRANSPORT_CONTEXT_MISSING")
-        return programs.mountedProgram(transport).thenCompose { mounted ->
+        return protect(token) { programs.mountedProgram(transport).thenCompose { mounted ->
             val value=mounted.valueOrFail(token) ?: return@thenCompose completedFrom(token,mounted.failureStatus(),mounted.failureDetail())
             val program=value.program
             if (value.mount.hallId!=hallId || value.mount.programId!=program.programId ||
@@ -123,7 +124,7 @@ class StageNavigationCoordinator(
                     ),transport,child.child.stageId,player,committer,
                 )
             }
-        }
+        } }
     }
 
     fun back(
@@ -133,7 +134,7 @@ class StageNavigationCoordinator(
             ?: return completed(NavigationStatus.FORBIDDEN,hallId,null,null,"OWNER_OR_HALL_MISMATCH")
         val transport=registry.transportContext(token.hallId)
             ?: return reject(token,"TRANSPORT_CONTEXT_MISSING")
-        return programs.mountedProgram(transport).thenCompose { mounted ->
+        return protect(token) { programs.mountedProgram(transport).thenCompose { mounted ->
             val value=mounted.valueOrFail(token) ?: return@thenCompose completedFrom(token,mounted.failureStatus(),mounted.failureDetail())
             val program=value.program
             if (value.mount.hallId!=hallId || value.mount.workingCopyId!=transport.workingCopyId ||
@@ -156,7 +157,7 @@ class StageNavigationCoordinator(
                     program.programId,program.workspaceEpoch,program.hierarchyRevision,
                 ),transport,parents.single().parentStageId,player,committer,
             )
-        }
+        } }
     }
 
     private fun prepareAndCommit(
@@ -173,14 +174,12 @@ class StageNavigationCoordinator(
             stageResponse.stage.summary.stageId!=targetId) {
             return@thenCompose reject(token,"TARGET_STAGE_IDENTITY_MISMATCH")
         }
-        if (!registry.bindStageSwitch(
+        if (!registry.prepareStageSwitchProjection(
                 token,context.programId,context.workspaceEpoch,context.hierarchyRevision,targetId,
+                workspace.epoch,workspace.workingRevision,
             )) return@thenCompose stale(token,targetId,"SWITCH_GENERATION_CHANGED")
-        registry.graphProjections.authoritativeStageReload(
-            targetId,workspace.epoch,workspace.workingRevision,
-        )
         graph.reconcile(transport,targetId,player).thenCompose { outcome ->
-            val view=registry.graphProjections.view(targetId)
+            val view=registry.graphProjections.view(transport.projectionKey(targetId))
             if (!registry.isStageSwitchCurrent(
                     token,context.programId,targetId,context.workspaceEpoch,context.hierarchyRevision,
                 )) return@thenCompose stale(token,targetId,"SWITCH_GENERATION_CHANGED")
@@ -190,23 +189,33 @@ class StageNavigationCoordinator(
                 return@thenCompose reject(token,"GRAPH_NOT_AUTHORITATIVE")
             }
             val hall=registry.hall(token.hallId) ?: return@thenCompose reject(token,"HALL_NOT_FOUND")
-            val prepared=try { StageProjectionAssembler.assemble(hall,stageResponse,view.snapshot) }
+            val prepared=try { StageProjectionAssembler.assemble(hall,stageResponse,view.snapshot,view.lifecycleGeneration) }
                 catch (failure:Exception) { return@thenCompose reject(token,failure.message ?: "PROJECTION_INVALID") }
             CompletableFuture.supplyAsync({
                 if (!registry.isStageSwitchCurrent(
                         token,context.programId,targetId,context.workspaceEpoch,context.hierarchyRevision,
-                    )) NavigationResult(
-                    NavigationStatus.STALE,UUID.fromString(token.hallId),token.sourceStageId,targetId,
+                    ) || !registry.graphProjections.isLifecycleCurrent(
+                        transport.projectionKey(targetId),prepared.projectionLifecycle,
+                    )) terminalFailure(token,NavigationStatus.STALE,targetId,
                     "SWITCH_GENERATION_CHANGED",
                 ) else if (committer.commit(token,prepared)) NavigationResult(
                     NavigationStatus.SUCCESS,UUID.fromString(token.hallId),token.sourceStageId,targetId,
-                ) else NavigationResult(
-                    NavigationStatus.PROJECTION_FAILED,UUID.fromString(token.hallId),token.sourceStageId,targetId,
+                ) else terminalFailure(token,NavigationStatus.PROJECTION_FAILED,targetId,
                     "WORLD_PROJECTION_FAILED",
                 )
             },mainThread)
         }
     }
+
+    private fun terminalFailure(token:StageSwitchToken,status:NavigationStatus,target:UUID?,detail:String):NavigationResult {
+        registry.failStageSwitch(token)
+        return NavigationResult(status,UUID.fromString(token.hallId),token.sourceStageId,target,detail)
+    }
+
+    private fun protect(token:StageSwitchToken, action:()->CompletableFuture<NavigationResult>):CompletableFuture<NavigationResult> =
+        try { action().exceptionally { terminalFailure(token,NavigationStatus.UNAVAILABLE,null,"NAVIGATION_FAILED") } }
+        catch (_:Exception) { CompletableFuture.completedFuture(
+            terminalFailure(token,NavigationStatus.UNAVAILABLE,null,"NAVIGATION_FAILED")) }
 
     private fun reject(token:StageSwitchToken,detail:String):CompletableFuture<NavigationResult> {
         registry.failStageSwitch(token)

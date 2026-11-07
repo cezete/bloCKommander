@@ -57,6 +57,7 @@ object WorldRenderer {
 
     fun renderStageBlocks(level: ServerLevel, hall: Hall) {
         val stage = hall.stage ?: return
+        require(hall.permitsProjection(stage)) { "STAGE_OUTSIDE_HALL" }
         for (x in stage.origin.x until stage.origin.x + stage.sizeX)
             for (y in stage.origin.y until stage.origin.y + stage.sizeY)
                 for (z in stage.origin.z until stage.origin.z + stage.sizeZ) {

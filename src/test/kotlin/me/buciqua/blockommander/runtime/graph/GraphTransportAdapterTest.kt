@@ -40,8 +40,8 @@ class GraphTransportAdapterTest {
         assertNotNull(outcome.reconciliation)
         assertEquals(1, postHits.get())
         assertEquals(1, getHits.get())
-        assertEquals(4, store.view(STAGE_ID)!!.snapshot!!.workingRevision)
-        assertEquals(GraphSyncStatus.SYNCED, store.view(STAGE_ID)!!.status)
+        assertEquals(4, store.view(testKey(STAGE_ID))!!.snapshot!!.workingRevision)
+        assertEquals(GraphSyncStatus.SYNCED, store.view(testKey(STAGE_ID))!!.status)
         assertTrue(mainExecutions.get() >= 2)
     }
 
@@ -70,7 +70,7 @@ class GraphTransportAdapterTest {
         assertNotNull(outcome.reconciliation)
         assertEquals(1, postHits.get())
         assertEquals(1, getHits.get())
-        assertEquals(4, store.view(STAGE_ID)!!.snapshot!!.workingRevision)
+        assertEquals(4, store.view(testKey(STAGE_ID))!!.snapshot!!.workingRevision)
     }
 
     @Test fun `graph response only updates projection and has no world mutation dependency`() {
@@ -95,12 +95,63 @@ class GraphTransportAdapterTest {
         assertTrue(outcome.transport is GraphHttpResult.ProtocolFailure)
         assertNotNull(outcome.reconciliation)
         assertEquals(1, getHits.get())
-        assertEquals(4, store.view(STAGE_ID)!!.stageRevision)
+        assertEquals(4, store.view(testKey(STAGE_ID))!!.stageRevision)
+    }
+
+    @Test fun `late uncertain result cannot reconcile a reinstalled slot`() {
+        val store=seededStore()
+        val getHits=AtomicInteger()
+        val base=startServer { method ->
+            if (method=="POST") {
+                store.remove(testKey(STAGE_ID))
+                store.authoritativeStageReload(testKey(STAGE_ID),EPOCH_A,0)
+                200 to "not-json"
+            } else {
+                getHits.incrementAndGet()
+                200 to successJson(revision=4)
+            }
+        }
+        val adapter=GraphTransportAdapter(GraphApiClient.configured(base,"secret"),store,Executor(Runnable::run))
+        val command=BindEdgesCommand(
+            REQUEST_ID,STAGE_ID,ServerPlayerIdentity.trustedForTest(PLAYER_ID),EPOCH_A,3,
+        )
+        val outcome=adapter.send(TRANSPORT_CONTEXT,command).get(5,TimeUnit.SECONDS)
+        assertInstanceOf(GraphHttpResult.ProtocolFailure::class.java,outcome.transport)
+        assertEquals(0,getHits.get())
+        assertNull(store.view(testKey(STAGE_ID))!!.snapshot)
+        assertEquals(GraphSyncStatus.NOT_REQUESTED,store.view(testKey(STAGE_ID))!!.status)
+    }
+
+    @Test fun `recovery reserves once atomically and cannot apply or fail into a replacement incarnation`() {
+        for (before in listOf(true,false)) for (getStatus in listOf(200,503)) {
+            server?.stop(0)
+            val store=seededStore(); val gets=AtomicInteger(); val executions=AtomicInteger()
+            val base=startServer { method ->
+                if (method=="POST") 200 to "not-json"
+                else { gets.incrementAndGet();getStatus to if(getStatus==200) successJson(revision=4) else errorJson("UNAVAILABLE") }
+            }
+            fun reinstall() {
+                store.remove(testKey(STAGE_ID))
+                store.authoritativeStageReload(testKey(STAGE_ID),EPOCH_A,0)
+            }
+            val main=Executor { task ->
+                val reservation=executions.incrementAndGet()==2
+                if (reservation && before) reinstall()
+                task.run()
+                if (reservation && !before) reinstall()
+            }
+            val adapter=GraphTransportAdapter(GraphApiClient.configured(base,"secret"),store,main)
+            val command=BindEdgesCommand(REQUEST_ID,STAGE_ID,ServerPlayerIdentity.trustedForTest(PLAYER_ID),EPOCH_A,3)
+            adapter.send(TRANSPORT_CONTEXT,command).get(5,TimeUnit.SECONDS)
+            assertEquals(if(before)0 else 1,gets.get())
+            assertNull(store.view(testKey(STAGE_ID))!!.snapshot)
+            assertEquals(GraphSyncStatus.NOT_REQUESTED,store.view(testKey(STAGE_ID))!!.status)
+        }
     }
 
     private fun seededStore() = GraphProjectionStore().also { store ->
-        store.authoritativeStageReload(STAGE_ID, EPOCH_A, 0)
-        store.apply(store.begin(STAGE_ID, GraphRequestKind.RECONCILIATION), snapshot(revision = 3))
+        store.authoritativeStageReload(testKey(STAGE_ID), EPOCH_A, 0)
+        store.apply(store.begin(testKey(STAGE_ID), GraphRequestKind.RECONCILIATION), snapshot(revision = 3))
     }
 
     private fun startServer(response: (String) -> Pair<Int, String>): String {

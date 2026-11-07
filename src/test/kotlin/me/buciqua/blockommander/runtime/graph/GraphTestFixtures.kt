@@ -1,6 +1,7 @@
 package me.buciqua.blockommander.runtime.graph
 
 import me.buciqua.blockommander.runtime.WorkingCopyTransportContext
+import me.buciqua.blockommander.runtime.projectionKey
 import java.util.UUID
 
 internal val STAGE_ID: UUID = UUID.fromString("11111111-1111-1111-1111-111111111111")
@@ -9,6 +10,7 @@ internal val HALL_ID: UUID = UUID.fromString("33333333-3333-3333-3333-3333333333
 internal val PROGRAM_ID: UUID = UUID.fromString("33333333-3333-3333-3333-333333333334")
 internal val WORKING_COPY_ID: UUID = UUID.fromString("33333333-3333-3333-3333-333333333335")
 internal val TRANSPORT_CONTEXT = WorkingCopyTransportContext(HALL_ID, PROGRAM_ID, WORKING_COPY_ID)
+internal fun testKey(stageId:UUID)=TRANSPORT_CONTEXT.projectionKey(stageId)
 internal val WORLD_ID: UUID = UUID.fromString("44444444-4444-4444-4444-444444444444")
 internal val EPOCH_A: UUID = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 internal val EPOCH_B: UUID = UUID.fromString("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")

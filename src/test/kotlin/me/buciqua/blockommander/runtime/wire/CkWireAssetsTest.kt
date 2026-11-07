@@ -163,7 +163,7 @@ class CkWireAssetsTest {
         val registry = Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/HallRegistry.kt"))
         val renderer = Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/WorldRenderer.kt"))
         assertTrue(interactions.contains("registry.applyProgramStatus(fence, result.value)"))
-        assertTrue(registry.contains("hallForStage(stageId)?.programDirty"))
+        assertTrue(registry.contains("fun saveDirty(hallId: String)"))
         assertTrue(renderer.contains("renderSaveState(level, hall, hall.programDirty)"))
         assertTrue(renderer.contains("if (graphDirty ?: hall.programDirty)"))
     }

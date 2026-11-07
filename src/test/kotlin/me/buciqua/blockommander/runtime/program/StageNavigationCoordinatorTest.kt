@@ -12,6 +12,7 @@ import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 
 class StageNavigationCoordinatorTest {
+    private fun testKey(stageId:UUID)=WorkingCopyTransportContext(HALL,PROGRAM,WORKING_COPY).projectionKey(stageId)
     private val direct=Executor(Runnable::run)
     private val player=ServerPlayerIdentity.trustedForTest(OWNER)
 
@@ -88,7 +89,7 @@ class StageNavigationCoordinatorTest {
         assertEquals(NavigationStatus.UNAVAILABLE,result.status)
         assertSame(rootBefore,fixture.registry.hall(HALL.toString())!!.stage)
         assertEquals(ROOT,fixture.registry.navigationState(HALL.toString())!!.activeStageId)
-        assertEquals(ROOT_EPOCH,fixture.registry.graphProjections.view(ROOT)!!.stageEpoch)
+        assertEquals(ROOT_EPOCH,fixture.registry.graphProjections.view(testKey(ROOT))!!.stageEpoch)
         assertEquals(0,fixture.committer.commits)
     }
 
@@ -128,9 +129,10 @@ class StageNavigationCoordinatorTest {
     @Test fun `relative domain coordinates map into Hall without rewriting projection DTO`() {
         val fixture=fixture(hallMin=BlockPos(100,20,-30))
         val response=fixture.programs.stageResponse(CHILD)
-        fixture.registry.graphProjections.authoritativeStageReload(CHILD,CHILD_EPOCH,2)
+        fixture.registry.graphProjections.authoritativeStageReload(testKey(CHILD),CHILD_EPOCH,2)
         val graph=fixture.graph.snapshotFor(CHILD)
-        val prepared=StageProjectionAssembler.assemble(fixture.registry.hall(HALL.toString())!!,response,graph)
+        val prepared=StageProjectionAssembler.assemble(fixture.registry.hall(HALL.toString())!!,response,graph,
+            fixture.registry.graphProjections.view(testKey(CHILD))!!.lifecycleGeneration)
 
         assertEquals(BlockPos(101,21,-29),prepared.target.origin)
         assertEquals(BlockPos(103,21,-28),prepared.target.blocks.single().pos)
@@ -144,6 +146,68 @@ class StageNavigationCoordinatorTest {
         assertEquals(1,fixture.programs.ensureCalls.size)
         assertEquals(0,fixture.programs.mutationCalls)
         assertTrue(fixture.programs.links.any { it.parentStageId==ROOT && it.childStageId==CHILD })
+    }
+
+    @Test fun `queued status invalidation releases its own pending switch`() {
+        val fixture=fixture(); val queue=mutableListOf<Runnable>()
+        val nav=StageNavigationCoordinator(fixture.registry,fixture.programs,fixture.graph,Executor { queue+=it })
+        val future=nav.enter(HALL,ROOT_BLOCK,player,fixture.committer)
+        fixture.registry.beginProgramStatus(HALL.toString())
+        queue.forEach(Runnable::run)
+        assertEquals(NavigationStatus.STALE,future.get().status)
+        assertFalse(fixture.registry.navigationState(HALL.toString())!!.switchInProgress)
+        assertNull(fixture.registry.graphProjections.view(testKey(CHILD)))
+    }
+
+    @Test fun `queued target lifecycle invalidation cleans navigation but preserves replacement slot`() {
+        val fixture=fixture(); val queue=mutableListOf<Runnable>()
+        val nav=StageNavigationCoordinator(fixture.registry,fixture.programs,fixture.graph,Executor { queue+=it })
+        val future=nav.enter(HALL,ROOT_BLOCK,player,fixture.committer)
+        val replacement=fixture.registry.graphProjections.authoritativeStageReconciliation(testKey(CHILD),CHILD_EPOCH,2)
+        queue.forEach(Runnable::run)
+        assertEquals(NavigationStatus.STALE,future.get().status)
+        assertFalse(fixture.registry.navigationState(HALL.toString())!!.switchInProgress)
+        assertEquals(replacement,fixture.registry.graphProjections.view(testKey(CHILD)))
+    }
+
+    @Test fun `early false and exceptional committer both release pending ownership`() {
+        for (throws in listOf(false,true)) {
+            val fixture=fixture()
+            val committer=object:StageSwitchCommitter {
+                override fun commit(token:StageSwitchToken,prepared:PreparedStageSwitch):Boolean {
+                    if (throws) error("physical preflight failure")
+                    return false
+                }
+            }
+            val result=fixture.navigation.enter(HALL,ROOT_BLOCK,player,committer).get()
+            assertEquals(if(throws) NavigationStatus.UNAVAILABLE else NavigationStatus.PROJECTION_FAILED,result.status)
+            assertFalse(fixture.registry.navigationState(HALL.toString())!!.switchInProgress)
+            assertNull(fixture.registry.graphProjections.view(testKey(CHILD)))
+        }
+    }
+
+    @Test fun `old queued cleanup leaves a newer navigation and target lifecycle intact`() {
+        val fixture=fixture(); val queue=mutableListOf<Runnable>()
+        val nav=StageNavigationCoordinator(fixture.registry,fixture.programs,fixture.graph,Executor { queue+=it })
+        val old=nav.enter(HALL,ROOT_BLOCK,player,fixture.committer)
+        val newer=nav.enter(HALL,ROOT_BLOCK,player,fixture.committer)
+        val view=fixture.registry.graphProjections.view(testKey(CHILD))
+        queue[0].run()
+        assertEquals(NavigationStatus.STALE,old.get().status)
+        assertTrue(fixture.registry.navigationState(HALL.toString())!!.switchInProgress)
+        assertEquals(view,fixture.registry.graphProjections.view(testKey(CHILD)))
+        queue[1].run()
+        assertEquals(NavigationStatus.SUCCESS,newer.get().status)
+    }
+
+    @Test fun `exceptional Program continuation releases the pending switch`() {
+        val fixture=fixture()
+        val pending=CompletableFuture<ProgramHttpResult<ProgramStageResponse>>()
+        fixture.programs.pendingStages[CHILD]=pending
+        val result=fixture.navigation.enter(HALL,ROOT_BLOCK,player,fixture.committer)
+        pending.completeExceptionally(IllegalStateException("offline"))
+        assertEquals(NavigationStatus.UNAVAILABLE,result.get().status)
+        assertFalse(fixture.registry.navigationState(HALL.toString())!!.switchInProgress)
     }
 
     private fun fixture(hallMin:BlockPos=BlockPos.ZERO):Fixture {
@@ -262,7 +326,7 @@ class StageNavigationCoordinatorTest {
     ):GraphGateway {
         override fun reconcile(context: WorkingCopyTransportContext,stageId:UUID,player:ServerPlayerIdentity):CompletableFuture<ReconciliationOutcome> {
             val snapshot=snapshotFor(stageId)
-            val applied=store.apply(store.begin(stageId,GraphRequestKind.RECONCILIATION),snapshot)
+            val applied=store.apply(store.begin(context.projectionKey(stageId),GraphRequestKind.RECONCILIATION),snapshot)
             return CompletableFuture.completedFuture(ReconciliationOutcome(GraphHttpResult.Success(
                 GraphSuccessResponse(
                     GRAPH_API_VERSION,"ok",null,stageId,snapshot.workspaceEpoch,snapshot.workingRevision,

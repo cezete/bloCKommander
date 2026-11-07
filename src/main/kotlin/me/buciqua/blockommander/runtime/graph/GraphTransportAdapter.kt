@@ -2,6 +2,7 @@ package me.buciqua.blockommander.runtime.graph
 
 import net.minecraft.server.level.ServerPlayer
 import me.buciqua.blockommander.runtime.WorkingCopyTransportContext
+import me.buciqua.blockommander.runtime.projectionKey
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
@@ -40,13 +41,19 @@ class GraphTransportAdapter(
             ReconciliationOutcome(GraphHttpResult.Unavailable("A graph transport nincs konfigurálva."), null),
         )
         val token = try {
-            projections.begin(stageId, GraphRequestKind.RECONCILIATION)
+            projections.begin(context.projectionKey(stageId), GraphRequestKind.RECONCILIATION)
         } catch (_: IllegalStateException) {
             return CompletableFuture.completedFuture(
                 ReconciliationOutcome(GraphHttpResult.ProtocolFailure("Ismeretlen Stage."), null),
             )
         }
-        return client.getState(context, stageId, player).thenCompose { transport -> onMain {
+        return reconcileWithToken(token,context,stageId,player)
+    }
+
+    private fun reconcileWithToken(
+        token:GraphRequestToken, context:WorkingCopyTransportContext, stageId:UUID, player:ServerPlayerIdentity,
+    ):CompletableFuture<ReconciliationOutcome> =
+        client.getState(context, stageId, player).thenCompose { transport -> onMain {
             when (transport) {
                 is GraphHttpResult.Success -> ReconciliationOutcome(transport, projections.apply(token, transport.response.state))
                 is GraphHttpResult.ApiError -> {
@@ -63,7 +70,6 @@ class GraphTransportAdapter(
                 }
             }
         } }
-    }
 
     override fun send(
         context: WorkingCopyTransportContext, command: GraphCommand,
@@ -72,7 +78,7 @@ class GraphTransportAdapter(
             CommandTransportOutcome(GraphHttpResult.Unavailable("A graph transport nincs konfigurálva."), null, null),
         )
         val token = try {
-            projections.begin(command.stageId, GraphRequestKind.COMMAND)
+            projections.begin(context.projectionKey(command.stageId), GraphRequestKind.COMMAND)
         } catch (_: IllegalStateException) {
             return CompletableFuture.completedFuture(
                 CommandTransportOutcome(GraphHttpResult.ProtocolFailure("Ismeretlen Stage."), null, null),
@@ -85,7 +91,7 @@ class GraphTransportAdapter(
                         projections.fail(token, "REQUEST_ID_MISMATCH", true)
                     }.thenCompose {
                         val mismatch = GraphHttpResult.ProtocolFailure("A graph command válasz request_id mezője eltér.")
-                        reconcile(context, command.stageId, command.player).thenApply { recovered ->
+                        recover(token, context, command).thenApply { recovered ->
                             CommandTransportOutcome(mismatch, null, recovered)
                         }
                     }
@@ -98,19 +104,30 @@ class GraphTransportAdapter(
                 is GraphHttpResult.ApiError -> {
                     val needsReconciliation = transport.response.httpStatus == 409 || transport.response.httpStatus >= 500
                     onMain { projections.fail(token, transport.response.errorCode, needsReconciliation) }.thenCompose {
-                        if (needsReconciliation) reconcile(context, command.stageId, command.player).thenApply {
+                        if (needsReconciliation) recover(token, context, command).thenApply {
                             CommandTransportOutcome(transport, null, it)
                         } else CompletableFuture.completedFuture(CommandTransportOutcome(transport, null, null))
                     }
                 }
                 is GraphHttpResult.Unavailable, is GraphHttpResult.ProtocolFailure ->
                     onMain { projections.fail(token, "UNCERTAIN_COMMAND_RESULT", true) }.thenCompose {
-                        reconcile(context, command.stageId, command.player).thenApply { recovered ->
+                        recover(token, context, command).thenApply { recovered ->
                             CommandTransportOutcome(transport, null, recovered)
                         }
                     }
             }
         }
+    }
+
+    private fun recover(
+        token: GraphRequestToken, context: WorkingCopyTransportContext, command: GraphCommand,
+    ): CompletableFuture<ReconciliationOutcome> = onMain {
+        projections.beginIfLifecycleCurrent(token.key, token.lifecycleGeneration,GraphRequestKind.RECONCILIATION)
+    }.thenCompose { recoveryToken ->
+        if (recoveryToken!=null) reconcileWithToken(recoveryToken,context,command.stageId,command.player)
+        else CompletableFuture.completedFuture(ReconciliationOutcome(
+            GraphHttpResult.ProtocolFailure("STALE_PROJECTION_LIFECYCLE"), null,
+        ))
     }
 
     private fun <T> onMain(action: () -> T): CompletableFuture<T> = CompletableFuture.supplyAsync(action, mainThread)
