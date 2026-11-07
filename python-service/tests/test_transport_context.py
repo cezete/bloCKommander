@@ -56,9 +56,9 @@ class TransportContextHttpTest(unittest.TestCase):
 
     def test_invalid_identity_never_reaches_domain_or_installs_workspace(self):
         for headers,stage,code in (
-            (self.headers(working_copy_id=uuid.uuid4()),ROOT,"CONTEXT_MISMATCH"),
+            (self.headers(working_copy_id=uuid.uuid4()),ROOT,"FOREIGN_WORKING_COPY"),
             (self.headers(),OTHER_ROOT,"STAGE_PROGRAM_MISMATCH"),
-            (self.headers(program_id=OTHER_PROGRAM),ROOT,"CONTEXT_MISMATCH"),
+            (self.headers(program_id=OTHER_PROGRAM),ROOT,"HALL_PROGRAM_MISMATCH"),
         ):
             with patch.object(self.stages,"place",wraps=self.stages.place) as mutate:
                 self.assert_error(self.place(headers,stage),code)
@@ -66,6 +66,15 @@ class TransportContextHttpTest(unittest.TestCase):
             self.assertEqual({},self.programs._programs)
             self.assertEqual({},self.stages._workspaces)
             self.assertEqual(0,self.repo.program_save_calls)
+
+    def test_working_copy_program_mismatch_has_its_own_contract(self):
+        other_hall=uuid.uuid4();self.repo.mounts[other_hall]=OTHER_PROGRAM
+        other_copy=uuid.uuid5(other_hall,"working-copy")
+        response=self.place(self.headers(working_copy_id=other_copy))
+        self.assert_error(response,"WORKING_COPY_PROGRAM_MISMATCH")
+        self.assertEqual({},self.programs._programs)
+        self.assertEqual({},self.stages._workspaces)
+        self.assertEqual(0,self.repo.program_save_calls)
 
     def test_partial_malformed_and_misplaced_context_never_fall_back(self):
         partial={**self.auth,CONTEXT_HEADERS["hall_id"]:str(HALL)}
@@ -114,7 +123,7 @@ class TransportContextHttpTest(unittest.TestCase):
             before=self.graph.idempotency_size
             with patch.object(self.graph,method,return_value=GraphApplicationResponse(200,{"status":"ok"})) as apply:
                 self.assert_error(self.client.post(path,json=command,
-                    headers=self.headers(working_copy_id=uuid.uuid4())),"CONTEXT_MISMATCH")
+                    headers=self.headers(working_copy_id=uuid.uuid4())),"FOREIGN_WORKING_COPY")
                 apply.assert_not_called()
                 valid=self.client.post(path,json=command,headers=self.headers())
                 self.assertEqual(200,valid.status_code)
@@ -129,7 +138,7 @@ class TransportContextHttpTest(unittest.TestCase):
         path=f"/api/v1/programs/{PROGRAM}/stages/{ROOT}/children/ensure"
         body={"player_uuid":str(OWNER),"program_block_instance_id":str(uuid.uuid5(ROOT,"program"))}
         wrong=self.headers(working_copy_id=uuid.uuid4())
-        self.assert_error(self.client.post(path,json=body,headers=wrong),"CONTEXT_MISMATCH")
+        self.assert_error(self.client.post(path,json=body,headers=wrong),"FOREIGN_WORKING_COPY")
         self.assertEqual({},self.programs._programs)
         response=self.client.post(path,json=body,headers=self.headers())
         self.assertEqual(201,response.status_code)
@@ -138,7 +147,7 @@ class TransportContextHttpTest(unittest.TestCase):
         workspace=self.programs.load(PROGRAM)
         before=(copy.deepcopy(self.repo.snapshots),workspace.links,workspace.dirty)
         save=f"/api/v1/programs/{PROGRAM}/save"
-        self.assert_error(self.client.post(save,json={"player_uuid":str(OWNER),"expected_saved_version":0},headers=wrong),"CONTEXT_MISMATCH")
+        self.assert_error(self.client.post(save,json={"player_uuid":str(OWNER),"expected_saved_version":0},headers=wrong),"FOREIGN_WORKING_COPY")
         self.assertEqual(before,(self.repo.snapshots,workspace.links,workspace.dirty))
         valid=self.client.post(save,json={"player_uuid":str(OWNER),"expected_saved_version":0},headers=self.headers())
         self.assertEqual(200,valid.status_code)
@@ -173,7 +182,7 @@ class TransportContextHttpTest(unittest.TestCase):
     def test_missing_or_deleted_mount_is_rejected_without_cache_or_domain_changes(self):
         headers=self.headers()
         del self.repo.mounts[HALL]
-        self.assert_error(self.place(headers),"CONTEXT_NOT_FOUND",404)
+        self.assert_error(self.place(headers),"MOUNT_NOT_FOUND",404)
         self.assertEqual({},self.programs._programs)
         self.assertEqual({},self.stages._workspaces)
         self.assertEqual(0,self.repo.program_save_calls)
@@ -197,7 +206,7 @@ class TransportContextHttpTest(unittest.TestCase):
             ("post",f"/api/v1/programs/{PROGRAM}/stages/{ROOT}/children/ensure"),
             ("get",f"/api/v1/halls/{HALL}/program"),
         ):
-            self.assert_error(getattr(self.client,method)(path,json={},headers=wrong),"CONTEXT_MISMATCH")
+            self.assert_error(getattr(self.client,method)(path,json={},headers=wrong),"FOREIGN_WORKING_COPY")
         self.assertEqual({},self.stages._workspaces)
         self.assertEqual({},self.programs._programs)
         self.assertEqual(0,self.repo.program_save_calls)

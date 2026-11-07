@@ -22,6 +22,10 @@ from .graph.snapshot import (
 class HallNotFound(LookupError): pass
 class HallConflict(RuntimeError): pass
 class HallForbidden(PermissionError): pass
+class HallMountNotFound(HallNotFound): pass
+class HallProgramMismatch(HallConflict): pass
+class WorkingCopyProgramMismatch(HallConflict): pass
+class ForeignWorkingCopy(HallConflict): pass
 class StageVersionConflict(HallConflict): pass
 class ProgramVersionConflict(HallConflict): pass
 class LegacyStageSaveBlocked(HallConflict): pass
@@ -762,20 +766,30 @@ class HallRepository:
         """Resolve the live DB mount, optionally checking expected identity; no cache."""
         hall=uuid.UUID(str(hall_id))
         with self._connect() as conn,conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""SELECT m.hall_id,m.program_id,m.working_copy_id
-                FROM blockcommander.hall_program_mounts m
-                JOIN blockcommander.working_copies w
-                  ON w.program_id=m.program_id AND w.working_copy_id=m.working_copy_id
-                WHERE m.hall_id=%s""",(str(hall),))
+            cur.execute("""SELECT h.hall_id,m.program_id,m.working_copy_id
+                FROM blockcommander.halls h
+                LEFT JOIN blockcommander.hall_program_mounts m ON m.hall_id=h.hall_id
+                WHERE h.hall_id=%s""",(str(hall),))
             row=cur.fetchone()
-        if not row: raise HallNotFound("A csarnokhoz nincs WorkingCopy mountolva.")
-        context=WorkingCopyContext(*(uuid.UUID(str(row[key])) for key in (
-            "hall_id","program_id","working_copy_id",
-        )))
-        if ((program_id is not None and context.program_id!=uuid.UUID(str(program_id)))
-                or (working_copy_id is not None
-                    and context.working_copy_id!=uuid.UUID(str(working_copy_id)))):
-            raise HallConflict("A Hall–Program–WorkingCopy kötés eltér a várt azonosságtól.")
+            if not row: raise HallNotFound("Nincs ilyen csarnok.")
+            if row["program_id"] is None or row["working_copy_id"] is None:
+                raise HallMountNotFound("A csarnokhoz nincs WorkingCopy mountolva.")
+            context=WorkingCopyContext(*(uuid.UUID(str(row[key])) for key in (
+                "hall_id","program_id","working_copy_id",
+            )))
+            expected_program=None if program_id is None else uuid.UUID(str(program_id))
+            expected_copy=None if working_copy_id is None else uuid.UUID(str(working_copy_id))
+            if expected_copy is not None and expected_copy!=context.working_copy_id:
+                cur.execute("""SELECT program_id FROM blockcommander.working_copies
+                    WHERE working_copy_id=%s""",(str(expected_copy),))
+                copy_row=cur.fetchone()
+                if copy_row and uuid.UUID(str(copy_row["program_id"]))!=(expected_program or context.program_id):
+                    raise WorkingCopyProgramMismatch(
+                        "A WorkingCopy nem a megadott Programhoz tartozik."
+                    )
+                raise ForeignWorkingCopy("A Hall másik WorkingCopyt mountol.")
+        if expected_program is not None and context.program_id!=expected_program:
+            raise HallProgramMismatch("A Hall nem a megadott Programot mountolja.")
         return context
 
     def load_program_for_stage(self,stage_id:str)->LoadedProgram:

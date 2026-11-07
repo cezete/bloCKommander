@@ -59,7 +59,7 @@ class TransportContextPostgreSQLIntegrationTest(unittest.TestCase):
         before=storage_fingerprint()
         invalid=self.place(self.headers(working_copy_id=copy_id))
         self.assertEqual(409,invalid.status_code)
-        self.assertEqual("CONTEXT_MISMATCH",invalid.get_json()["error_code"])
+        self.assertEqual("FOREIGN_WORKING_COPY",invalid.get_json()["error_code"])
         self.assertEqual(before,storage_fingerprint())
         self.assertEqual({},self.programs._programs)
         self.assertEqual({},self.stages._workspaces)
@@ -68,7 +68,7 @@ class TransportContextPostgreSQLIntegrationTest(unittest.TestCase):
         before=storage_fingerprint()
         removed=self.place(headers)
         self.assertEqual(404,removed.status_code)
-        self.assertEqual("CONTEXT_NOT_FOUND",removed.get_json()["error_code"])
+        self.assertEqual("MOUNT_NOT_FOUND",removed.get_json()["error_code"])
         self.assertEqual(before,storage_fingerprint())
         self.assertEqual({},self.stages._workspaces)
 
@@ -144,7 +144,7 @@ class TransportContextPostgreSQLIntegrationTest(unittest.TestCase):
             "player_uuid":str(OWNER_ID),"world_uuid":str(uuid4()),
             "world_name":"B2T world","dimension":"minecraft:overworld"})
         self.assertEqual(404,response.status_code,response.get_json())
-        self.assertEqual("CONTEXT_NOT_FOUND",response.get_json()["error_code"])
+        self.assertEqual("MOUNT_NOT_FOUND",response.get_json()["error_code"])
         self.assertEqual(str(WORLD_ID),str(repository().get(str(HALL_ID))["world_uuid"]))
         self.assertEqual({},self.stages._workspaces)
 

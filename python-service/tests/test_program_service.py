@@ -19,6 +19,8 @@ from hangar.program import (
     ProgramWorkspaceState,
 )
 from hangar.repository import (
+    ForeignWorkingCopy, HallMountNotFound, HallProgramMismatch,
+    WorkingCopyProgramMismatch,
     HallConflict,
     HallNotFound,
     LegacyStageSaveBlocked,
@@ -106,13 +108,19 @@ class FakeProgramRepository:
 
     def resolve_working_copy_context(self,hall_id,*,program_id=None,working_copy_id=None):
         hall=uuid.UUID(str(hall_id))
-        if hall not in self.mounts:raise HallNotFound("Missing mount")
+        if hall not in self.mounts:raise HallMountNotFound("Missing mount")
         pid=self.mounts[hall]
         context=WorkingCopyContext(hall,pid,uuid.uuid5(hall,"working-copy"))
-        if ((program_id is not None and uuid.UUID(str(program_id))!=pid)
-                or (working_copy_id is not None
-                    and uuid.UUID(str(working_copy_id))!=context.working_copy_id)):
-            raise HallConflict("WorkingCopy identity mismatch")
+        if working_copy_id is not None and uuid.UUID(str(working_copy_id))!=context.working_copy_id:
+            expected_copy=uuid.UUID(str(working_copy_id))
+            owner=next((mounted for candidate,mounted in self.mounts.items()
+                if uuid.uuid5(candidate,"working-copy")==expected_copy),None)
+            expected_program=pid if program_id is None else uuid.UUID(str(program_id))
+            if owner is not None and owner!=expected_program:
+                raise WorkingCopyProgramMismatch("WorkingCopy Program mismatch")
+            raise ForeignWorkingCopy("WorkingCopy identity mismatch")
+        if program_id is not None and uuid.UUID(str(program_id))!=pid:
+            raise HallProgramMismatch("Program identity mismatch")
         return context
 
     def load_program_for_stage(self,stage_id):

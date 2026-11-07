@@ -3,7 +3,10 @@ from dataclasses import dataclass
 from uuid import UUID
 import psycopg2
 
-from .repository import HallConflict, HallNotFound
+from .repository import (
+    ForeignWorkingCopy, HallConflict, HallMountNotFound, HallNotFound,
+    HallProgramMismatch, WorkingCopyProgramMismatch,
+)
 from .working_copy import WorkingCopyContext
 
 
@@ -96,8 +99,16 @@ class TransportContextResolver:
                 # Legacy Program scope: do not infer or claim a caller Hall/WorkingCopy.
                 return TransportContext("legacy_program",program,stage)
             return TransportContext("explicit" if explicit is not None else "legacy_hall",program,stage,mount)
+        except HallMountNotFound as exc:
+            raise TransportContextError(404,"MOUNT_NOT_FOUND",str(exc)) from exc
+        except HallProgramMismatch as exc:
+            raise TransportContextError(409,"HALL_PROGRAM_MISMATCH",str(exc)) from exc
+        except WorkingCopyProgramMismatch as exc:
+            raise TransportContextError(409,"WORKING_COPY_PROGRAM_MISMATCH",str(exc)) from exc
+        except ForeignWorkingCopy as exc:
+            raise TransportContextError(409,"FOREIGN_WORKING_COPY",str(exc)) from exc
         except HallNotFound as exc:
-            raise TransportContextError(404,"CONTEXT_NOT_FOUND",str(exc)) from exc
+            raise TransportContextError(404,"HALL_NOT_FOUND",str(exc)) from exc
         except HallConflict as exc:
             raise TransportContextError(409,"CONTEXT_MISMATCH",str(exc)) from exc
         except psycopg2.Error as exc:
