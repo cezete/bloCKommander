@@ -1,6 +1,8 @@
 package me.buciqua.blockommander.runtime
 
 import com.google.gson.JsonObject
+import com.mojang.brigadier.arguments.StringArgumentType
+import me.buciqua.blockommander.runtime.program.HallSelectionCoordinator
 import me.buciqua.blockommander.BlockCommanderMod
 import me.buciqua.blockommander.ModContent
 import me.buciqua.blockommander.network.OpenFormPayload
@@ -42,12 +44,25 @@ class Interactions(
     private val wireCoordinator: () -> WireInteractionCoordinator? = { null },
     private val stageNavigation: () -> StageNavigationCoordinator? = { null },
     private val programs: ProgramGateway = ProgramApiClient.fromEnvironment(),
+    private val hallSelection: () -> HallSelectionCoordinator? = { null },
 ) {
     private data class Selection(val first: BlockPos, val material: String)
     private val selections = ConcurrentHashMap<UUID, Selection>()
 
     fun register() {
         CommandRegistrationCallback.EVENT.register { dispatcher, _, _ ->
+            dispatcher.register(Commands.literal("ck").then(Commands.literal("hall")
+                .then(Commands.literal("select").then(Commands.argument("hall-code",StringArgumentType.word())
+                    .then(Commands.argument("program-uuid",StringArgumentType.word())
+                        .then(Commands.argument("stage-uuid",StringArgumentType.word()).executes { context ->
+                            selectHall(context.source.playerOrException,StringArgumentType.getString(context,"hall-code"),
+                                StringArgumentType.getString(context,"program-uuid"),StringArgumentType.getString(context,"stage-uuid"))
+                            1
+                        }))))
+                .then(Commands.literal("retry").then(Commands.argument("hall-code",StringArgumentType.word()).executes { context ->
+                    selectHall(context.source.playerOrException,StringArgumentType.getString(context,"hall-code"),null,null)
+                    1
+                }))))
             dispatcher.register(Commands.literal("ckbind")
                 .requires { source -> source.permissions().hasPermission(Permissions.COMMANDS_ADMIN) }
                 .executes { context ->
@@ -80,6 +95,8 @@ class Interactions(
             if (level.isClientSide) return@register InteractionResult.PASS
             val serverPlayer = player as ServerPlayer; val serverLevel = level as ServerLevel
             val worldUuid = WorldIdentity.uuid(serverLevel).toString()
+            if(registry.hallAt(worldUuid,hit.blockPos)?.let { !registry.editingAllowed(it.id) }==true)
+                return@register InteractionResult.SUCCESS
             registry.controlAt(worldUuid, hit.blockPos)?.let { control ->
                 handleControl(serverPlayer, serverLevel, control); return@register InteractionResult.SUCCESS
             }
@@ -125,7 +142,17 @@ class Interactions(
             val serverPlayer = player as? ServerPlayer ?: return@register true
             val serverLevel = level as ServerLevel
             val worldUuid = WorldIdentity.uuid(serverLevel).toString()
+            val breakHall=registry.hallAt(worldUuid,pos)
+            if(breakHall?.let { !registry.editingAllowed(it.id) }==true) {
+                Diagnostics.event("BLOCK_BREAK_LOCAL_REJECT",breakHall.stage?.let { breakHall.projectionKey() },
+                    "reason" to "SELECTION_UNRESOLVED","http_sent" to false,"x" to pos.x,"y" to pos.y,"z" to pos.z)
+                return@register false
+            }
             if (level.getBlockState(pos).block === ModContent.CK_WIRE) {
+                val hall=registry.hallAt(worldUuid,pos)
+                Diagnostics.event("CKW_BREAK_INTERCEPT",hall?.stage?.let { hall.projectionKey() },
+                    "world_uuid" to worldUuid,"x" to pos.x,"y" to pos.y,"z" to pos.z,
+                    "editing_allowed" to hall?.let { registry.editingAllowed(it.id) })
                 removeWire(serverPlayer, serverLevel, worldUuid, pos)
                 return@register false
             }
@@ -254,6 +281,8 @@ class Interactions(
         val stage = hall?.stage
         val coordinator = wireCoordinator()
         if (stage == null || coordinator == null) {
+            Diagnostics.event("CKW_PLACE_LOCAL_REJECT",null,"hall_id" to hall?.id,
+                "reason" to if(stage==null) "STAGE_MISSING" else "COORDINATOR_UNAVAILABLE","http_sent" to false)
             correct(level, target)
             player.sendSystemMessage(Component.literal("§c[CK] A CK Wire csak elérhető Stage graphban helyezhető el."))
             return
@@ -265,7 +294,10 @@ class Interactions(
             player.sendSystemMessage(Component.literal("§c[CK] A célcellát idegen blokk foglalja."))
             return
         }
-        val completionFence=registry.wireCompletionFence(hall.id,worldUuid) ?: return
+        val completionFence=registry.wireCompletionFence(hall.id,worldUuid) ?: run {
+            Diagnostics.event("CKW_PLACE_LOCAL_REJECT",hall.projectionKey(),"reason" to "NO_WIRE_COMPLETION_FENCE","http_sent" to false)
+            return
+        }
         coordinator.place(hall.wireContext(registry), ServerPlayerIdentity.from(player), target.graphPosition(),
             MinecraftWireWorldAccess(level), intent).thenAccept { result ->
             wireCompletion(level).complete(completionFence,result) {
@@ -281,11 +313,16 @@ class Interactions(
         val stage = hall?.stage
         val coordinator = wireCoordinator()
         if (stage == null || coordinator == null) {
+            Diagnostics.event("CKW_BREAK_LOCAL_REJECT",null,"hall_id" to hall?.id,
+                "reason" to if(stage==null) "STAGE_MISSING" else "COORDINATOR_UNAVAILABLE","http_sent" to false)
             correct(level, target)
             player.sendSystemMessage(Component.literal("§c[CK] A CK Wire eltávolításához szinkronizált Stage szükséges."))
             return
         }
-        val completionFence=registry.wireCompletionFence(hall.id,worldUuid) ?: return
+        val completionFence=registry.wireCompletionFence(hall.id,worldUuid) ?: run {
+            Diagnostics.event("CKW_BREAK_LOCAL_REJECT",hall.projectionKey(),"reason" to "NO_WIRE_COMPLETION_FENCE","http_sent" to false)
+            return
+        }
         coordinator.remove(hall.wireContext(registry), ServerPlayerIdentity.from(player), target.graphPosition(),
             MinecraftWireWorldAccess(level)).thenAccept {
             wireCompletion(level).complete(completionFence,it)
@@ -381,6 +418,35 @@ class Interactions(
         ).thenAccept { result -> level.server.execute { navigationFeedback(player, result) } }
     }
 
+    private fun selectHall(player:ServerPlayer,code:String,programText:String?,stageText:String?) {
+        val level=player.level();val world=WorldIdentity.uuid(level)
+        val hall=registry.inWorld(world.toString()).singleOrNull {
+            it.ownerUuid==player.uuid.toString() && it.code.equals(code,ignoreCase=true)
+        }
+        val coordinator=hallSelection()
+        if(hall==null || coordinator==null) {
+            player.sendSystemMessage(Component.literal("§c[CK] A saját Hall nem található az aktuális világban, vagy a selection nem érhető el."));return
+        }
+        val committer=MinecraftStageSwitchCommitter(level,registry)
+        val future=if(programText==null) coordinator.retry(UUID.fromString(hall.id),world,
+            ServerPlayerIdentity.from(player),committer) { WorldIdentity.uuid(player.level()) }
+        else {
+            val program=runCatching { UUID.fromString(programText) }.getOrNull()
+            val stage=runCatching { UUID.fromString(stageText) }.getOrNull()
+            if(program==null || stage==null) {
+                player.sendSystemMessage(Component.literal("§c[CK] Hibás Program vagy Stage UUID."));return
+            }
+            coordinator.select(UUID.fromString(hall.id),world,ServerPlayerIdentity.from(player),program,stage,committer) {
+                WorldIdentity.uuid(player.level())
+            }
+        }
+        future.thenAccept { result -> level.server.execute {
+            player.sendSystemMessage(Component.literal(if(result.status==NavigationStatus.SUCCESS)
+                "§a[CK] Hall selection és fizikai projekció kész."
+                else "§c[CK] Selection/projekció: ${result.detail ?: result.status}. A sikertelen Hall zárolt; /ck hall retry ${hall.code}"))
+        } }
+    }
+
     private fun navigationFeedback(player: ServerPlayer, result: NavigationResult) {
         val message = when (result.status) {
             NavigationStatus.SUCCESS -> "§a[CK] Stage-váltás kész."
@@ -401,7 +467,12 @@ class Interactions(
         val current = registry.hall(hall.id) ?: return
         WorldRenderer.renderSaveState(level, current, current.programDirty)
         if (fence == null) return
+        Diagnostics.event("SAVE_STATUS_REQUEST",fence.stage.key,"status_generation" to fence.generation,
+            "epoch" to fence.stage.workspaceEpoch,"revision" to fence.stage.workingRevision)
         programs.mountedProgram(hall.transportContext).thenAccept { result ->
+            Diagnostics.event("SAVE_STATUS_RESPONSE",fence.stage.key,"status_generation" to fence.generation,
+                "outcome" to result.javaClass.simpleName,
+                "response_dirty" to if(result is ProgramHttpResult.Success) result.value.program.aggregateDirty else null)
             level.server.execute {
                 if (result is ProgramHttpResult.Success) {
                     registry.applyProgramStatus(fence, result.value)?.let { updated ->
@@ -487,6 +558,9 @@ class Interactions(
                 registry.remove(response["hall_id"].asString)?.let { WorldRenderer.demolish(level, it) }
             }
             "SAVE_BUTTON" -> registry.saveFenceForHall(control.hallId)?.let { fence ->
+                Diagnostics.event("SAVE_BUTTON_REQUEST",fence.key,"epoch" to fence.workspaceEpoch,"revision" to fence.workingRevision,
+                    "hall_generation" to fence.hallGeneration,"navigation_generation" to fence.navigationGeneration,
+                    "program_dirty" to registry.hall(control.hallId)?.programDirty)
                 if (!registry.isSaveFenceCurrent(fence)) return@let
                 payload.addProperty("active_stage_id", fence.stageId)
                 payload.addProperty("workspace_epoch", fence.workspaceEpoch.toString())

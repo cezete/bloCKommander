@@ -5,6 +5,8 @@ import com.google.gson.JsonParser
 import me.buciqua.blockommander.runtime.TransportContextParser
 import me.buciqua.blockommander.runtime.TransportContextProtocolException
 import me.buciqua.blockommander.runtime.WorkingCopyTransportContext
+import me.buciqua.blockommander.runtime.Diagnostics
+import me.buciqua.blockommander.runtime.projectionKey
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -46,8 +48,9 @@ class GraphApiClient private constructor(
 
     fun getState(
         context: WorkingCopyTransportContext, stageId: UUID, player: ServerPlayerIdentity,
+        diagnosticId:UUID=UUID.randomUUID(),
     ): CompletableFuture<GraphHttpResult> =
-        request(context, stageId, "GET", "/api/v1/stages/$stageId/graph?player_uuid=${player.uuid}", null)
+        request(context, stageId, "GET", "/api/v1/stages/$stageId/graph?player_uuid=${player.uuid}", null,diagnosticId=diagnosticId)
 
     fun send(context: WorkingCopyTransportContext, command: GraphCommand): CompletableFuture<GraphHttpResult> {
         val suffix = when (command) {
@@ -55,24 +58,37 @@ class GraphApiClient private constructor(
             is WirePlaceIntentCommand -> "wire/place"
             is BindEdgesCommand -> "bind"
         }
-        return request(context, command.stageId, "POST", "/api/v1/stages/${command.stageId}/graph/$suffix", gson.toJson(command.toJson()))
+        return request(context, command.stageId, "POST", "/api/v1/stages/${command.stageId}/graph/$suffix", gson.toJson(command.toJson()),command)
     }
 
     private fun request(
-        context: WorkingCopyTransportContext, stageId: UUID, method: String, path: String, body: String?,
+        context: WorkingCopyTransportContext, stageId: UUID, method: String, path: String, body: String?,command:GraphCommand?=null,
+        diagnosticId:UUID=UUID.randomUUID(),
     ): CompletableFuture<GraphHttpResult> {
-        val configuredSecret = secret ?: return CompletableFuture.completedFuture(
+        val trace=diagnosticId
+        fun log(event:String,status:Int?,reason:String,epoch:UUID?=null,revision:Long?=null) {
+            Diagnostics.event(event,context.projectionKey(stageId),"diagnostic_id" to trace,"method" to method,
+                "route" to path.substringBefore('?'),"http_status" to status,"reason" to reason,
+                "request_id" to command?.requestId,"request_epoch" to command?.workspaceEpoch,
+                "request_revision" to command?.expectedWorkingRevision,"response_epoch" to epoch,"response_revision" to revision)
+        }
+        val configuredSecret = secret ?: return CompletableFuture.completedFuture<GraphHttpResult>(
             GraphHttpResult.Unavailable("A graph transport nincs konfigurálva."),
-        )
+        ).also { log("GRAPH_HTTP_NOT_SENT",null,"NOT_CONFIGURED") }
         val builder = HttpRequest.newBuilder(URI.create(baseUrl + path))
             .timeout(Duration.ofSeconds(10))
             .header("Accept", "application/json")
             .header(GRAPH_SECRET_HEADER, configuredSecret)
+            .header(Diagnostics.HEADER,trace.toString())
         context.addHeaders(builder)
         if (body == null) builder.GET() else builder.header("Content-Type", "application/json")
             .method(method, HttpRequest.BodyPublishers.ofString(body))
+        log("GRAPH_HTTP_START",null,"SENDING")
         return http.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString()).handle { response, failure ->
-            if (failure != null) return@handle GraphHttpResult.Unavailable("A graph szolgáltatás nem érhető el.")
+            if (failure != null) {
+                log("GRAPH_HTTP_RESULT",null,"TRANSPORT_UNAVAILABLE")
+                return@handle GraphHttpResult.Unavailable("A graph szolgáltatás nem érhető el.")
+            }
             val parsed = try {
                 if (response.statusCode() in 200..299) {
                     TransportContextParser.validateResponse(
@@ -81,7 +97,12 @@ class GraphApiClient private constructor(
                 }
                 GraphResponseParser.parse(response.statusCode(), response.body())
             } catch (failure: Exception) {
+                log("GRAPH_HTTP_RESULT",response.statusCode(),"PROTOCOL_FAILURE")
                 return@handle GraphHttpResult.ProtocolFailure(failure.message ?: "Hibás graph API-válasz.")
+            }
+            when(parsed) {
+                is GraphSuccessResponse -> log("GRAPH_HTTP_RESULT",response.statusCode(),"OK",parsed.workspaceEpoch,parsed.workingRevision)
+                is GraphErrorResponse -> log("GRAPH_HTTP_RESULT",response.statusCode(),parsed.errorCode,parsed.workspaceEpoch,parsed.workingRevision)
             }
             when {
                 response.statusCode() in 200..299 && parsed is GraphSuccessResponse -> GraphHttpResult.Success(parsed)

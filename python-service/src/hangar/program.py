@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 import uuid
+from .diagnostics import emit as diagnostic
 from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -218,6 +219,9 @@ class ProgramService:
         workspace=self.load(program_id);normalized=uuid.UUID(str(stage_id))
         with workspace.lock:
             self._active(workspace)
+            diagnostic("PY_PROGRAM_STAGE_READ",program_id=workspace.program_id,
+                root_stage_id=workspace.root_stage_id,requested_stage_id=normalized,
+                program_epoch=workspace.workspace_epoch,hierarchy_revision=workspace.hierarchy_revision)
             return self._load_stage_locked(workspace,normalized)
 
     def children(
@@ -471,6 +475,10 @@ class ProgramService:
     )->ProgramSaveReceipt:
         workspace=self.load(program_id)
         with workspace.lock:
+            diagnostic("PY_PROGRAM_SAVE_BEGIN",program_id=workspace.program_id,
+                requested_stage_id=target_stage_id,root_stage_id=workspace.root_stage_id,
+                program_epoch=workspace.workspace_epoch,dirty_before=workspace.dirty,
+                saved_version=workspace.saved_version,expected_saved_version=expected_saved_version)
             self._active(workspace);self._authorize(workspace,player_uuid)
             if (expected_saved_version is not None
                     and int(expected_saved_version)!=workspace.saved_version):
@@ -489,14 +497,25 @@ class ProgramService:
                     if target is None: raise HallNotFound("A cél-Stage nem része a Programnak.")
                     StageService._check_client_version(target,client_payload or {})
                 plan=self._save_plan(workspace,stage_workspaces)
-                receipt=self.repository.save_program_snapshot(plan)
+                try:receipt=self.repository.save_program_snapshot(plan)
+                except Exception as exc:
+                    diagnostic("PY_PROGRAM_SAVE_FAILURE",program_id=workspace.program_id,
+                        phase="REPOSITORY",exception_type=type(exc).__name__,dirty_after=workspace.dirty)
+                    raise
+                diagnostic("PY_PROGRAM_SAVE_RECEIPT",program_id=receipt.program_id,saved_version=receipt.saved_version,
+                    changed=receipt.changed,stages=[{"stage_id":str(item.stage_id),"saved_version":item.saved_version,
+                        "changed":item.changed} for item in receipt.stages])
                 try: self._apply_receipt(workspace,stage_workspaces,receipt)
                 except Exception as exc:
                     workspace.state=ProgramWorkspaceState.RELOAD_REQUIRED
+                    diagnostic("PY_PROGRAM_SAVE_FAILURE",program_id=workspace.program_id,
+                        phase="RECEIPT_APPLY",exception_type=type(exc).__name__,dirty_after=workspace.dirty)
                     raise ProgramReloadRequired(
                         "A Program DB-commitja sikerült, de a memóriabeli receipt "
                         "alkalmazása meghiúsult; újratöltés szükséges."
                     ) from exc
+                diagnostic("PY_PROGRAM_SAVE_COMPLETE",program_id=workspace.program_id,
+                    requested_stage_id=target_stage_id,dirty_after=workspace.dirty,saved_version=workspace.saved_version)
                 return receipt
 
     @staticmethod

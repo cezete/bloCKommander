@@ -72,6 +72,8 @@ object WorldRenderer {
     }
 
     fun renderSaveState(level: ServerLevel, hall: Hall, dirty: Boolean) {
+        Diagnostics.event("SAVE_SIGN_REQUEST",hall.stage?.let { hall.projectionKey() },
+            "dirty" to dirty,"sign_present" to hall.controls.any { it.kind=="SAVE_SIGN" })
         hall.controls.firstOrNull { it.kind == "SAVE_SIGN" }?.let { renderControl(level, hall, it, dirty) }
     }
 
@@ -113,7 +115,11 @@ object WorldRenderer {
             )
             else -> listOf("bloCKommander", "", "", "")
         }
-        val sign = level.getBlockEntity(control.pos) as? SignBlockEntity ?: return
+        val sign = level.getBlockEntity(control.pos) as? SignBlockEntity ?: run {
+            if(control.kind=="SAVE_SIGN") Diagnostics.event("SAVE_SIGN_SKIPPED",hall.stage?.let { hall.projectionKey() },
+                "reason" to "SIGN_BLOCK_ENTITY_MISSING")
+            return
+        }
         val text = SignText.EMPTY.asMutable().apply {
             lines.forEachIndexed { index, line -> setLine(index, Component.literal(line)) }
         }.asImmutable()
@@ -121,6 +127,10 @@ object WorldRenderer {
         sign.setText(text, SignTextSlot.BACK)
         sign.setChanged()
         level.sendBlockUpdated(control.pos, state, state, Block.UPDATE_ALL)
+        if(control.kind=="SAVE_SIGN") Diagnostics.event("SAVE_SIGN_RENDERED",hall.stage?.let { hall.projectionKey() },
+            "world_uuid" to hall.worldUuid,"dirty" to (graphDirty ?: hall.programDirty),
+            "stage_role" to "RENDER_ARGUMENT","displayed_text" to lines.last(),
+            "epoch" to hall.stage?.workspaceEpoch,"revision" to hall.stage?.workingRevision)
     }
 
     private fun material(name: String): Block {

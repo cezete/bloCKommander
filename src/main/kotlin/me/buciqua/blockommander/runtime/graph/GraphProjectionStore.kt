@@ -2,6 +2,7 @@ package me.buciqua.blockommander.runtime.graph
 
 import java.util.UUID
 import me.buciqua.blockommander.runtime.ProjectionKey
+import me.buciqua.blockommander.runtime.Diagnostics
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
@@ -143,16 +144,27 @@ class GraphProjectionStore {
     }
 
     fun apply(token: GraphRequestToken, snapshot: GraphStateSnapshot): GraphApplyResult = synchronized(slots) {
+        val prior=slots[token.key]
+        val priorEpoch=prior?.stageEpoch;val priorRevision=prior?.stageRevision
+        fun result(value:GraphApplyResult,reason:String):GraphApplyResult {
+            Diagnostics.event("GRAPH_STORE_APPLY",token.key,"reason" to reason,
+                "prior_epoch" to priorEpoch,"prior_revision" to priorRevision,
+                "response_epoch" to snapshot.workspaceEpoch,"response_revision" to snapshot.workingRevision,
+                "response_stage_id" to snapshot.stageId,"request_kind" to token.kind,
+                "requested_lifecycle" to token.lifecycleGeneration,"slot_lifecycle" to prior?.lifecycleGeneration,
+                "requested_generation" to token.requestGeneration,"slot_generation" to prior?.requestGeneration)
+            return value
+        }
         val slot = slots[token.key] ?: return@synchronized GraphApplyResult.Rejected(
             "UNKNOWN_STAGE", missingView(token.key),
-        )
+        ).let { result(it,"UNKNOWN_STAGE") }
         if (token.lifecycleGeneration != slot.lifecycleGeneration || token.requestGeneration != slot.requestGeneration) {
-            return@synchronized GraphApplyResult.IgnoredStaleRequest(view(token.key, slot))
+            return@synchronized result(GraphApplyResult.IgnoredStaleRequest(view(token.key, slot)),"STALE_REQUEST_TOKEN")
         }
-        fun reject(code: String): GraphApplyResult.Rejected {
+        fun reject(code: String): GraphApplyResult {
             slot.status = GraphSyncStatus.CONFLICT
             slot.problem = code
-            return GraphApplyResult.Rejected(code, view(token.key, slot))
+            return result(GraphApplyResult.Rejected(code, view(token.key, slot)),code)
         }
         if (snapshot.stageId != token.key.stageId) return@synchronized reject("STAGE_ID_MISMATCH")
         if (snapshot.workspaceEpoch != slot.stageEpoch) return@synchronized reject("EPOCH_CONFLICT")
@@ -168,7 +180,7 @@ class GraphProjectionStore {
         slot.stageRevision = snapshot.workingRevision
         slot.status = GraphSyncStatus.SYNCED
         slot.problem = null
-        GraphApplyResult.Applied(view(token.key, slot))
+        result(GraphApplyResult.Applied(view(token.key, slot)),"ACCEPTED")
     }
 
     fun fail(token: GraphRequestToken, code: String, uncertain: Boolean): StageGraphView = synchronized(slots) {

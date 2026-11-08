@@ -15,6 +15,8 @@ class StageReconnectReconciler(
 ) {
     fun reconcile(hallJson: JsonObject, fence: StageUpdateFence?): Boolean {
         val hall = runCatching { registry.authoritativeReload(hallJson, fence) }.getOrElse {
+            Diagnostics.event("RECONNECT_STAGE_RESULT",fence?.key,"reason" to "INVALID_RESPONSE",
+                "exception_type" to it.javaClass.simpleName)
             diagnose("STAGE_RELOAD_INVALID: ${it.message}")
             return false
         }

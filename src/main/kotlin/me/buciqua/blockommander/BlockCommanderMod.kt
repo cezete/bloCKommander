@@ -9,6 +9,8 @@ import me.buciqua.blockommander.runtime.graph.GraphApiClient
 import me.buciqua.blockommander.runtime.graph.GraphTransportAdapter
 import me.buciqua.blockommander.runtime.program.ProgramApiClient
 import me.buciqua.blockommander.runtime.program.StageNavigationCoordinator
+import me.buciqua.blockommander.runtime.program.HallSelectionCoordinator
+import me.buciqua.blockommander.runtime.program.HallSelectionApiClient
 import me.buciqua.blockommander.runtime.wire.WireInteractionCoordinator
 import me.buciqua.blockommander.runtime.wire.WireWorldProjector
 import me.buciqua.blockommander.network.Networking
@@ -31,7 +33,9 @@ class BlockCommanderMod : ModInitializer {
         val registry = HallRegistry()
         val wireCoordinator = AtomicReference<WireInteractionCoordinator?>()
         val stageNavigation = AtomicReference<StageNavigationCoordinator?>()
-        val interactions = Interactions(ApiClient(), registry, wireCoordinator::get, stageNavigation::get)
+        val hallSelection = AtomicReference<HallSelectionCoordinator?>()
+        val interactions = Interactions(ApiClient(), registry, wireCoordinator::get, stageNavigation::get,
+            hallSelection=hallSelection::get)
         ServerLifecycleEvents.SERVER_STARTED.register { server ->
             val mainThread = Executor(server::execute)
             val transport = GraphTransportAdapter(
@@ -45,14 +49,18 @@ class BlockCommanderMod : ModInitializer {
             stageNavigation.set(StageNavigationCoordinator(
                 registry, ProgramApiClient.fromEnvironment(), transport, mainThread,
             ))
+            hallSelection.set(HallSelectionCoordinator(registry,HallSelectionApiClient.fromEnvironment(),
+                stageNavigation.get()!!,mainThread))
         }
         ServerLifecycleEvents.SERVER_STOPPED.register {
             wireCoordinator.set(null)
             stageNavigation.set(null)
+            hallSelection.set(null)
             graphTransport = null
         }
         Networking.register(interactions)
         interactions.register()
         LOGGER.info("bloCKommander Fabric initialized")
+        me.buciqua.blockommander.runtime.Diagnostics.event("DIAGNOSTICS_READY",null,"schema" to "ck-diag2-v1")
     }
 }

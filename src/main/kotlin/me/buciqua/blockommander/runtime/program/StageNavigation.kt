@@ -34,6 +34,7 @@ interface StageSwitchCommitter {
 object StageProjectionAssembler {
     fun assemble(
         hall:Hall,response:ProgramStageResponse,graph:GraphStateSnapshot,projectionLifecycle:Long,
+        physicalSelection:Boolean=false,
     ):PreparedStageSwitch {
         val summary=response.stage.summary
         val workspace=summary.workspace ?: throw IllegalArgumentException("A cél-Stage nincs betöltött workspace-ben.")
@@ -52,7 +53,17 @@ object StageProjectionAssembler {
         require(graph.graphSnapshotVersion==response.stage.graphSnapshotVersion) { "GRAPH_SNAPSHOT_VERSION_MISMATCH" }
         require(graph.portCatalogVersion==response.stage.portCatalogVersion) { "PORT_CATALOG_VERSION_MISMATCH" }
         require(layout.size.x>0 && layout.size.y>0 && layout.size.z>0) { "INVALID_STAGE_SIZE" }
-        val origin=hall.min.offset(layout.origin.x,layout.origin.y,layout.origin.z)
+        val logicalOrigin=hall.min.offset(layout.origin.x,layout.origin.y,layout.origin.z)
+        if(physicalSelection) {
+            val physical=response.stage.physical ?: error("PHYSICAL_STAGE_METADATA_MISSING")
+            require(physical.hallId.toString()==hall.id && physical.worldUuid.toString()==hall.worldUuid &&
+                physical.origin==GraphPosition(logicalOrigin.x,logicalOrigin.y,logicalOrigin.z) && physical.size==layout.size &&
+                graph.origin==physical.origin && graph.hallId==physical.hallId && graph.worldUuid==physical.worldUuid) {
+                "PHYSICAL_STAGE_IDENTITY_MISMATCH" }
+        }
+        val origin=if(physicalSelection) response.stage.physical!!.origin.let {
+            net.minecraft.core.BlockPos(it.x,it.y,it.z)
+        } else logicalOrigin
         val maxExclusive=origin.offset(layout.size.x,layout.size.y,layout.size.z)
         require(origin.x>hall.min.x && origin.y>hall.min.y && origin.z>hall.min.z &&
             maxExclusive.x<=hall.max.x && maxExclusive.y<=hall.max.y && maxExclusive.z<=hall.max.z) {
@@ -88,6 +99,10 @@ class StageNavigationCoordinator(
     private val graph:GraphGateway,
     private val mainThread:Executor,
 ) {
+    fun projectSelection(token:StageSwitchToken,selection:HallSelection,player:ServerPlayerIdentity,
+        committer:StageSwitchCommitter):CompletableFuture<NavigationResult> = protect(token) {
+        prepareAndCommit(token,null,selection.context,selection.stageId,player,committer)
+    }
     fun enter(
         hallId:UUID,programBlockInstanceId:UUID,player:ServerPlayerIdentity,
         committer:StageSwitchCommitter,
@@ -161,11 +176,13 @@ class StageNavigationCoordinator(
     }
 
     private fun prepareAndCommit(
-        token:StageSwitchToken,context:ProgramSwitchContext,transport:WorkingCopyTransportContext,targetId:UUID,
+        token:StageSwitchToken,expectedContext:ProgramSwitchContext?,transport:WorkingCopyTransportContext,targetId:UUID,
         player:ServerPlayerIdentity,committer:StageSwitchCommitter,
     ):CompletableFuture<NavigationResult> = programs.stage(transport,targetId).thenCompose { stageResult ->
         val stageResponse=stageResult.valueOrFail(token)
             ?: return@thenCompose completedFrom(token,stageResult.failureStatus(),stageResult.failureDetail())
+        val context=expectedContext ?: ProgramSwitchContext(
+            transport.programId,stageResponse.programWorkspaceEpoch,stageResponse.hierarchyRevision)
         val workspace=stageResponse.stage.summary.workspace
             ?: return@thenCompose reject(token,"TARGET_STAGE_NOT_LOADED")
         if (stageResponse.programId!=context.programId ||
@@ -189,7 +206,8 @@ class StageNavigationCoordinator(
                 return@thenCompose reject(token,"GRAPH_NOT_AUTHORITATIVE")
             }
             val hall=registry.hall(token.hallId) ?: return@thenCompose reject(token,"HALL_NOT_FOUND")
-            val prepared=try { StageProjectionAssembler.assemble(hall,stageResponse,view.snapshot,view.lifecycleGeneration) }
+            val prepared=try { StageProjectionAssembler.assemble(hall.copy(transportContext=transport),
+                stageResponse,view.snapshot,view.lifecycleGeneration,token.selection) }
                 catch (failure:Exception) { return@thenCompose reject(token,failure.message ?: "PROJECTION_INVALID") }
             CompletableFuture.supplyAsync({
                 if (!registry.isStageSwitchCurrent(

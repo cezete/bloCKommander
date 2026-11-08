@@ -31,12 +31,17 @@ class ApiClient {
     private fun request(player: ServerPlayer?, method: String, path: String, payload: JsonObject?,
                         context: WorkingCopyTransportContext?, stageId: UUID?,
                         success: (JsonObject) -> Unit, onFailure: (String) -> Unit) {
+        val trace=UUID.randomUUID()
         val builder = HttpRequest.newBuilder(URI.create(baseUrl + path)).timeout(Duration.ofSeconds(10))
             .header("Accept", "application/json")
+            .header(Diagnostics.HEADER,trace.toString())
         context?.addHeaders(builder)
         if (payload == null) builder.GET() else builder.header("Content-Type", "application/json")
             .method(method, HttpRequest.BodyPublishers.ofString(gson.toJson(payload)))
+        Diagnostics.http("FABRIC_HTTP_START",trace,context,stageId,method,path)
         http.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString()).whenComplete { response, failure ->
+            Diagnostics.http("FABRIC_HTTP_RESULT",trace,context,stageId,method,path,response?.statusCode(),response?.body(),
+                if(failure==null) "RECEIVED" else "TRANSPORT_UNAVAILABLE")
             val server = player?.level()?.server
             val task = Runnable {
                 if (failure != null) {

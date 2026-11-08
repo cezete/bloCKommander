@@ -3,6 +3,7 @@ package me.buciqua.blockommander.runtime.graph
 import net.minecraft.server.level.ServerPlayer
 import me.buciqua.blockommander.runtime.WorkingCopyTransportContext
 import me.buciqua.blockommander.runtime.projectionKey
+import me.buciqua.blockommander.runtime.Diagnostics
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
@@ -52,8 +53,12 @@ class GraphTransportAdapter(
 
     private fun reconcileWithToken(
         token:GraphRequestToken, context:WorkingCopyTransportContext, stageId:UUID, player:ServerPlayerIdentity,
-    ):CompletableFuture<ReconciliationOutcome> =
-        client.getState(context, stageId, player).thenCompose { transport -> onMain {
+    ):CompletableFuture<ReconciliationOutcome> {
+        val before=projections.view(token.key)
+        val trace=UUID.randomUUID()
+        Diagnostics.event("GRAPH_GET_BEGIN",token.key,"epoch" to before?.stageEpoch,"revision" to before?.stageRevision,
+            "diagnostic_id" to trace,"lifecycle" to token.lifecycleGeneration,"request_generation" to token.requestGeneration)
+        return client.getState(context, stageId, player,trace).thenCompose { transport -> onMain {
             when (transport) {
                 is GraphHttpResult.Success -> ReconciliationOutcome(transport, projections.apply(token, transport.response.state))
                 is GraphHttpResult.ApiError -> {
@@ -69,7 +74,15 @@ class GraphTransportAdapter(
                     ReconciliationOutcome(transport, null)
                 }
             }
-        } }
+        } }.thenApply { result ->
+            val after=projections.view(token.key)
+            Diagnostics.event("GRAPH_GET_COMPLETE",token.key,"transport" to result.transport.javaClass.simpleName,
+                "diagnostic_id" to trace,"lifecycle" to token.lifecycleGeneration,"request_generation" to token.requestGeneration,
+                "application" to result.application?.javaClass?.simpleName,"problem" to after?.problem,
+                "status" to after?.status)
+            result
+        }
+    }
 
     override fun send(
         context: WorkingCopyTransportContext, command: GraphCommand,

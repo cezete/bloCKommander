@@ -5,6 +5,7 @@ import com.google.gson.JsonParser
 import me.buciqua.blockommander.runtime.TransportContextParser
 import me.buciqua.blockommander.runtime.TransportContextProtocolException
 import me.buciqua.blockommander.runtime.WorkingCopyTransportContext
+import me.buciqua.blockommander.runtime.Diagnostics
 import me.buciqua.blockommander.runtime.graph.GRAPH_SECRET_ENV
 import me.buciqua.blockommander.runtime.graph.GRAPH_SECRET_HEADER
 import java.net.URI
@@ -81,12 +82,17 @@ class ProgramApiClient private constructor(
         val configuredSecret=secret ?: return CompletableFuture.completedFuture(
             ProgramHttpResult.Unavailable("A Program transport nincs konfigurálva."),
         )
+        val trace=UUID.randomUUID()
         val builder=HttpRequest.newBuilder(URI.create(baseUrl+path)).timeout(Duration.ofSeconds(10))
             .header("Accept","application/json").header(GRAPH_SECRET_HEADER,configuredSecret)
+            .header(Diagnostics.HEADER,trace.toString())
         context.addHeaders(builder)
         if (body==null) builder.GET() else builder.header("Content-Type","application/json")
             .method(method,HttpRequest.BodyPublishers.ofString(body))
+        Diagnostics.http("PROGRAM_HTTP_START",trace,context,stageId,method,path)
         return http.sendAsync(builder.build(),HttpResponse.BodyHandlers.ofString()).handle { response,failure ->
+            Diagnostics.http("PROGRAM_HTTP_RESULT",trace,context,stageId,method,path,response?.statusCode(),response?.body(),
+                if(failure==null) "RECEIVED" else "TRANSPORT_UNAVAILABLE")
             if (failure!=null) return@handle ProgramHttpResult.Unavailable("A Program szolgáltatás nem érhető el.")
             try {
                 if (response.statusCode() in 200..299) {

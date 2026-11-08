@@ -12,6 +12,7 @@ import hmac
 import json
 import threading
 import uuid
+from .diagnostics import emit as diagnostic
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -297,6 +298,8 @@ class GraphApplicationService:
             normalized_stage=str(_uuid(stage_id,"stage_id"))
             normalized_player=parse_player_uuid(player_uuid)
             context=self.stages.read_graph_context(normalized_stage,normalized_player)
+            diagnostic("PY_GRAPH_GET",stage_id=context.stage_id,epoch=context.workspace_epoch,
+                revision=context.state.working_revision,saved_version=context.state.saved_version,dirty=context.state.dirty)
             return GraphApplicationResponse(200,{
                 "api_version":API_VERSION,"status":"ok","modified":False,
                 **_context_envelope(context),"diagnostics":[],
@@ -340,7 +343,12 @@ class GraphApplicationService:
             except Exception as exc:
                 return _exception_response(command,None,exc)
             self._expire_other_epochs(str(command.stage_id),str(before.workspace_epoch))
+            diagnostic("PY_GRAPH_VERSION_CHECK",stage_id=command.stage_id,request_id=command.request_id,
+                request_epoch=command.workspace_epoch,request_revision=command.expected_working_revision,
+                current_epoch=before.workspace_epoch,current_revision=before.state.working_revision)
             if command.workspace_epoch!=before.workspace_epoch:
+                diagnostic("PY_GRAPH_REJECT",stage_id=command.stage_id,request_id=command.request_id,
+                    error_code="STALE_WORKSPACE_EPOCH",http_status=409)
                 return _problem_response(command,before,GraphApplicationError(
                     "STALE_WORKSPACE_EPOCH",
                     "A workspace epoch elavult; kérd le újra a graph állapotot.",
@@ -359,6 +367,8 @@ class GraphApplicationService:
                     ))
                 return existing.response.copy()
             if command.expected_working_revision!=before.state.working_revision:
+                diagnostic("PY_GRAPH_REJECT",stage_id=command.stage_id,request_id=command.request_id,
+                    error_code="STALE_WORKING_REVISION",http_status=409)
                 result=_problem_response(command,before,GraphApplicationError(
                     "STALE_WORKING_REVISION",
                     "A working revision elavult; kérd le újra a graph állapotot.",

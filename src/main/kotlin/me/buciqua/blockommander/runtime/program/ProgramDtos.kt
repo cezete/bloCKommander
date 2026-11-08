@@ -49,7 +49,10 @@ data class ProgramStageProjection(
     val graphSnapshotVersion: Long,
     val portCatalogVersion: String,
     val blocks: List<ProgramStageBlock>,
+    val physical:PhysicalStageMetadata?=null,
 )
+data class PhysicalStageMetadata(val hallId:UUID,val worldUuid:UUID,
+    val origin:GraphPosition,val size:GraphPosition)
 data class ProgramSnapshot(
     val programId: UUID,
     val ownerUuid: UUID,
@@ -185,6 +188,8 @@ object ProgramResponseParser {
                 block.requiredString("label"),block.optionalString("description"),
             )
         },
+        if(obj.has("hall_id")) PhysicalStageMetadata(obj.requiredUuid("hall_id"),obj.requiredUuid("world_uuid"),
+            parsePosition(obj.requiredObject("origin")),parsePosition(obj.requiredObject("size"))) else null,
     )
     private fun parseStageSummary(obj:JsonObject):ProgramStageSummary {
         val stageId=obj.requiredUuid("stage_id")

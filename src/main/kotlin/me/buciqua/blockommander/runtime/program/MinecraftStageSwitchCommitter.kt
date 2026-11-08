@@ -21,6 +21,7 @@ class MinecraftStageSwitchCommitter(
 private class MinecraftStageSwitchWorld(
     private val level:ServerLevel,
 ):StageSwitchWorld<BlockState>,WireWorldAccess by MinecraftWireWorldAccess(level) {
+    override fun worldUuid()=WorldIdentity.uuid(level)
     override fun readState(position:GraphPosition)=level.getBlockState(position.blockPos())
     override fun restoreState(position:GraphPosition,state:BlockState) {
         level.setBlockAndUpdate(position.blockPos(),state)

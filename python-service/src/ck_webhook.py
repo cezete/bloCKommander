@@ -15,6 +15,7 @@ from hangar.program_http import (
 from hangar.stage import StageService
 from hangar.selection import SelectionFailure, parse_selection, selection_dto
 from hangar.hall_projection import project_stage
+from hangar.diagnostics import emit as diagnostic, context as diagnostic_context
 from hangar.transport_context import TransportContextError, TransportContextResolver
 from hangar.graph_application import (
     API_VERSION, GRAPH_SECRET_ENV, GRAPH_SECRET_HEADER, GraphApplicationService, GraphCommand,
@@ -36,6 +37,7 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
         minecraft=Minecraft.create(os.getenv("BLOCKCOMMANDER_MC_HOST","127.0.0.1"),int(os.getenv("BLOCKCOMMANDER_MC_PORT","4711")))
     if world_driver not in ("fabric","mcpi"):
         raise RuntimeError("BLOCKCOMMANDER_WORLD_DRIVER must be fabric or mcpi")
+    diagnostic("PY_DIAGNOSTICS_READY",schema="ck-diag2-v1",world_driver=world_driver)
     service=HallService(repo,minecraft,apply_world=world_driver=="mcpi"); stages=StageService(repo)
     programs=ProgramService(repo,stages)
     graph_app=GraphApplicationService(stages)
@@ -53,6 +55,51 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
             raise RuntimeError("BLOCKCOMMANDER_ALLOW_LEGACY_CONTEXT must be 0 or 1")
         allow_legacy_context=legacy_setting=="1"
     contexts=TransportContextResolver(repo,programs,allow_legacy=allow_legacy_context)
+
+    @app.before_request
+    def diagnostic_request_start():
+        # Observe metadata only. Do not resolve identity, load workspace or parse a body here.
+        if request.endpoint not in {"graph_state","graph_wire","graph_bind","graph_wire_place",
+                "save_button","save_program","save_stage","mounted_program","program_status",
+                "world_halls","restore_all","get_program_stage"}:return
+        try:
+            def safe_uuid(value):
+                try:return str(uuid.UUID(str(value))) if value else None
+                except (ValueError,TypeError):return "INVALID_UUID"
+            supplied=safe_uuid(request.headers.get("X-BlockCommander-Diagnostic-Id"))
+            fields={"diagnostic_id":supplied if supplied not in (None,"INVALID_UUID") else str(uuid.uuid4()),
+                "hall_id":safe_uuid(request.headers.get("X-BlockCommander-Hall-Id")),
+                "program_id":safe_uuid(request.headers.get("X-BlockCommander-Program-Id")),
+                "working_copy_id":safe_uuid(request.headers.get("X-BlockCommander-Working-Copy-Id")),
+                "context_verified":False,
+                "stage_id":safe_uuid((request.view_args or {}).get("stage_id")),
+                "method":request.method,"endpoint":request.endpoint}
+            g.diagnostic_token=diagnostic_context.set(fields)
+            diagnostic("PY_HTTP_RECEIVE")
+        except Exception:pass
+
+    @app.after_request
+    def diagnostic_request_end(response):
+        if not hasattr(g,"diagnostic_token"):return response
+        try:
+            body=response.get_json(silent=True) if response.is_json else {}
+            body=body if isinstance(body,dict) else {}
+            stage=body.get("state") or body.get("stage") or {}
+            stage=stage if isinstance(stage,dict) else {}
+            diagnostic("PY_HTTP_RESPONSE",http_status=response.status_code,error_code=body.get("error_code"),
+                response_stage_id=stage.get("stage_id") or body.get("stage_id"),
+                response_epoch=stage.get("workspace_epoch") or body.get("workspace_epoch"),
+                response_revision=stage.get("working_revision",body.get("working_revision")),
+                program_dirty=stage.get("program_dirty"))
+        except Exception:pass
+        return response
+
+    @app.teardown_request
+    def diagnostic_request_cleanup(_failure):
+        try:
+            token=g.pop("diagnostic_token",None)
+            if token is not None:diagnostic_context.reset(token)
+        except Exception:pass
 
     @app.errorhandler(TransportContextError)
     def context_failure(exc):
@@ -119,6 +166,18 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
                 # Known Hall identities, never a Stage-ID-based choice. Validate all first.
                 for hall in halls:contexts.resolve({},hall_id=hall["hall_id"])
 
+    @app.before_request
+    def diagnostic_resolved_context():
+        try:
+            context=getattr(g,"transport_context",None)
+            if context is not None and hasattr(g,"diagnostic_token"):
+                identity={"program_id":str(context.program_id)}
+                identity["context_verified"]=True
+                if context.mount is not None:identity.update(context.mount.as_dict())
+                if context.stage_id is not None:identity["stage_id"]=str(context.stage_id)
+                diagnostic_context.set({**(diagnostic_context.get() or {}),**identity})
+        except Exception:pass
+
     @app.after_request
     def include_transport_context(response):
         context=getattr(g,"transport_context",None)
@@ -148,11 +207,15 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
         denied=graph_authenticated()
         if denied is not None:return denied
         try:
-            return parse_graph_command(
+            command=parse_graph_command(
                 request.get_json(silent=True),
                 expected_stage_id=stage_id,
                 expected_operation=operation,
             )
+            diagnostic("PY_GRAPH_COMMAND_RECEIVE",request_id=command.request_id,stage_id=command.stage_id,
+                operation=command.operation,request_epoch=command.workspace_epoch,
+                request_revision=command.expected_working_revision)
+            return command
         except GraphRequestError as exc:
             result=request_error_response(exc)
             return jsonify(result.body),result.status_code
@@ -202,6 +265,10 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
         expected=None if context is None or context.mount is None else context.mount.as_dict()
         selection=repo.get_selection(hall["hall_id"],hall["owner_uuid"],expected)
         ws=programs.stage(selection["program_id"],selection["active_stage_id"])
+        diagnostic("PY_HALL_READ",hall_id=hall["hall_id"],program_id=selection["program_id"],
+            working_copy_id=selection["working_copy_id"],response_stage_id=selection["active_stage_id"],
+            response_stage_kind=ws.stage.get("stage_kind"),
+            epoch=ws.workspace_epoch,revision=ws.revision)
         view=hall_client_view(hall,with_program_dirty(project_stage(stages.view(ws),ws.stage,hall)))
         view.update(selection_dto(selection))
         return view
@@ -505,6 +572,8 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
     def save_button():
         data=request.get_json(silent=True) or {}
         hall=repo.by_control(str(data["world_uuid"]),"SAVE_BUTTON",int(data["x"]),int(data["y"]),int(data["z"]))
+        diagnostic("PY_SAVE_BUTTON_RECEIVE",hall_id=hall["hall_id"],requested_stage_id=data.get("active_stage_id"),
+            request_epoch=data.get("workspace_epoch"),request_revision=data.get("expected_working_revision"))
         if "active_stage_id" in data:
             try: stage_id=uuid.UUID(str(data["active_stage_id"]))
             except (ValueError,TypeError) as exc:

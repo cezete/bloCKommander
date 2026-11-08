@@ -7,6 +7,7 @@ import java.util.UUID
 
 /** Tests replace only the physical backend, not the production planner or application. */
 interface StageSwitchWorld<S>:WireWorldAccess {
+    fun worldUuid():UUID?=null
     fun readState(position:GraphPosition):S
     fun restoreState(position:GraphPosition,state:S)
     fun isManaged(position:GraphPosition):Boolean
@@ -30,21 +31,31 @@ class StageSwitchProjection<S>(
         val context=prepared.program
         val targetId=UUID.fromString(prepared.target.id)
         return registry.withStageSwitch(token,context.programId,targetId,context.workspaceEpoch,context.hierarchyRevision) { hall ->
+            if(token.selection && world.worldUuid()?.toString()!=hall.worldUuid) return@withStageSwitch false
             val plan=try { prepare(hall,prepared) } catch (_:Exception) { null }
                 ?: return@withStageSwitch false
             if (!current(hall,prepared) || !registry.isStageSwitchCurrent(
                     token,context.programId,targetId,context.workspaceEpoch,context.hierarchyRevision,
-                ) || plan.before.any { (position,state)->world.readState(position)!=state }) return@withStageSwitch false
+                ) || plan.before.any { (position,state)->world.readState(position)!=state } ||
+                (token.selection && world.worldUuid()?.toString()!=hall.worldUuid)) return@withStageSwitch false
+            if(!current(hall,prepared) || !registry.isStageSwitchCurrent(token,context.programId,targetId,
+                    context.workspaceEpoch,context.hierarchyRevision)) return@withStageSwitch false
             try {
                 plan.cleared.forEach(world::clearManaged)
                 prepared.target.blocks.forEach(world::placeProgramBlock)
                 check(projector.applyPrepared(plan.wire,world).complete) { "WIRE_PROJECTION_FAILED" }
+                Diagnostics.event("SAVE_SIGN_TARGET",hall.projectionKey(targetId),"origin" to "STAGE_SWITCH",
+                    "displayed_source_stage_id" to token.sourceStageId,"target_stage_id" to targetId,
+                    "source_program_id" to token.transportContext.programId,"dirty" to prepared.programDirty,
+                    "navigation_generation" to token.generation,"hall_generation" to token.hallGeneration)
                 world.renderSaveState(hall,prepared.programDirty)
                 check(registry.commitStageSwitch(token,context.programId,context.workspaceEpoch,
                     context.hierarchyRevision,prepared.target,prepared.programDirty)!=null) { "SWITCH_GENERATION_CHANGED" }
                 true
             } catch (_:Exception) {
                 plan.affected.forEach { position -> world.restoreState(position,plan.before.getValue(position)) }
+                Diagnostics.event("SAVE_SIGN_TARGET",token.transportContext.projectionKey(token.sourceStageId),
+                    "origin" to "STAGE_SWITCH_ROLLBACK","dirty" to hall.programDirty)
                 runCatching { world.renderSaveState(hall,hall.programDirty) }
                 false
             }

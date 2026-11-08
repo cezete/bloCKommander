@@ -2,6 +2,7 @@ package me.buciqua.blockommander.runtime.wire
 
 import me.buciqua.blockommander.runtime.graph.*
 import me.buciqua.blockommander.runtime.ProjectionKey
+import me.buciqua.blockommander.runtime.Diagnostics
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -131,15 +132,19 @@ class WireInteractionCoordinator(
     ): CompletableFuture<WireActionResult> {
         val requestId = requestIdFactory()
         val relative = absolutePosition - stage.origin
+        Diagnostics.event("WIRE_OPERATION_BEGIN",stage.key,"request_id" to requestId,"action" to action,
+            "epoch" to stage.workspaceEpoch,"lifecycle" to stage.lifecycleGeneration)
         if (relative.x !in 0 until stage.size.x || relative.y !in 0 until stage.size.y ||
             relative.z !in 0 until stage.size.z) {
             return CompletableFuture.completedFuture(
                 WireActionResult(action, WireActionStatus.REJECTED, requestId, detail = "WIRE_OUTSIDE_STAGE"),
-            )
+            ).also { Diagnostics.event("WIRE_LOCAL_REJECT",stage.key,"request_id" to requestId,"reason" to "WIRE_OUTSIDE_STAGE") }
         }
         return ensureSynced(stage, player).thenCompose { sync ->
             val view=sync.view
             if (view == null) {
+                Diagnostics.event("WIRE_LOCAL_REJECT",stage.key,"request_id" to requestId,
+                    "reason" to if(sync.forbidden) "FORBIDDEN" else "GRAPH_NOT_SYNCED","http_sent" to false)
                 return@thenCompose CompletableFuture.supplyAsync({
                     world.correct(absolutePosition)
                     WireActionResult(
@@ -150,6 +155,8 @@ class WireInteractionCoordinator(
                     )
                 }, mainThread)
             }
+            Diagnostics.event("WIRE_COMMAND_SEND",stage.key,"request_id" to requestId,"action" to action,
+                "epoch" to view.stageEpoch,"revision" to view.stageRevision,"lifecycle" to view.lifecycleGeneration)
             val command = when (action) {
                 WireAction.PLACE -> WirePlaceIntentCommand(
                     requestId, stage.stageId, player, view.stageEpoch, view.stageRevision,
@@ -195,6 +202,10 @@ class WireInteractionCoordinator(
                         }
                 }
             }
+        }.thenApply { result ->
+            Diagnostics.event("WIRE_OPERATION_RESULT",stage.key,"request_id" to requestId,
+                "status" to result.status,"reason" to result.detail)
+            result
         }
     }
 
@@ -204,7 +215,13 @@ class WireInteractionCoordinator(
         stage: WireStageContext,
         player: ServerPlayerIdentity,
     ): CompletableFuture<SyncCheck> {
-        if (!validLifecycle(stage)) return CompletableFuture.completedFuture(SyncCheck(null))
+        val valid=validLifecycle(stage)
+        val prior=projections.view(stage.key)
+        Diagnostics.event("WIRE_SYNC_CHECK",stage.key,"valid_lifecycle" to valid,
+            "context_epoch" to stage.workspaceEpoch,"slot_epoch" to prior?.stageEpoch,"slot_revision" to prior?.stageRevision,
+            "slot_status" to prior?.status,"slot_problem" to prior?.problem,
+            "requested_lifecycle" to stage.lifecycleGeneration,"slot_lifecycle" to prior?.lifecycleGeneration)
+        if (!valid) return CompletableFuture.completedFuture(SyncCheck(null))
         current(stage)?.let { return CompletableFuture.completedFuture(SyncCheck(it)) }
         return gateway.reconcile(stage.transportContext, stage.stageId, player).thenApply { outcome ->
             val forbidden=outcome.transport is GraphHttpResult.ApiError &&
@@ -234,10 +251,10 @@ class WireInteractionCoordinator(
     ): CompletableFuture<WireActionResult> = CompletableFuture.supplyAsync({
         if (!validLifecycle(stage) || !projectionAllowed()) return@supplyAsync WireActionResult(
             action, WireActionStatus.STALE, requestId, detail = "STAGE_NOT_ACTIVE",
-        )
+        ).also { Diagnostics.event("WIRE_RENDER_REJECT",stage.key,"request_id" to requestId,"reason" to "STAGE_NOT_ACTIVE") }
         val view = current(stage) ?: return@supplyAsync WireActionResult(
             action, WireActionStatus.STALE, requestId, detail = "STAGE_LIFECYCLE_CHANGED",
-        )
+        ).also { Diagnostics.event("WIRE_RENDER_REJECT",stage.key,"request_id" to requestId,"reason" to "STAGE_LIFECYCLE_CHANGED") }
         try {
             val result = projector.apply(stage, view.stageRevision, view.snapshot!!, world)
             val targetMatches = target == null || when (action) {
