@@ -1,9 +1,11 @@
 # Nyitott döntések és összehangolandó koncepciók
 
 Dátum: **2026-11-09**, CK-08/DOC. Forrásbaseline: **main / b98b995**.
+DOC2-integráció: **2026-11-10**, CK-08/DOC2-T8; baseline: **main / 8ff8dcb**. A dokumentációs GO a 012 beemelésére és e jegyzék bővítésére szól; nem zár le domainkérdést.
+
 [Dokumentumindex](README.md) · [Állítás- és implementációs státuszok](STATUS.md)
 
-Ez a jegyzék őrzi a T3-ban azonosított hét kérdést (DEC-001–007), és külön felsorolja a kiemelt témák további nyitott részleteit (DEC-008–010). **Nem oldja fel önállóan a kérdéseket, és nem ad implementációs GO-t.**
+Ez a jegyzék őrzi a T3-ban azonosított hét kérdést (DEC-001–007), és külön felsorolja a kiemelt témák további nyitott részleteit (DEC-008–010). A DOC2-kiegészítés további három nyitott tételt rögzít (DEC-011–013); korábbi döntést nem zár le. **Nem oldja fel önállóan a kérdéseket, és nem ad implementációs GO-t.**
 
 A dokumentációs T6 GO két kezelési szabályt már rögzített:
 - CONTROL merge/WAGO és BOOLEAN kapukompozíció külön domainfogalomként kezelendő kifejezett architekturális összehangolásig.
@@ -93,7 +95,7 @@ A korábbi terv külön END_IF-et és ágproveniencia-szabályokat ír le. A 008
 **Határ:** a mai SAVE nem nevezhető át hallgatólagosan PUBLISH-re. A WorkingCopy UUID nem önmagában branch vagy tartalmi fork.
 
 <a id="dec-005"></a>
-## DEC-005 – CONTROL merge/WAGO és BOOLEAN kapukompozíció
+## DEC-005 – CONTROL merge/WAGO, BOOLEAN kapukompozíció és VALUE merge
 
 **Kezelési szabály: KÜLÖN DOMAINFOGALOM a CK-08/DOC T6 GO szerint. Az esetleges közös mechanizmus NYITOTT.**
 
@@ -106,11 +108,17 @@ A 008 fizikai modulcsoporton szabadon maradó több OUT-ot is megenged, amelyek 
 
 **Döntési kérdés:** mely részletek lehetnek később közös fizikai infrastruktúra, és melyek maradnak kötelezően külön szemantikai szabályok?
 
-**Alternatívák:** teljesen külön típuscsalád és lifecycle; vagy megosztott technikai többcellás reprezentáció két külön szemantikai szerződéssel. Egyetlen általános WAGO-típus bevezetése nem ennek a dokumentációs GO-nak a következménye.
+**Alternatívák:** teljesen külön típuscsalád és lifecycle; vagy megosztott technikai többcellás reprezentáció külön szemantikai szerződésekkel. Egyetlen általános WAGO-típus bevezetése nem ennek a dokumentációs GO-nak a következménye.
 
 **Nyitott részletek:** közvetlen szomszédság és crafting utáni fix alakzat viszonya, modul/IC/GraphNode azonosság, külső terminálok, BOOLEAN fan-out, CONTROL merge-validáció.
 
 **Határ:** amíg nincs kifejezett architekturális döntés, az egyik domainhez tartozó szabály nem alkalmazható automatikusan a másikra.
+
+### DOC2-kiegészítés – három külön szemantika
+
+**Forrás:** [012 §4](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#4-when-egy-cstage-k%C3%A9t-%C3%A9rt%C3%A9k%C3%A1g-a-sz%C3%BCl%C5%91-vstage-en) és [012 §9](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#9-nyitott-d%C3%B6nt%C3%A9sek); CS-038. A 012 VALUE merge/WAGO-ja alternatív értékfolyamok vizuális összefogási javaslata; nem CONTROL-érkezési merge, nem BOOLEAN AND/OR művelet és nem fan-out. A korábbi két fogalom elkülönítése megmarad, a harmadikat sem vonjuk össze velük.
+
+**NYITOTT:** mely fizikai megoldás osztható meg, és hogyan viszonyul a VALUE merge a WHEN kiválasztásához és RESULT-hoz? A három típuscsalád portjai, validációja és lifecycle-ja nem vezethetők le egymásból. A VALUE-részleteket [DEC-012](#dec-012) őrzi; nincs most közös WAGO-domain vagy portszámképlet.
 
 <a id="dec-006"></a>
 ## DEC-006 – Craftolt kapugeometria, OUT és tárgy-életciklus
@@ -150,6 +158,17 @@ A „helyette egyszerű IF-szövegmező” nem automatikus alapértelmezés: a m
 
 **Határ:** a 011 koncepciója nem engedély IF-, CStage-, GUI-, BOOLEAN Graph- vagy interpreter-implementációra.
 
+### DOC2-kiegészítés – VStage/CStage és RESULT
+
+**Forrás:** [007 §4](007%20-%20portok%2C%20FUN%2C%20CALL%2C%20Interface.md#4-param%C3%A9terek-%C3%A9s-return-stage-ek), [011 §2](011%20-%20tekercs%20%E2%80%94%20Monty%2C%20Condition%20Stage%20%C3%A9s%20a%20bark%C3%A1csolhat%C3%B3%20logika.md#2-cstage-szemantikai-modell), [012 §1](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#1-alapelv-vez%C3%A9rl%C3%A9s-%C3%A9s-%C3%A9rt%C3%A9k-k%C3%BCl%C3%B6nv%C3%A1laszt%C3%A1sa), [012 §3](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#3-let-%C3%A9s-a-tiszta-jobb-oldal); CS-034/045.
+
+- A 007 Paraméter és Return Stage START/STOP közötti placeholder-modelljét megőrizzük. A 012 „belső Stage-ek” START/STOP-mentessége nem bizonyított általános felülírás: csak VStage/CStage-re vonatkozik-e, vagy a szerződéses nézetekre is?
+- A 011 egy BOOLEAN RESULT blokkot javasol. A 012 általános RESULT-kardinalitást külön szerződésre hagy; az előző javaslat nem minősül automatikusan visszavontnak.
+- A VStage és CStage közös absztrakciója, a PStage-hez és ROOT/PROGRAM_BODY kindokhoz való viszony, a belső Stage tulajdonosi linkje és a típusellenőrzés OPEN. A jelenlegi kindokat nem nevezzük át automatikusan.
+- A Stage-tartalmazási fa, a kifejezés-DAG és a PFUN-hívási gráf külön struktúra; a rekurzió nem jelent ciklikus Stage-tartalmazást.
+
+**Alternatívák, választás nélkül:** VStage-specializációként kezelt CStage vagy külön típusok közös ellenőrzési alappal; külön szerződéses Paraméter/Return nézetek vagy kifejezett későbbi egységesítés. Nincs most Stage-kind-, RESULT- vagy SAVE-szerződésváltás.
+
 <a id="dec-008"></a>
 ## DEC-008 – Scope, változó, Expression és FUN/CALL részletszabályok
 
@@ -170,6 +189,20 @@ A „helyette egyszerű IF-szövegmező” nem automatikus alapértelmezés: a m
 
 **Határ:** a jelen PROGRAM Stage-hierarchia nem magától FUN-hívási környezet és nem kész változómodell.
 
+### DOC2-kiegészítés – elnevezések, jelentések és CALL
+
+**Forrás:** [007 §3](007%20-%20portok%2C%20FUN%2C%20CALL%2C%20Interface.md#3-fun-%C3%A9s-call--k%C3%A9t-k%C3%BCl%C3%B6n-blokkfajta), [007 §9](007%20-%20portok%2C%20FUN%2C%20CALL%2C%20Interface.md#9-kieg%C3%A9sz%C3%ADt%C3%A9s--function-%C3%A9s-procedure-2026-10-29), [011 §2](011%20-%20tekercs%20%E2%80%94%20Monty%2C%20Condition%20Stage%20%C3%A9s%20a%20bark%C3%A1csolhat%C3%B3%20logika.md#2-cstage-szemantikai-modell), [012 §2](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#2-blokkok-%C3%A9s-defin%C3%ADci%C3%B3k), [012 §3](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#3-let-%C3%A9s-a-tiszta-jobb-oldal), [012 §5](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#5-fun-pfun-proc-%C3%A9s-call), [012 §9](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#9-nyitott-d%C3%B6nt%C3%A9sek); CS-035–037/041/043/044.
+
+**Megőrzött eltérések:**
+
+1. A 011 Expressionje bal/reláció/jobb szerkezetű BOOLEAN összehasonlítás; a 012 EXPR-je általános értékkifejezés, akár belső VStage-dzsel. A 012 kifejezett névdöntése (EXPRESSION/EXPR, LITERAL konstans, VALUE név elvetése) dokumentálható, de a specializáció/átnevezés/felülírás jelentését nem döntjük el.
+2. A 007 FUN gyűjtőfogalmába a VOID PROCEDURE is tartozik; a 012 külön FUN/PFUN/PROC kategóriát javasol. A return-különbség nem szűnik meg, a név- és kategóriamodell OPEN.
+3. A 007 CALL vezérlési IN/OUT-tal rendelkezik. A 012 CALL-célpontmátrixa PStage-en FUN/PFUN/PROC, VStage-en PFUN, CStage-en BOOLEAN PFUN. A kontextusfüggő értékhívás portjait és argumentumátadását nem határozza meg a régi CONTROL-modell.
+
+**További nyitott kérdések:** LET/SET/ASSIGN megfeleltetése; deklaráció vagy újraértékadás; típuskonverzió és inference; VAR_REF/READ azonosság; lokális immutable nevek; scope/árnyékolás; import és láthatóság. CStage-ben numerikus PFUN eredménye közvetlen operandus lehet-e, vagy belső VStage szükséges? A 012 célpontmátrixa ezt nem rendezi.
+
+**Határ:** WHEN értékágainak huzalozása nem önmagában a CALL-argumentum CK Wire-tilalmának feloldása. A PFUN-részletek [DEC-011](#dec-011), a gesztusok [DEC-013](#dec-013) alatt maradnak nyitva. Nincs új szimbólumtábla, típusrendszer vagy célnyelvi döntés.
+
 <a id="dec-009"></a>
 ## DEC-009 – Web Workbench, szemantikus YAML és teljes snapshot
 
@@ -189,6 +222,12 @@ A tekercs két felületet javasol ugyanazon authoritative domain fölött. A ké
 
 **Határ:** nincs új webkliens, parser, layout engine, IR vagy generátor. A YAML nem második igazságforrás.
 
+### DOC2-kiegészítés – read-only kódnézet
+
+**Forrás:** [012 §8](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#8-k%C3%B3dn%C3%A9zetet-mutat%C3%B3-falit%C3%A1bl%C3%A1k) és [012 §9](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#9-nyitott-d%C3%B6nt%C3%A9sek); CS-042. A VStage falitáblája és a külső LET rövid összefoglalója származtatott, read-only nézetjavaslat. A tábla és a későbbi szemantikus YAML nem második igazságforrás.
+
+**NYITOTT:** hiányos/hibás kifejezés megjelenítése, rövidítés, determinisztikus formázás, frissítési lifecycle és a nézet visszavezetése domainazonosságra. A kódnézet előállítása nem azonos IR/codegen implementációval; Java/Kotlin szintaxis említése nem fogad el célnyelvi szemantikát. A YAML és teljes snapshot leképezése továbbra is nyitott, és nem változtatja meg a Program-SAVE szerződését.
+
 <a id="dec-010"></a>
 ## DEC-010 – Jogosultság, repositoryhatár és több nézet
 
@@ -207,6 +246,65 @@ A tekercs két felületet javasol ugyanazon authoritative domain fölött. A ké
 **Alternatívák:** először szűk owner + Stage-meghívás; vagy később általános ACL-réteg. Ez ütemezési választás, nem most meghozott hozzáférési szerződés.
 
 **Határ:** a production owner-only ellenőrzés nem kész meghívási rendszer; a Hall Selection WorkingCopy-ja nem önmagában külön szerkesztési branch.
+
+<a id="dec-011"></a>
+## DEC-011 – PFUN v1 ellenőrizhetősége
+
+**Állapot: elfogadott induló korlátozás dokumentálva; az ellenőrzési részletszerződés NYITOTT.**
+
+**Forrás:** [012 §2](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#2-blokkok-%C3%A9s-defin%C3%ADci%C3%B3k), [012 §5](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#5-fun-pfun-proc-%C3%A9s-call), [012 §6](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#6-pfun-v1-tisztas%C3%A1gi-szerz%C5%91d%C3%A9s), [012 §9](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#9-nyitott-d%C3%B6nt%C3%A9sek); STATUS CS-039–041/043/044.
+
+**Dokumentált ACCEPTED határ:** saját explicit paraméterek, literálok, tiszta műveletek és PFUN-hívások; külső mutable változó, objektummező/implicit this, globális állapot, rejtett idő/random és mellékhatás kizárva. PStage-változó aktuális értéke argumentumként átadható; ez nem külső változóhely elérése.
+
+**Rendezendő kérdések:**
+
+- Saját VStage törzs, nem-VOID eredmény és RESULT, paraméterazonosság/sorrend/default, típus és érték-/referenciaátadás pontos kapcsolata.
+- Engedélyezett immutable típuskör, objektumok mély immutabilitása és aliasolása; az egyszerű immutable értéktípusokra szűkítés jelenleg ajánlás.
+- Célnyelvfüggetlen tiszta műveletkatalógus, numerikus pontosság/túlcsordulás, hibák és részleges műveletek; az azonos bemenet/eredmény értelmezése hibánál és nemterminálásnál.
+- Importált PFUN tisztasági és típusszerződésének igazolása, verziója; osztálytagság, explicit receiver és implicit this tilalmának viszonya. Ismeretlen külső metódus nem automatikusan PFUN.
+- A rekurzív hívás a 012-ben javasolt irány; kölcsönös rekurzió, transzitív tisztaság, terminálás és futáskorlát külön szerződés. A hívási gráf ciklusa nem azonos a kifejezés-DAG tiltott ciklusával.
+
+**Alternatívák, választás nélkül:** elsőként szűk, ellenőrizhető művelet-/típuskészlet; vagy később szélesebb típuskör külön igazolási szabályokkal. Nem tervezünk teljes effect systemet.
+
+**Határ:** nincs PFUN-implementáció, importált metódusminősítés, interpreter vagy codegen. Ez a jegyzék nem fogadja el önállóan a §6-on túli részletszabályokat.
+
+<a id="dec-012"></a>
+## DEC-012 – WHEN és VALUE merge
+
+**Állapot: PROPOSED irány, részletszerződések NYITOTTAK.**
+
+**Forrás:** [012 §4](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#4-when-egy-cstage-k%C3%A9t-%C3%A9rt%C3%A9k%C3%A1g-a-sz%C3%BCl%C5%91-vstage-en), [012 §7](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#7-szemantikai-p%C3%A9lda), [012 §9](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#9-nyitott-d%C3%B6nt%C3%A9sek); STATUS CS-038; [DEC-005](#dec-005).
+
+**Javasolt modell:** WHEN értéket választ; saját CStage-je BOOLEAN feltételt ad, értékágai a szülő VStage-en vannak. Nem vezérlési IF és nem két új belső VStage. A VALUE-WAGO vizuális összefogás javaslat, nem kész gráfművelet.
+
+**Döntési kérdések:**
+
+- WHEN és VALUE-WAGO külön elem-e, és mi a RESULT-hoz vezető pontos topológia? Mely port milyen típust és kardinalitást fogad?
+- A két ág típuskompatibilitása és a WHEN eredménytípusa hogyan számítódik? Van-e konverzió?
+- Hogyan garantált a nem választott ág kiértékelésének elkerülése, ha a szülő gráfban mindkét ág jelen van? Mi a megosztott függőségek és hibás/hiányos ágak szabálya?
+- Milyen állapot szerkeszthető, menthető, valid és kiértékelhető? A példa CONCAT műveleti blokk vagy PFUN-hívás választását nem dönti el.
+
+**Alternatívák, választás nélkül:** külön WHEN és VALUE merge; vagy a kiválasztást a WHEN-be összefogó modell. Mindkettő külön szerződést igényel; a 012 nem végleges port-/wire-specifikáció.
+
+**Határ:** CONTROL merge, BOOLEAN kapukompozíció és VALUE merge külön marad. Nincs automatikus AND/OR vagy CONTROL-port újrahasználat, nincs WHEN-implementáció vagy lusta kiértékelési döntés.
+
+<a id="dec-013"></a>
+## DEC-013 – Editor és JGB-navigáció
+
+**Állapot: UX-, session- és navigációs határ NYITOTT.**
+
+**Forrás:** [001 §6](001%20-%20Post%20Fabric%20world%20ut%C3%A1ni%20eszm%C3%A9l%C3%A9s.md#6-navig%C3%A1ci%C3%B3--norton-commander-modell), [007 §3](007%20-%20portok%2C%20FUN%2C%20CALL%2C%20Interface.md#3-fun-%C3%A9s-call--k%C3%A9t-k%C3%BCl%C3%B6n-blokkfajta), [007 §4](007%20-%20portok%2C%20FUN%2C%20CALL%2C%20Interface.md#4-param%C3%A9terek-%C3%A9s-return-stage-ek), [008 §2](008%20-%20ProgramBlock%2C%20IF%20%C3%A9s%20WAGO.md#2-if-egyetlen-bels%C5%91-condition-stage), [012 §3](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#3-let-%C3%A9s-a-tiszta-jobb-oldal), [012 §5](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#5-fun-pfun-proc-%C3%A9s-call), [012 §8](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#8-k%C3%B3dn%C3%A9zetet-mutat%C3%B3-falit%C3%A1bl%C3%A1k), [012 §9](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md#9-nyitott-d%C3%B6nt%C3%A9sek); CK-08/B0 válaszbeli felderítés, nem külön repository-szerződés.
+
+A 001 jobb kattintás → dialog → ENTER útja, a 008 IF-editorból külön gombos CStage-belépése, a 012 LET-VStage JGB-je és szűrt CALL-célpontválasztója nem ad egységesen eldöntött gesztust. A jelen PROGRAM közvetlen Stage-navigációját nem írjuk felül hallgatólagosan.
+
+**Döntési kérdések:**
+
+- Mikor nyílik tulajdonságeditor, célpontválasztó vagy belső Stage? Közös ablak külön belépéssel, módosítógesztus vagy külön eszköz legyen-e?
+- Hogyan különül el a definíció paraméterlistája a CALL argumentumaitól; mi a REFERENCE, EXPRESSION és PARAMETER_LIST tényleges domainszerződése? Egy EXPRESSION nem válik automatikusan szabad szövegmezővé.
+- Hogyan őrződik meg a fókusz/visszatérési pont; mi történik folyamatban lévő edit, Stage-váltás, késő válasz és sémaeltérés esetén?
+- A read-only falitábla milyen információs/navigációs kapcsolatot ad az editorhoz, új igazságforrás nélkül?
+
+**Határ és ütemezési javaslat:** a START/STOP címke/leírás továbbra is első vertical-slice jelölt; nem jóváhagyott implementáció. A schema-driven editor nem tartalmaz automatikusan programnyelvi Expression-modellt vagy általános Stage-navigációt. A 012 beemelése nem bővíti a B1-et LET/EXPR/WHEN/PFUN-fejlesztéssé és nem ad implementációs GO-t.
 
 ## Döntések későbbi lezárásának módja
 

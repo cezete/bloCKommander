@@ -4,6 +4,8 @@ A koncepciótár a bloCKommander gondolkodástörténete: szándékok, dokument�
 
 Index és státuszfelmérés: **2026-11-09**, CK-08/DOC. Vizsgált forrásbaseline: **main / b98b995eff3a0702a0b5602e54695598e6ccfed1**, G3/B2 + DIAG2. A dokumentációs GO kizárólag e három kísérőfájl létrehozását engedélyezte; új funkcióra nem ad felhatalmazást.
 
+DOC2-integráció: **2026-11-10**, CK-08/DOC2-T8; ellenőrzött baseline: **main / 8ff8dcb8c8b4f1f80440b3c7466a7333a59b2f5f**. A projektgazdai GO a 012 változatlan tartalmú beemelésére és a három kísérőfájl frissítésére szól. Nem hagy jóvá új domain-szerződést vagy implementációt.
+
 ## Belépési pontok
 
 - [Állításonkénti státusz és implementációs bizonyíték](STATUS.md).
@@ -31,6 +33,14 @@ Az alábbi sorszámok a fájlnevek azonosítói, nem implementációs prioritás
 | 010 | [010 - A bloCKommander következő hagymarétegei.md](010%20-%20A%20bloCKommander%20k%C3%B6vetkez%C5%91%20hagymar%C3%A9tegei.md) | StoneCoke – a bloCKommander következő hagymarétegei | 2026-11-03 | Koncepció; néhány kifejezett döntéssel. System/Artifact, Explorer, PostgreSQL-alapú CK-repository, branch és COMMIT/PUBLISH. |
 | 011 | [011 - tekercs — Monty, Condition Stage és a barkácsolható logika.md](011%20-%20tekercs%20%E2%80%94%20Monty%2C%20Condition%20Stage%20%C3%A9s%20a%20bark%C3%A1csolhat%C3%B3%20logika.md) | 11. tekercs — Monty, Condition Stage és a barkácsolható logika | 2026-11-09 | Koncepció és döntésnapló, nem implementációs specifikáció. BOOLEAN CStage, Expression/kapuk/RESULT, crafting, többcellás kapuk, Logic Wire, web és YAML. |
 
+## Újabb koncepciók
+
+A 001–011 az eredeti, változatlan archívum. Az újabb tekercsek külön indexet kapnak; időrendjük önmagában nem írja felül a korábbi döntéseket.
+
+| ID | Dokumentum | Dátum | Jelleg és téma |
+|---|---|---|---|
+| 012 | [012 - CK – Értékkifejezések, VStage, CStage és PURE FUN.md](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md) | 2026-11-10 | Vegyes koncepcionális státusz: kifejezetten elfogadott elnevezési és PFUN-korlátozások, javaslatok és nyitott kérdések. PStage/VStage/CStage, LET, EXPR/LITERAL, WHEN, FUN/PFUN/PROC, CALL, VALUE merge és származtatott kódnézet. Nem implementációs specifikáció. |
+
 ## Státuszok értelmezése
 
 | Státusz | Jelentés |
@@ -39,6 +49,7 @@ Az alábbi sorszámok a fájlnevek azonosítói, nem implementációs prioritás
 | PARTIAL | Csak megnevezett rész igazolt; a hiányt külön felsoroljuk. |
 | ACCEPTED | A forrás kifejezetten döntésként/elfogadott elvként rögzíti; még nem implementált képesség és nem új implementációs GO. |
 | PROPOSED | Ötlet, alternatíva vagy nem véglegesített elképzelés. |
+| OPEN | Hiányzó részletszerződés vagy projektgazdai döntés; nem minden kapcsolódó alapelv eldöntetlen. |
 | SUPERSEDED | Konkrét későbbi döntés felülírta vagy lezárta a korábbi állítást; puszta időrend nem elegendő. |
 | CONFLICT | Összehangolatlan állítások vagy koncepció–implementáció eltérés. **Nem automatikusan implementációs hiba.** |
 | UNKNOWN | A rendelkezésre álló bizonyíték nem elég a megállapításhoz. |
@@ -50,7 +61,7 @@ A [STATUS](STATUS.md) minden állításnál külön megadja a koncepcionális fo
 1. **Alapfogalmak:** 001 → 003 → 009, majd a jelenlegi CK-06/A1-R architektúra. A 009 „még tervezett” állapotjelzése az A1 korabeli pillanatkép.
 2. **Mentés, munkaállapot, jogosultság:** 004 → 005 → 010; közben a STATUS mentési és WorkingCopy-sorai. A mai explicit Program-SAVE nem azonos a koncepcionális DRAFT-autosave/PUBLISH rendszerrel.
 3. **Programozási blokkok és vizuális szerződés:** 006 → 007 → 008. A FUN/CALL szétválasztás, FOR-portok és ProgramBlock-scope dokumentált koncepcionális irány; production készültségüket külön kell ellenőrizni.
-4. **Condition Stage:** 008 → 011. A CONTROL merge/WAGO és a BOOLEAN kapukompozíció **külön domainfogalom**, amíg kifejezett architekturális döntés nem kapcsolja össze őket.
+4. **Értékkifejezések és Condition Stage:** [007](007%20-%20portok%2C%20FUN%2C%20CALL%2C%20Interface.md) → [008](008%20-%20ProgramBlock%2C%20IF%20%C3%A9s%20WAGO.md) → [011](011%20-%20tekercs%20%E2%80%94%20Monty%2C%20Condition%20Stage%20%C3%A9s%20a%20bark%C3%A1csolhat%C3%B3%20logika.md) → [012](012%20-%20CK%20%E2%80%93%20%C3%89rt%C3%A9kkifejez%C3%A9sek%2C%20VStage%2C%20CStage%20%C3%A9s%20PURE%20FUN.md). A CONTROL merge/WAGO, BOOLEAN kapukompozíció és VALUE merge **három külön szemantikai fogalom**; közös mechanizmust nem feltételezünk. Az Expression/EXPR jelentése, a START/STOP és RESULT, valamint a FUN- és CALL-modellek eltérései a [nyitott döntésekben](OPEN-DECISIONS.md#dec-008) követhetők.
 5. **Távlati környezetek:** 002 assembly-ötletek, 010 System/repository, 011 Web Workbench/YAML/layout. Ezek nem soron következő implementációs feladatok.
 6. Konkrét fejlesztés előtt: aktuális baseline, releváns státuszállítás, [nyitott döntés](OPEN-DECISIONS.md), majd külön jóváhagyott domain/API/acceptance-szerződés.
 
@@ -60,6 +71,7 @@ A [STATUS](STATUS.md) minden állításnál külön megadja a koncepcionális fo
 - A koncepcióban szereplő FUN, CALL, branch, CStage vagy WAGO neve nem bizonyítja runtime regisztrációját.
 - Kód, automatizált teszt, korábbi futási jegyzőkönyv és Minecraft-megfigyelés külön bizonyítékfajták.
 - A fizikai Wire-törés ma explicit workspace-módosítási úton halad. A fizikai sérülésre vonatkozó koncepcióktól való eltérés [nyitott szemantikai kérdés](OPEN-DECISIONS.md#dec-001), nem ebben a dokumentációs műszakban megállapított bug.
+- A 012 nem helyettesíti az első paraméterszerkesztő-szeletet LET/EXPR/WHEN/PFUN-implementációval. A START/STOP címke/leírás jelölt marad; az editor, célpontválasztás és Stage-navigáció határa [nyitott](OPEN-DECISIONS.md#dec-013).
 - Nincs új döntés IR-ről, kódgenerálásról, branch-adatmodellről vagy a jelen SAVE átértelmezéséről.
 - A CK alkalmazáson belüli repository/branch fogalma különbözik e forrásrepository Git-verziókezelésétől.
 
