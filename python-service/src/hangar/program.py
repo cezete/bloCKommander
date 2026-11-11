@@ -4,10 +4,10 @@ from __future__ import annotations
 import threading
 import uuid
 from .diagnostics import emit as diagnostic
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from .graph.port_catalog import PORT_CATALOG_VERSION
 from .graph.snapshot import GRAPH_SNAPSHOT_VERSION, ProgramValidationStatus, StageSnapshot
@@ -223,6 +223,25 @@ class ProgramService:
                 root_stage_id=workspace.root_stage_id,requested_stage_id=normalized,
                 program_epoch=workspace.workspace_epoch,hierarchy_revision=workspace.hierarchy_revision)
             return self._load_stage_locked(workspace,normalized)
+
+    @contextmanager
+    def locked_stage(
+        self, program_id: str | uuid.UUID, stage_id: str | uuid.UUID,
+        player_uuid: str | uuid.UUID,
+    ) -> Iterator[tuple[ProgramWorkspace, StageWorkspace]]:
+        """Yield the shared aggregate and Stage under owner-checked Program → Stage locks.
+
+        Callers must return detached data and must not retain mutable workspaces.
+        This is the same lock order used by mutations and Program-SAVE.
+        """
+        workspace = self.load(program_id)
+        normalized = uuid.UUID(str(stage_id))
+        with workspace.lock:
+            self._active(workspace)
+            self._authorize(workspace, str(player_uuid))
+            stage = self._load_stage_locked(workspace, normalized)
+            with stage.lock:
+                yield workspace, stage
 
     def children(
         self,program_id:str|uuid.UUID,parent_stage_id:str|uuid.UUID
