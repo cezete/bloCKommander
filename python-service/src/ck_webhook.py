@@ -6,6 +6,8 @@ from hangar.builder import HallValidationError, control_elements, hall_client_vi
 from hangar.repository import HallConflict, HallForbidden, HallNotFound, HallRepository
 from hangar.service import HallService
 from hangar.program import ProgramService
+from hangar.block_editor import BlockEditorService
+from hangar.block_editor_http import BlockEditorHttpAdapter, EDITOR_ENDPOINTS
 from hangar.program_http import (
     PROGRAM_API_VERSION, ProgramHttpFailure, link_dto, parse_ensure_request,
     parse_save_request, parse_uuid, program_dto, receipt_dto, stage_dto,
@@ -55,6 +57,10 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
             raise RuntimeError("BLOCKCOMMANDER_ALLOW_LEGACY_CONTEXT must be 0 or 1")
         allow_legacy_context=legacy_setting=="1"
     contexts=TransportContextResolver(repo,programs,allow_legacy=allow_legacy_context)
+    editor=BlockEditorService(programs)
+    editor_http=BlockEditorHttpAdapter(editor,contexts,graph_auth)
+    editor_http.register(app)
+    app.extensions["blockcommander_block_editor"]=editor
 
     @app.before_request
     def diagnostic_request_start():
@@ -114,6 +120,10 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
     def validate_transport_context():
         endpoint=request.endpoint
         args=request.view_args or {}
+        if endpoint in EDITOR_ENDPOINTS:
+            # Editor has bounded, duplicate-safe parsing and mandatory explicit context.
+            # Do not feed its body through the legacy request.get_json path.
+            return editor_http.preflight()
         program_routes={"get_program","get_program_children","get_program_stage",
             "ensure_program_child","program_status","save_program"}
         stage_routes={"place_stage_block","update_stage_block","delete_stage_block",
