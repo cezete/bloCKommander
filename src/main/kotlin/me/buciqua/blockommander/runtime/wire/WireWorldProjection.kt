@@ -120,6 +120,13 @@ class WireWorldProjector {
         stage:WireStageContext, authoritativeRevision:Long, snapshot:GraphStateSnapshot, world:WireWorldAccess,
     ) = applyPrepared(prepare(stage,authoritativeRevision,snapshot,world),world)
 
+    /** Verify an unchanged physical projection without touching any WireCell. */
+    fun isCurrent(plan: WireProjectionPlan, stage: WireStageContext, world: WireWorldAccess): Boolean =
+        plan.issues.isEmpty() && plan.removals.isEmpty() && world.ckWirePositions(stage) == plan.desired.keys &&
+            plan.desired.all { (position, desired) ->
+                world.cell(position) == desired.visual.worldCell() && world.geometry(position) == desired.geometry
+            }
+
     fun applyPrepared(plan:WireProjectionPlan, world:WireWorldAccess):WireProjectionResult {
         if (plan.issues.isNotEmpty()) return WireProjectionResult(emptySet(),emptySet(),plan.issues)
 

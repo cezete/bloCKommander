@@ -532,6 +532,28 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
 
     fun navigationState(hallId:String):HallNavigationState?=navigation[hallId]
 
+    /** Metadata-only projection: keeps navigation/Hall/Graph lifecycle identities intact.
+     * Called on the server thread after physical preflight, never a domain mutation or SAVE.
+     */
+    @Synchronized
+    internal fun commitMetadataProjection(expected: Hall, fence: StageUpdateFence, target: Stage,
+        programDirty: Boolean, observed: me.buciqua.blockommander.runtime.graph.GraphProjectionObservation,
+        snapshot: me.buciqua.blockommander.runtime.graph.GraphStateSnapshot,
+    ): Hall? {
+        if (halls[expected.id] !== expected || !isStageFenceCurrent(fence) ||
+            navigation[expected.id]?.switchInProgress == true || target.id != fence.stageId ||
+            target.workspaceEpoch != fence.workspaceEpoch || !expected.permitsProjection(target) ||
+            snapshot.stageId.toString() != target.id || snapshot.workspaceEpoch != target.workspaceEpoch ||
+            snapshot.workingRevision != target.workingRevision || observed.view.key != fence.key ||
+            target.workingRevision < maxOf(expected.stage?.workingRevision ?: Long.MAX_VALUE, observed.view.stageRevision)) return null
+        val applied = graphProjections.applyObserved(observed, snapshot)
+        if (applied !is me.buciqua.blockommander.runtime.graph.GraphApplyResult.Applied) return null
+        val updated = expected.copy(stage = target, programDirty = programDirty)
+        invalidateProgramStatus(expected.id)
+        halls[expected.id] = updated
+        return updated
+    }
+
     fun isActiveStage(key: ProjectionKey, epoch:UUID):Boolean {
         if(!editingAllowed(key.hallId.toString())) return false
         val hall=halls[key.hallId.toString()] ?: return false

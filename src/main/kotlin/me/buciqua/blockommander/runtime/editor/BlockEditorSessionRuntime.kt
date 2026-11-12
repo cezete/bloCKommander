@@ -5,6 +5,7 @@ import me.buciqua.blockommander.runtime.graph.*
 import me.buciqua.blockommander.runtime.program.*
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerPlayer
+import me.buciqua.blockommander.runtime.wire.WireInteractionCoordinator
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
@@ -35,12 +36,34 @@ internal class BlockEditorSessionRuntime(
     transport: BlockEditorTransportAdapter = BlockEditorTransportAdapter(BlockEditorApiClient.fromEnvironment(), mainThread),
     private val programs: ProgramGateway = ProgramApiClient.fromEnvironment(),
     private val graph: GraphApiClient = GraphApiClient.fromEnvironment(),
+    private val wires: WireInteractionCoordinator? = null,
 ) {
     var onChanged: (EditorSessionSnapshot) -> Unit = {}
     private val sessions = BlockEditorSessionCoordinator(
-        ::recapture, transport::get, transport::apply, ::prepare, mainThread, { onChanged(it) },
+        ::recapture, transport::get, transport::apply, ::prepare, mainThread, ::deliver,
     )
     private val connections = EditorConnections { sessions.invalidate(it, "CONNECTION_CHANGED") }
+    private val committer by lazy { wires?.let { BlockEditorReconciliationCommitter(registry, it, ::checkThread) } }
+
+    private fun deliver(snapshot: EditorSessionSnapshot) {
+        if (snapshot.reconciliation == EditorReconciliationState.AVAILABLE_NOT_PROJECTED &&
+            snapshot.state != EditorSessionState.CLOSED && committer != null) {
+            commitReconciliation(snapshot.id)
+            return // projectionCompleted sends the newer snapshot; do not emit the older AVAILABLE afterwards.
+        }
+        onChanged(snapshot)
+    }
+
+    private fun commitReconciliation(id: EditorSessionId) {
+        sessions.withReconciliationContext(id) { capture, editor, frame ->
+            val player = server.playerList.getPlayer(id.player)
+            val result = if (player == null || !owns(player, id)) MetadataCommitResult(MetadataCommitStatus.STALE_SESSION, "CONNECTION_CHANGED")
+            else committer!!.commit(id, capture, editor, frame, MinecraftMetadataProjectionWorld(player.level())) {
+                owns(player, id) && sessions.isCurrentSession(id)
+            }
+            sessions.projectionCompleted(id, result)
+        }
+    }
 
     fun joined(player: ServerPlayer) { checkThread(); connections.join(player.uuid, player.connection) }
     fun disconnected(player: ServerPlayer) { checkThread(); connections.disconnect(player.uuid, player.connection) }
@@ -70,7 +93,11 @@ internal class BlockEditorSessionRuntime(
     }
     fun withReconciliation(player: ServerPlayer, id: EditorSessionId, consumer: (PreparedStageSwitch) -> Unit): Boolean {
         checkThread()
-        return owns(player, id) && sessions.withReconciliation(id, consumer)
+        return owns(player, id) && sessions.withReconciliation(id) { consumer(it.prepared) }
+    }
+    fun reconcileAgain(player: ServerPlayer, id: EditorSessionId): Boolean {
+        checkThread()
+        return owns(player, id) && sessions.reconcileAgain(id)
     }
     private fun checkThread() = check(server.isSameThread) { "Editor sessions require the server thread" }
     private fun live(player: ServerPlayer) = server.playerList.getPlayer(player.uuid) === player &&
@@ -100,18 +127,19 @@ internal class BlockEditorSessionRuntime(
         return capture(player, context.transport.hallId, context.instanceId, opened, request)
     }
 
-    private fun prepare(capture: EditorCapture, editor: EditorGetResult): CompletableFuture<PreparedStageSwitch> {
+    private fun prepare(capture: EditorCapture, editor: EditorGetResult): CompletableFuture<EditorMetadataFrame> {
         checkThread()
         val context = capture.context
         val hall = requireNotNull(registry.hall(context.transport.hallId.toString()))
         val player = requireNotNull(server.playerList.getPlayer(context.playerUuid))
+        val observed = requireNotNull(registry.graphProjections.observe(context.transport.projectionKey(context.stageId)))
         // Pure HTTP clients: unlike GraphTransportAdapter.reconcile, these do not touch projection stores.
         return programs.stage(context.transport, context.stageId).thenCombine(
             graph.getState(context.transport, context.stageId, ServerPlayerIdentity.from(player)),
         ) { stageResult, graphResult ->
             val stage = (stageResult as? ProgramHttpResult.Success)?.value ?: error("STAGE_GET_FAILED")
             val state = (graphResult as? GraphHttpResult.Success)?.response?.state ?: error("GRAPH_GET_FAILED")
-            BlockEditorReconciliation.assemble(hall, capture, editor, stage, state)
+            EditorMetadataFrame(BlockEditorReconciliation.assemble(hall, capture, editor, stage, state), hall, observed)
         }
     }
 }

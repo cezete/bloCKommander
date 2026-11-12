@@ -10,12 +10,13 @@ internal data class EditorLifecycle(
     val connection: Long, val hall: Long, val projection: Long, val navigation: Long?, val epoch: UUID,
 )
 internal data class EditorCapture(val context: BlockEditorRequestContext, val lifecycle: EditorLifecycle)
-internal enum class EditorReconciliationState { NONE, PENDING, AVAILABLE_NOT_PROJECTED, FAILED }
+internal enum class EditorReconciliationState { NONE, PENDING, AVAILABLE_NOT_PROJECTED, COMMITTED, FAILED }
 internal data class EditorSessionSnapshot(
     val id: EditorSessionId, val state: EditorSessionState, val target: BlockEditorRequestContext,
     val opened: EditorGetResult?, val accepted: EditorApplyResult?, val recovery: EditorGetResult?,
     val failure: BlockEditorResult<Nothing>?, val recoveryFailure: BlockEditorResult<Nothing>?,
     val recoveryPending: Boolean, val reconciliation: EditorReconciliationState, val closedReason: String?,
+    val projectionResult: MetadataCommitResult? = null,
 ) {
     val canApply: Boolean get() = state in setOf(EditorSessionState.EDITING, EditorSessionState.VALIDATION_ERROR) &&
         opened?.permissions?.let { it.read && it.apply } == true
@@ -44,8 +45,9 @@ internal class BlockEditorSessionCoordinator<R>(
         var reconciliation = EditorReconciliationState.NONE
         var frame: R? = null
         var closedReason: String? = null
+        var projectionResult: MetadataCommitResult? = null
         fun snapshot() = EditorSessionSnapshot(id, state, capture.context, opened, accepted, recovery,
-            failure, recoveryFailure, recoveryPending, reconciliation, closedReason)
+            failure, recoveryFailure, recoveryPending, reconciliation, closedReason, projectionResult)
     }
     private val sessions = mutableMapOf<UUID, Session>()
     private val generations = mutableMapOf<UUID, Long>()
@@ -129,11 +131,41 @@ internal class BlockEditorSessionCoordinator<R>(
 
     /** Synchronous, server-thread handoff only. A consumer must not retain R for an unfenced later write. */
     fun withReconciliation(id: EditorSessionId, consumer: (R) -> Unit): Boolean {
+        return withReconciliationContext(id) { _, _, frame -> consumer(frame) }
+    }
+
+    fun isCurrentSession(id: EditorSessionId): Boolean = sessions[id.player]?.takeIf { it.id == id }?.let { current(it) } == true
+
+    fun withReconciliationContext(id: EditorSessionId, consumer: (EditorCapture, EditorGetResult, R) -> Unit): Boolean {
         val session = sessions[id.player]?.takeIf { it.id == id } ?: return false
         if (!current(session)) return false
         val frame = session.frame ?: return false
+        val view = session.recovery ?: session.accepted?.editor ?: return false
         session.frame = null // one handoff per prepared result
-        consumer(frame)
+        consumer(session.capture, view, frame)
+        return true
+    }
+
+    fun projectionCompleted(id: EditorSessionId, result: MetadataCommitResult) {
+        val session = sessions[id.player]?.takeIf { it.id == id } ?: return
+        if (!current(session)) return
+        session.projectionResult = result
+        session.reconciliation = if (result.status == MetadataCommitStatus.COMMITTED)
+            EditorReconciliationState.COMMITTED else EditorReconciliationState.FAILED
+        notify(session)
+    }
+
+    /** Explicit read-only recovery. Never resends APPLY or changes its original GET/CAS basis. */
+    fun reconcileAgain(id: EditorSessionId): Boolean {
+        val session = sessions[id.player]?.takeIf { it.id == id } ?: return false
+        if (!current(session) || session.state !in setOf(EditorSessionState.ACCEPTED, EditorSessionState.UNKNOWN) ||
+            session.recoveryPending || session.reconciliation == EditorReconciliationState.PENDING) return false
+        session.frame = null
+        session.projectionResult = null
+        session.reconciliation = EditorReconciliationState.NONE
+        session.recovery = null
+        session.recoveryFailure = null
+        read(session, recovery = true)
         return true
     }
 
@@ -155,7 +187,10 @@ internal class BlockEditorSessionCoordinator<R>(
                     if (recovery) prepare(session, result.value)
                 }
                 else -> {
-                    if (recovery) session.recoveryFailure = failure(result)
+                    if (recovery) {
+                        session.recoveryFailure = failure(result)
+                        session.reconciliation = EditorReconciliationState.FAILED
+                    }
                     else {
                         session.failure = failure(result)
                         session.state = EditorSessionState.CLOSED

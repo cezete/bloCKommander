@@ -44,8 +44,6 @@ class BlockCommanderMod : ModInitializer {
             hallSelection=hallSelection::get)
         ServerLifecycleEvents.SERVER_STARTED.register { server ->
             val mainThread = Executor(server::execute)
-            editorSessions = BlockEditorSessionRuntime(server, registry, mainThread)
-            server.playerList.players.forEach { editorSessions?.joined(it) }
             val transport = GraphTransportAdapter(
                 GraphApiClient.fromEnvironment(), registry.graphProjections, Executor(server::execute),
             )
@@ -54,6 +52,8 @@ class BlockCommanderMod : ModInitializer {
                 registry.graphProjections, transport, WireWorldProjector(), mainThread,
                 projectionFence = registry::permitsWireProjection,
             ))
+            editorSessions = BlockEditorSessionRuntime(server, registry, mainThread, wires = wireCoordinator.get())
+            server.playerList.players.forEach { editorSessions?.joined(it) }
             stageNavigation.set(StageNavigationCoordinator(
                 registry, ProgramApiClient.fromEnvironment(), transport, mainThread,
             ))

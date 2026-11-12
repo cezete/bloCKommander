@@ -34,6 +34,9 @@ sealed interface GraphApplyResult {
     data class Rejected(val code: String, val view: StageGraphView) : GraphApplyResult
 }
 
+/** Read-only fence: detects requests started after a metadata GET, even if their result is identical. */
+internal data class GraphProjectionObservation(val view: StageGraphView, val requestGeneration: Long, val pending: Boolean)
+
 class GraphProjectionStore {
     private data class Slot(
         var stageEpoch: UUID,
@@ -43,6 +46,7 @@ class GraphProjectionStore {
         var status: GraphSyncStatus,
         var snapshot: GraphStateSnapshot?,
         var problem: String?,
+        val pending: MutableSet<Long> = mutableSetOf(),
     )
 
     private val slots = ConcurrentHashMap<ProjectionKey, Slot>()
@@ -60,6 +64,7 @@ class GraphProjectionStore {
             current.stageRevision = revision
             current.lifecycleGeneration = nextLifecycle()
             current.requestGeneration++
+            current.pending.clear()
             current.status = GraphSyncStatus.NOT_REQUESTED
             current.snapshot = null
             current.problem = null
@@ -87,6 +92,7 @@ class GraphProjectionStore {
             current.stageRevision = revision
             current.lifecycleGeneration = nextLifecycle()
             current.requestGeneration++
+            current.pending.clear()
             current.status = GraphSyncStatus.NOT_REQUESTED
             current.snapshot = null
             current.problem = null
@@ -105,6 +111,7 @@ class GraphProjectionStore {
         if (current.stageEpoch != epoch) {
             current.lifecycleGeneration = nextLifecycle()
             current.requestGeneration++
+            current.pending.clear()
             current.status = GraphSyncStatus.CONFLICT
             current.problem = "LEGACY_EPOCH_CONFLICT"
             return@synchronized view(key, current)
@@ -115,6 +122,7 @@ class GraphProjectionStore {
         current.stageRevision = revision
         current.lifecycleGeneration = nextLifecycle()
         current.requestGeneration++
+        current.pending.clear()
         current.status = GraphSyncStatus.STALE
         current.problem = "LEGACY_STAGE_UPDATED"
         view(key, current)
@@ -127,6 +135,7 @@ class GraphProjectionStore {
     fun begin(key: ProjectionKey, kind: GraphRequestKind): GraphRequestToken = synchronized(slots) {
         val slot = slots[key] ?: throw IllegalStateException("Ismeretlen Stage graph kéréshez: $key")
         slot.requestGeneration++
+        slot.pending.add(slot.requestGeneration)
         if (kind == GraphRequestKind.RECONCILIATION) slot.status = GraphSyncStatus.RECONCILING
         slot.problem = null
         GraphRequestToken(key, slot.lifecycleGeneration, slot.requestGeneration, kind)
@@ -158,6 +167,7 @@ class GraphProjectionStore {
         val slot = slots[token.key] ?: return@synchronized GraphApplyResult.Rejected(
             "UNKNOWN_STAGE", missingView(token.key),
         ).let { result(it,"UNKNOWN_STAGE") }
+        if (token.lifecycleGeneration == slot.lifecycleGeneration) slot.pending.remove(token.requestGeneration)
         if (token.lifecycleGeneration != slot.lifecycleGeneration || token.requestGeneration != slot.requestGeneration) {
             return@synchronized result(GraphApplyResult.IgnoredStaleRequest(view(token.key, slot)),"STALE_REQUEST_TOKEN")
         }
@@ -185,6 +195,7 @@ class GraphProjectionStore {
 
     fun fail(token: GraphRequestToken, code: String, uncertain: Boolean): StageGraphView = synchronized(slots) {
         val slot = slots[token.key] ?: return@synchronized missingView(token.key)
+        if (token.lifecycleGeneration == slot.lifecycleGeneration) slot.pending.remove(token.requestGeneration)
         if (token.lifecycleGeneration == slot.lifecycleGeneration && token.requestGeneration == slot.requestGeneration) {
             slot.status = if (uncertain) GraphSyncStatus.STALE else GraphSyncStatus.ERROR
             slot.problem = code
@@ -193,6 +204,20 @@ class GraphProjectionStore {
     }
 
     fun view(key: ProjectionKey): StageGraphView? = synchronized(slots) { slots[key]?.let { view(key, it) } }
+
+    internal fun observe(key: ProjectionKey): GraphProjectionObservation? = synchronized(slots) {
+        slots[key]?.let { GraphProjectionObservation(view(key, it), it.requestGeneration, it.pending.isNotEmpty()) }
+    }
+
+    internal fun isObservationCurrent(expected: GraphProjectionObservation): Boolean = synchronized(slots) {
+        observe(expected.view.key) == expected
+    }
+
+    /** Reuses ordinary apply validation and supersedes older callbacks without a lifecycle/navigation change. */
+    internal fun applyObserved(expected: GraphProjectionObservation, snapshot: GraphStateSnapshot): GraphApplyResult? = synchronized(slots) {
+        if (expected.pending || !isObservationCurrent(expected)) return@synchronized null
+        apply(begin(expected.view.key, GraphRequestKind.RECONCILIATION), snapshot)
+    }
 
     fun removeHall(hallId: UUID) = synchronized(slots) {
         slots.keys.removeIf { it.hallId == hallId }

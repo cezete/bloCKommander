@@ -38,6 +38,19 @@ class WireInteractionCoordinator(
     fun worldStatus(key: ProjectionKey): WireWorldStatus = worldStates[key]
         ?.takeIf { projections.isLifecycleCurrent(key,it.first) }?.second ?: WireWorldStatus.NEEDS_REPAIR
 
+    /** Metadata reconciliation may certify an unchanged Wire world, never infer it from HTTP success. */
+    internal fun acceptVerifiedProjection(stage: WireStageContext, snapshot: GraphStateSnapshot, world: WireWorldAccess): Boolean {
+        if (!validLifecycle(stage) || current(stage)?.snapshot != snapshot) return false
+        if (!projector.isCurrent(projector.prepare(stage, snapshot.workingRevision, snapshot, world), stage, world)) return false
+        worldStates[stage.key] = stage.lifecycleGeneration to WireWorldStatus.SYNCED
+        return true
+    }
+
+    internal fun markProjectionNeedsRepair(stage: WireStageContext) {
+        if (projections.isLifecycleCurrent(stage.key, stage.lifecycleGeneration))
+            worldStates[stage.key] = stage.lifecycleGeneration to WireWorldStatus.NEEDS_REPAIR
+    }
+
     fun place(
         stage: WireStageContext,
         player: ServerPlayerIdentity,
