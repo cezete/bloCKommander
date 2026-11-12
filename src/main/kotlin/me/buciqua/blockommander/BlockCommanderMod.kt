@@ -15,6 +15,10 @@ import me.buciqua.blockommander.runtime.wire.WireInteractionCoordinator
 import me.buciqua.blockommander.runtime.wire.WireWorldProjector
 import me.buciqua.blockommander.network.Networking
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents
+import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents
+import net.fabricmc.fabric.api.entity.event.v1.ServerEntityLevelChangeEvents
+import me.buciqua.blockommander.runtime.editor.BlockEditorSessionRuntime
 import org.slf4j.LoggerFactory
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicReference
@@ -24,6 +28,8 @@ class BlockCommanderMod : ModInitializer {
         const val MOD_ID = "blockommander"
         val LOGGER = LoggerFactory.getLogger(MOD_ID)
         @Volatile var graphTransport: GraphTransportAdapter? = null
+            private set
+        @Volatile internal var editorSessions: BlockEditorSessionRuntime? = null
             private set
         fun id(path: String): Identifier = Identifier.fromNamespaceAndPath(MOD_ID, path)
     }
@@ -38,6 +44,8 @@ class BlockCommanderMod : ModInitializer {
             hallSelection=hallSelection::get)
         ServerLifecycleEvents.SERVER_STARTED.register { server ->
             val mainThread = Executor(server::execute)
+            editorSessions = BlockEditorSessionRuntime(server, registry, mainThread)
+            server.playerList.players.forEach { editorSessions?.joined(it) }
             val transport = GraphTransportAdapter(
                 GraphApiClient.fromEnvironment(), registry.graphProjections, Executor(server::execute),
             )
@@ -53,11 +61,17 @@ class BlockCommanderMod : ModInitializer {
                 stageNavigation.get()!!,mainThread))
         }
         ServerLifecycleEvents.SERVER_STOPPED.register {
+            editorSessions = null
             wireCoordinator.set(null)
             stageNavigation.set(null)
             hallSelection.set(null)
             graphTransport = null
         }
+        ServerLifecycleEvents.SERVER_STOPPING.register { editorSessions?.shutdown() }
+        ServerPlayConnectionEvents.JOIN.register { handler, _, _ -> editorSessions?.joined(handler.player) }
+        ServerPlayConnectionEvents.DISCONNECT.register { handler, _ -> editorSessions?.disconnected(handler.player) }
+        ServerTickEvents.END_SERVER_TICK.register { editorSessions?.tick() }
+        ServerEntityLevelChangeEvents.AFTER_PLAYER_CHANGE_LEVEL.register { player, _, _ -> editorSessions?.worldChanged(player) }
         Networking.register(interactions)
         interactions.register()
         LOGGER.info("bloCKommander Fabric initialized")
