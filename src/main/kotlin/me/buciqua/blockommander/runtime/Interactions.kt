@@ -18,6 +18,8 @@ import me.buciqua.blockommander.runtime.program.ProgramApiClient
 import me.buciqua.blockommander.runtime.program.ProgramGateway
 import me.buciqua.blockommander.runtime.program.ProgramHttpResult
 import me.buciqua.blockommander.runtime.wire.*
+import me.buciqua.blockommander.runtime.editor.resolveBlockEditorTarget
+import me.buciqua.blockommander.runtime.editor.permitsLegacyBlockMetadata
 import net.fabricmc.fabric.api.event.player.AttackBlockCallback
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents
 import net.fabricmc.fabric.api.event.player.UseBlockCallback
@@ -125,6 +127,17 @@ class Interactions(
                     enterProgramBlock(serverPlayer, serverLevel, hall, block)
                     return@register InteractionResult.SUCCESS
                 }
+                if (block.type in setOf("START", "STOP")) {
+                    val target = resolveBlockEditorTarget(hall, serverPlayer.uuid, WorldIdentity.uuid(serverLevel), hit.blockPos,
+                        ModContent.typeOf(serverLevel.getBlockState(hit.blockPos).block), registry.navigationState(hall.id)?.switchInProgress == true,
+                        registry.editingAllowed(hall.id)) ?: return@register InteractionResult.SUCCESS
+                    if (!ServerPlayNetworking.canSend(serverPlayer, me.buciqua.blockommander.network.EditorStatePayload.TYPE)) {
+                        serverPlayer.sendSystemMessage(Component.literal("§c[CK] A Block Editorhoz azonos verziójú kliensmod szükséges."))
+                    } else if (BlockCommanderMod.editorSessions?.open(serverPlayer, UUID.fromString(hall.id), UUID.fromString(target.instanceId)) == null) {
+                        serverPlayer.sendSystemMessage(Component.literal("§c[CK] Az editor most nem nyitható meg ebben a csarnokban."))
+                    }
+                    return@register InteractionResult.SUCCESS
+                }
                 ServerPlayNetworking.send(serverPlayer, OpenFormPayload(
                     "block", "${hall.id}|${stage.id}|${block.instanceId}", block.label, block.description,
                 ))
@@ -192,6 +205,9 @@ class Interactions(
                 }
                 val body = playerPayload(player, level).apply { addProperty("label", payload.value1); addProperty("description", payload.value2) }
                 val hall = registry.hall(ids[0]) ?: return
+                val target = hall.stage?.blocks?.singleOrNull { it.instanceId == ids[2] } ?: return
+                // START/STOP have one writer path: the authoritative editor session, including forged old form packets.
+                if (!permitsLegacyBlockMetadata(target)) return
                 val fence = registry.stageUpdateFenceForHall(hall.id) ?: return
                 if (fence.stageId != ids[1]) return
                 api.post(player, "/api/v1/stages/${ids[1]}/blocks/${ids[2]}", body,

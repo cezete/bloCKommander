@@ -91,6 +91,12 @@ internal class BlockEditorSessionRuntime(
         checkThread()
         if (owns(player, id)) sessions.close(id, "EXPLICIT_CLOSE")
     }
+    fun reload(player: ServerPlayer, id: EditorSessionId): Boolean {
+        checkThread()
+        val snapshot = snapshot(player, id) ?: return false
+        if (snapshot.state == EditorSessionState.CLOSED || snapshot.state in setOf(EditorSessionState.PENDING, EditorSessionState.OPENING)) return false
+        return open(player, snapshot.target.transport.hallId, snapshot.target.instanceId) != null
+    }
     fun withReconciliation(player: ServerPlayer, id: EditorSessionId, consumer: (PreparedStageSwitch) -> Unit): Boolean {
         checkThread()
         return owns(player, id) && sessions.withReconciliation(id) { consumer(it.prepared) }

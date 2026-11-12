@@ -19,6 +19,9 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents
 import net.fabricmc.fabric.api.entity.event.v1.ServerEntityLevelChangeEvents
 import me.buciqua.blockommander.runtime.editor.BlockEditorSessionRuntime
+import me.buciqua.blockommander.runtime.editor.EditorStateMapper
+import me.buciqua.blockommander.network.EditorStatePayload
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking
 import org.slf4j.LoggerFactory
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicReference
@@ -53,6 +56,16 @@ class BlockCommanderMod : ModInitializer {
                 projectionFence = registry::permitsWireProjection,
             ))
             editorSessions = BlockEditorSessionRuntime(server, registry, mainThread, wires = wireCoordinator.get())
+            val editorSequences = mutableMapOf<java.util.UUID, Long>()
+            editorSessions!!.onChanged = { snapshot ->
+                val player = server.playerList.getPlayer(snapshot.id.player)
+                if (player != null && editorSessions?.snapshot(player, snapshot.id) != null &&
+                    ServerPlayNetworking.canSend(player, EditorStatePayload.TYPE)) {
+                    val sequence = Math.addExact(editorSequences[player.uuid] ?: 0L, 1L)
+                    editorSequences[player.uuid] = sequence
+                    ServerPlayNetworking.send(player, EditorStatePayload(EditorStateMapper.map(snapshot, sequence)))
+                }
+            }
             server.playerList.players.forEach { editorSessions?.joined(it) }
             stageNavigation.set(StageNavigationCoordinator(
                 registry, ProgramApiClient.fromEnvironment(), transport, mainThread,
