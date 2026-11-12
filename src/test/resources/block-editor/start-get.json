@@ -1,0 +1,96 @@
+{
+  "api_version": "ck-block-editor-v1",
+  "permissions": {
+    "apply": true,
+    "read": true,
+    "reason_codes": []
+  },
+  "schema": {
+    "block_type": "START",
+    "fields": [
+      {
+        "constraints": {
+          "length_unit": "UNICODE_CODE_POINT",
+          "max_length": 32,
+          "min_length": 1
+        },
+        "default": {
+          "kind": "NONE"
+        },
+        "editable": true,
+        "key": "label",
+        "normalization": {
+          "empty_to_null": false,
+          "trim": "PYTHON_STRIP_V1",
+          "unicode_normalization": "NONE"
+        },
+        "nullable": false,
+        "presentation": {
+          "label": "Felirat",
+          "order": 10
+        },
+        "readable": true,
+        "required": true,
+        "type": "STRING"
+      },
+      {
+        "constraints": {
+          "length_unit": "UNICODE_CODE_POINT",
+          "max_length": 256,
+          "min_length": 0
+        },
+        "default": {
+          "kind": "NONE"
+        },
+        "editable": true,
+        "key": "description",
+        "normalization": {
+          "empty_to_null": true,
+          "trim": "PYTHON_STRIP_V1",
+          "unicode_normalization": "NONE"
+        },
+        "nullable": true,
+        "presentation": {
+          "label": "Leírás",
+          "order": 20
+        },
+        "readable": true,
+        "required": false,
+        "type": "STRING"
+      }
+    ],
+    "schema_id": "ck.block.START.metadata",
+    "schema_version": 1
+  },
+  "schema_ref": {
+    "schema_id": "ck.block.START.metadata",
+    "schema_version": 1
+  },
+  "status": "ok",
+  "target": {
+    "block_type": "START",
+    "instance_id": "00000000-0000-0000-0000-000000005002",
+    "program_id": "00000000-0000-0000-0000-000000009002",
+    "stage_id": "00000000-0000-0000-0000-000000009003"
+  },
+  "transport_context": {
+    "content_scope": "SHARED_PROGRAM",
+    "hall_id": "00000000-0000-0000-0000-000000009004",
+    "mode": "explicit",
+    "program_id": "00000000-0000-0000-0000-000000009002",
+    "stage_id": "00000000-0000-0000-0000-000000009003",
+    "working_copy_id": "ce4476d1-03a5-5610-9c74-3ad91ac25954"
+  },
+  "values": {
+    "description": "Indulás description",
+    "label": "Indulás"
+  },
+  "version_context": {
+    "program_dirty": false,
+    "program_saved_version": 5,
+    "stage_dirty": false,
+    "stage_saved_version": 3,
+    "stage_workspace_epoch": "00000000-0000-0000-0000-0000000002bc",
+    "working_revision": 12
+  }
+}
