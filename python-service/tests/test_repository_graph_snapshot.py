@@ -281,6 +281,8 @@ class LoadCursor:
 
     def execute(self, sql, _params=None):
         normalized = " ".join(sql.split())
+        if normalized.startswith("SET TRANSACTION"):
+            return
         if normalized.startswith("SELECT s.*"):
             self.current = [self.stage]
         elif "FROM blockcommander.stage_blocks" in normalized:
@@ -295,6 +297,8 @@ class LoadCursor:
             self.current = self.row_sets[4]
         elif "FROM blockcommander.wire_channels" in normalized:
             self.current = self.row_sets[5]
+        elif "FROM blockcommander.stage_declarations" in normalized:
+            self.current = self.row_sets[6] if len(self.row_sets) > 6 else []
         else:
             raise AssertionError(normalized)
 
@@ -447,7 +451,7 @@ class RepositoryGraphSnapshotUnitTest(unittest.TestCase):
         self.assertTrue(connection.committed)
         update = next(call for call in cursor.calls if call[0].startswith("UPDATE blockcommander.stages"))
         self.assertEqual(update[1][0], 5)
-        self.assertEqual(update[1][1:3], (1, PORT_CATALOG_VERSION))
+        self.assertEqual(update[1][1:4], (1, 0, PORT_CATALOG_VERSION))
 
     def test_stale_saved_version_stops_before_snapshot_delete(self):
         cursor = RecordingCursor((5, 1))

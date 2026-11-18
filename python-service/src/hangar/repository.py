@@ -9,6 +9,8 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from .working_copy import WorkingCopyContext
 from .selection import SelectionFailure
+from .declarations import (DECLARATION_SCHEMA_VERSION, ScopeRef,
+                           VariableDeclaration, VariableType, Mutability)
 
 from .graph.model import (
     CardinalDirection, EdgeKind, EdgeRoute, GraphEdge, GridPos, PortRef,
@@ -54,6 +56,7 @@ class SnapshotRows:
     steps: tuple[tuple[Any,...],...]
     wire_cells: tuple[tuple[Any,...],...]
     wire_channels: tuple[tuple[Any,...],...]
+    declarations: tuple[tuple[Any,...],...] = ()
 
 
 @dataclass(frozen=True)
@@ -212,7 +215,9 @@ def _snapshot_rows(snapshot:StageSnapshot)->SnapshotRows:
             )
             for item in cell.channels
         )
-    return SnapshotRows(blocks,edges,routes,steps,tuple(cells),tuple(channels))
+    declarations=tuple((str(d.declaration_id),str(stage_id),d.name,d.variable_type.value,d.mutability.value)
+                       for d in snapshot.declarations)
+    return SnapshotRows(blocks,edges,routes,steps,tuple(cells),tuple(channels),declarations)
 
 
 def _snapshot_from_rows(
@@ -223,8 +228,21 @@ def _snapshot_from_rows(
     step_rows:list[Mapping[str,Any]],
     cell_rows:list[Mapping[str,Any]],
     channel_rows:list[Mapping[str,Any]],
+    declaration_rows: list[Mapping[str,Any]] | None = None,
 )->StageSnapshot:
     stage_id=uuid.UUID(str(stage["stage_id"]))
+    declaration_version=stage.get("declaration_schema_version",0)
+    if type(declaration_version) is not int or declaration_version not in (0,DECLARATION_SCHEMA_VERSION):
+        raise SnapshotCompatibilityError("Unknown declaration snapshot version")
+    if declaration_version and declaration_rows is None:
+        raise SnapshotStorageError("Declaration-aware snapshot requires explicit declaration rows")
+    if declaration_rows and declaration_version == 0:
+        raise SnapshotStorageError("Legacy declaration format contains declarations")
+    try:
+        declarations=tuple(VariableDeclaration(uuid.UUID(str(d["declaration_id"])), ScopeRef(stage_id),
+            d["name"],VariableType(d["type_key"]),Mutability(d["mutability"])) for d in (declaration_rows or ()))
+    except (ValueError,KeyError,TypeError) as exc:
+        raise SnapshotStorageError("Invalid stored declaration") from exc
     blocks=tuple(
         StageBlockSnapshot(
             uuid.UUID(str(row["instance_id"])),str(row["type_key"]),
@@ -296,6 +314,7 @@ def _snapshot_from_rows(
     return StageSnapshot(
         stage_id,blocks,edges,tuple(routes),tuple(cells),0,None,None,
         ProgramValidationStatus.NOT_CHECKED,stage.get("port_catalog_version"),
+        declarations,declaration_version,
     )
 
 
@@ -303,11 +322,15 @@ def _replace_stage_snapshot_rows(
     cur,stage_id:str,current_version:int,snapshot:StageSnapshot,rows:SnapshotRows
 )->int:
     """Replace one locked Stage snapshot using the caller's transaction/cursor."""
+    cur.execute("SELECT set_config('blockcommander.declaration_writer','1',true)")
     for table in (
         "route_steps","edge_routes","graph_edges","wire_channels",
-        "wire_cells","stage_blocks",
+        "wire_cells","stage_blocks","stage_declarations",
     ):
         cur.execute(f"DELETE FROM blockcommander.{table} WHERE stage_id=%s",(stage_id,))
+    for values in rows.declarations:
+        cur.execute("""INSERT INTO blockcommander.stage_declarations
+            (declaration_id,stage_id,name,type_key,mutability) VALUES(%s,%s,%s,%s,%s)""",values)
     for values in rows.blocks:
         cur.execute("""INSERT INTO blockcommander.stage_blocks
             (instance_id,stage_id,type_key,rel_x,rel_y,rel_z,
@@ -338,9 +361,10 @@ def _replace_stage_snapshot_rows(
     new_version=int(current_version)+1
     cur.execute("""UPDATE blockcommander.stages
         SET saved_version=%s,graph_snapshot_version=%s,
+            declaration_schema_version=%s,
             port_catalog_version=%s,updated_at=now()
         WHERE stage_id=%s""",
-        (new_version,GRAPH_SNAPSHOT_VERSION,PORT_CATALOG_VERSION,stage_id))
+        (new_version,GRAPH_SNAPSHOT_VERSION,snapshot.declaration_schema_version,PORT_CATALOG_VERSION,stage_id))
     return new_version
 
 
@@ -659,6 +683,8 @@ class HallRepository:
     def load_full_stage_snapshot(self,stage_id:str)->LoadedStageSnapshot:
         """Load the complete persisted Stage without restoring process-local state."""
         with self._connect() as conn,conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Header and content tables must come from one committed snapshot.
+            cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             cur.execute("""SELECT s.*,p.owner_uuid,h.world_uuid,h.min_x hall_min_x,
                     h.min_y hall_min_y,h.min_z hall_min_z
                 FROM blockcommander.stages s
@@ -699,6 +725,9 @@ class HallRepository:
                     CASE channel WHEN 'SINGLE' THEN 0 WHEN 'NS' THEN 1 ELSE 2 END""",
                 (stage_id,))
             channels=[self._row(row) for row in cur.fetchall()]
+            cur.execute("""SELECT declaration_id,name,type_key,mutability
+                FROM blockcommander.stage_declarations WHERE stage_id=%s ORDER BY declaration_id""",(stage_id,))
+            declarations=[self._row(row) for row in cur.fetchall()]
 
         graph_version=int(stage.get("graph_snapshot_version",0))
         stored_catalog=stage.get("port_catalog_version")
@@ -716,7 +745,7 @@ class HallRepository:
                 )
         elif stored_catalog!=PORT_CATALOG_VERSION:
             issues.append(f"Unsupported port catalog version: {stored_catalog!r}")
-        snapshot=_snapshot_from_rows(stage,blocks,edges,routes,steps,cells,channels)
+        snapshot=_snapshot_from_rows(stage,blocks,edges,routes,steps,cells,channels,declarations)
         return LoadedStageSnapshot(
             MappingProxyType(dict(stage)),snapshot,int(stage["saved_version"]),
             graph_version,stored_catalog,not issues,tuple(issues),
@@ -923,7 +952,7 @@ class HallRepository:
                 raise ProgramSavePlanError("Program root Stage mismatch")
 
             cur.execute("""SELECT stage_id,stage_kind,saved_version,
-                    graph_snapshot_version
+                    graph_snapshot_version,declaration_schema_version
                 FROM blockcommander.stages
                 WHERE program_id=%s ORDER BY stage_id FOR UPDATE""",(program_id,))
             persisted_rows=cur.fetchall()
@@ -938,6 +967,11 @@ class HallRepository:
                     "The save plan must contain every persisted Program Stage exactly once"
                 )
             for stage_id in sorted(existing_plan_ids,key=str):
+                declaration_version=int(persisted[stage_id]["declaration_schema_version"])
+                snapshot=stage_plans[stage_id].snapshot
+                if declaration_version not in (0,DECLARATION_SCHEMA_VERSION) or (
+                        snapshot is not None and snapshot.declaration_schema_version < declaration_version):
+                    raise SnapshotCompatibilityError("Unknown declaration format or snapshot downgrade")
                 expected=stage_plans[stage_id].expected_saved_version
                 current=int(persisted[stage_id]["saved_version"])
                 if current!=expected:

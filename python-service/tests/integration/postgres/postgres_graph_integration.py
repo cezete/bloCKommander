@@ -138,6 +138,32 @@ def repository() -> HallRepository:
     return HallRepository(connect=connect)
 
 
+def save_pre_declaration_snapshot(snapshot):
+    """Historical migration fixture: seed pre-011 rows without a current writer."""
+    from hangar.repository import _snapshot_rows
+    assert_database_identity()
+    if snapshot.declarations or snapshot.declaration_schema_version:
+        raise ValueError("Historical fixture cannot contain declaration metadata")
+    rows = _snapshot_rows(snapshot)
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('blockcommander.stage_declarations')")
+        if cur.fetchone()[0] is not None:
+            raise RuntimeError("Historical fixture requires pre-declaration DDL")
+        for table, columns, values in (
+            ('stage_blocks','instance_id,stage_id,type_key,rel_x,rel_y,rel_z,orientation,label,description',rows.blocks),
+            ('graph_edges','edge_id,stage_id,source_instance_id,source_port_key,target_instance_id,target_port_key,edge_kind',rows.edges),
+            ('edge_routes','route_id,stage_id,edge_id,source_instance_id,source_port_key,target_instance_id,target_port_key,route_status',rows.routes),
+            ('route_steps','route_id,stage_id,step_index,rel_x,rel_y,rel_z,channel',rows.steps),
+            ('wire_cells','stage_id,rel_x,rel_y,rel_z,cell_kind',rows.wire_cells),
+            ('wire_channels','stage_id,rel_x,rel_y,rel_z,channel,connections_mask',rows.wire_channels),
+        ):
+            for value in values:
+                cur.execute(f"INSERT INTO blockcommander.{table}({columns}) VALUES({','.join(['%s']*len(value))})",value)
+        cur.execute("""UPDATE blockcommander.stages SET saved_version=1,
+            graph_snapshot_version=1,port_catalog_version=%s WHERE stage_id=%s""",
+            (snapshot.port_catalog_version,str(snapshot.stage_id)))
+
+
 def apply_migrations_through(last_name: str) -> None:
     with connect("blockcommander-b2t-upgrade") as conn, conn.cursor() as cur:
         cur.execute(

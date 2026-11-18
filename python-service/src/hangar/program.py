@@ -578,8 +578,10 @@ class ProgramService:
             item=versions[stage_id]
             stage_workspace.saved_version=item.saved_version
             stage_workspace.stage["saved_version"]=item.saved_version
+            stage_workspace.stage["declaration_schema_version"]=stage_workspace.snapshot.declaration_schema_version
             stage_workspace.dirty=False
             workspace.stage_headers[stage_id]["saved_version"]=item.saved_version
+            workspace.stage_headers[stage_id]["declaration_schema_version"]=stage_workspace.snapshot.declaration_schema_version
         workspace.new_stage_ids.clear()
         workspace.hierarchy_dirty=False
 

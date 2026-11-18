@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 from uuid import UUID
+from ..declarations import DECLARATION_SCHEMA_VERSION, DeclarationError, VariableDeclaration
 
 from .diagnostics import ValidationReport
 from .model import (
@@ -116,6 +117,8 @@ class StageSnapshot:
     last_graph_validation: ValidationReport | None
     program_validation_status: ProgramValidationStatus
     port_catalog_version: str | None
+    declarations: tuple[VariableDeclaration, ...] = ()
+    declaration_schema_version: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.stage_id, UUID):
@@ -132,6 +135,19 @@ class StageSnapshot:
             if not all(isinstance(item, item_type) for item in values):
                 raise ValueError(f"{field_name} contains an invalid value")
         block_ids = tuple(item.instance_id for item in self.blocks)
+        if type(self.declaration_schema_version) is not int or self.declaration_schema_version not in (0, DECLARATION_SCHEMA_VERSION):
+            raise DeclarationError("UNSUPPORTED_DECLARATION_FORMAT", "Unknown declaration snapshot format")
+        if not isinstance(self.declarations, tuple) or not all(isinstance(d, VariableDeclaration) for d in self.declarations):
+            raise DeclarationError("INVALID_DECLARATIONS", "Immutable declaration tuple required")
+        if self.declarations and self.declaration_schema_version == 0:
+            raise DeclarationError("INVALID_DECLARATIONS", "Legacy format cannot contain declarations")
+        if any(d.scope_ref.owner_id != self.stage_id for d in self.declarations):
+            raise DeclarationError("DECLARATION_SCOPE_MISMATCH", "Declaration belongs to another Stage")
+        if len({d.name for d in self.declarations}) != len(self.declarations):
+            raise DeclarationError("DUPLICATE_DECLARATION_NAME", "Name already declared in this scope", field="name")
+        if len({d.declaration_id for d in self.declarations}) != len(self.declarations):
+            raise DeclarationError("DUPLICATE_DECLARATION_ID", "Declaration IDs must be unique")
+        object.__setattr__(self, "declarations", tuple(sorted(self.declarations, key=lambda d: d.declaration_id.int)))
         if len(set(block_ids)) != len(block_ids):
             raise ValueError("Stage blocks must have unique instance IDs")
         if not isinstance(self.working_revision, int) or isinstance(
@@ -176,7 +192,7 @@ class StageSnapshot:
 
     @property
     def has_unpersisted_graph_content(self) -> bool:
-        return bool(self.edges or self.routes or self.wire_cells)
+        return bool(self.edges or self.routes or self.wire_cells or self.declarations)
 
     def with_content_change(
         self,
@@ -185,6 +201,7 @@ class StageSnapshot:
         edges: tuple[GraphEdge, ...] | None = None,
         routes: tuple[EdgeRoute, ...] | None = None,
         wire_cells: tuple[WireCell, ...] | None = None,
+        declarations: tuple[VariableDeclaration, ...] | None = None,
     ) -> "StageSnapshot":
         candidate = replace(
             self,
@@ -192,6 +209,9 @@ class StageSnapshot:
             edges=self.edges if edges is None else edges,
             routes=self.routes if routes is None else routes,
             wire_cells=self.wire_cells if wire_cells is None else wire_cells,
+            declarations=self.declarations if declarations is None else declarations,
+            declaration_schema_version=(self.declaration_schema_version if declarations is None or declarations == self.declarations
+                                        else DECLARATION_SCHEMA_VERSION),
         )
         if candidate == self:
             return self

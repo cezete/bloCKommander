@@ -20,6 +20,7 @@ from postgres_graph_integration import (
     full_snapshot,
     repository,
     reset_schema,
+    save_pre_declaration_snapshot,
 )
 
 
@@ -70,7 +71,7 @@ class ProgramModelMigrationIntegrationTest(unittest.TestCase):
         reset_schema()
         apply_migrations_through("006_graph_snapshots.sql")
         create_stage()
-        repository().save_full_stage_snapshot(str(STAGE_ID), 0, full_snapshot())
+        save_pre_declaration_snapshot(full_snapshot())
 
     def migrate(self) -> None:
         repository().migrate()

@@ -420,6 +420,8 @@ def to_stage_snapshot(
             else current.program_validation_status
         ),
         port_catalog_version=current.port_catalog_version,
+        declarations=current.declarations,
+        declaration_schema_version=current.declaration_schema_version,
     )
 
 

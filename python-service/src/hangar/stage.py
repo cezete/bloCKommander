@@ -65,6 +65,8 @@ class StageWorkspace:
         if snapshot is not None and blocks is not None:
             raise TypeError("pass snapshot or legacy blocks, not both")
         if snapshot is None:
+            if stage.get("declaration_schema_version",0) != 0:
+                raise SnapshotCompatibilityError("Block-only constructor cannot represent declaration metadata")
             converted=[];seen=set()
             for index,raw in enumerate(blocks or []):
                 required=("instance_id","type_key","rel_x","rel_y","rel_z","orientation","label")
@@ -270,6 +272,8 @@ class StageService:
     def _snapshot_from_legacy(
         cls,stage:dict[str,Any],raw_blocks:list[dict[str,Any]],*,working_revision:int
     )->StageSnapshot:
+        if stage.get("declaration_schema_version",0) != 0:
+            raise SnapshotCompatibilityError("Legacy blocks cannot replace declaration-aware content")
         return StageSnapshot(
             stage_id=uuid.UUID(str(stage["stage_id"])),
             blocks=tuple(cls._block_from_legacy(item) for item in raw_blocks),

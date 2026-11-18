@@ -77,12 +77,14 @@ class ProgramCatalogUpgradePostgreSQLIntegrationTest(unittest.TestCase):
     def test_v2_snapshot_without_program_upgrades_metadata_only(self):
         reset_schema();apply_migrations_through("007_program_stage_hall_separation.sql")
         create_stage()
-        repository().save_full_stage_snapshot(
-            str(STAGE_ID),0,stage_snapshot(STAGE_ID,"v2-compatible"),
-        )
+        # Historical fixture predates declaration migration 011. Seed its actual
+        # six-table format explicitly; do not run the current writer on old DDL.
+        from postgres_graph_integration import save_pre_declaration_snapshot
+        save_pre_declaration_snapshot(stage_snapshot(STAGE_ID,"v2-compatible"))
         with connect() as conn,conn.cursor() as cur:
             cur.execute("""UPDATE blockcommander.stages
-                SET port_catalog_version='ck-control-v2' WHERE stage_id=%s""",(str(STAGE_ID),))
+                SET saved_version=1,graph_snapshot_version=1,port_catalog_version='ck-control-v2'
+                WHERE stage_id=%s""",(str(STAGE_ID),))
         tables=("stage_blocks","graph_edges","edge_routes","route_steps","wire_cells","wire_channels")
         def fingerprint():
             with connect() as conn,conn.cursor() as cur:
