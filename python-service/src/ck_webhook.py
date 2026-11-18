@@ -8,6 +8,8 @@ from hangar.service import HallService
 from hangar.program import ProgramService
 from hangar.block_editor import BlockEditorService
 from hangar.block_editor_http import BlockEditorHttpAdapter, EDITOR_ENDPOINTS
+from hangar.declaration_service import DeclarationService
+from hangar.declaration_http import DeclarationHttpAdapter, DECLARATION_ENDPOINTS
 from hangar.program_http import (
     PROGRAM_API_VERSION, ProgramHttpFailure, link_dto, parse_ensure_request,
     parse_save_request, parse_uuid, program_dto, receipt_dto, stage_dto,
@@ -61,6 +63,10 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
     editor_http=BlockEditorHttpAdapter(editor,contexts,graph_auth)
     editor_http.register(app)
     app.extensions["blockcommander_block_editor"]=editor
+    declarations=DeclarationService(programs)
+    declaration_http=DeclarationHttpAdapter(declarations,contexts,graph_auth)
+    declaration_http.register(app)
+    app.extensions["blockcommander_declarations"]=declarations
 
     @app.before_request
     def diagnostic_request_start():
@@ -120,6 +126,8 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
     def validate_transport_context():
         endpoint=request.endpoint
         args=request.view_args or {}
+        if endpoint in DECLARATION_ENDPOINTS:
+            return declaration_http.preflight()
         if endpoint in EDITOR_ENDPOINTS:
             # Editor has bounded, duplicate-safe parsing and mandatory explicit context.
             # Do not feed its body through the legacy request.get_json path.
@@ -190,6 +198,8 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
 
     @app.after_request
     def include_transport_context(response):
+        # Declaration DTOs already include context inside their measured size.
+        if request.endpoint in DECLARATION_ENDPOINTS:return response
         context=getattr(g,"transport_context",None)
         if context is not None and response.is_json and 200<=response.status_code<300:
             body=response.get_json()
