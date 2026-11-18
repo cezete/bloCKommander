@@ -1,0 +1,50 @@
+{
+  "api_version": "ck-declarations-v1",
+  "declaration": {
+    "declaration_id": "00000000-0000-0000-0000-000000002328",
+    "mutability": "MUTABLE",
+    "name": "counter",
+    "scope": {
+      "kind": "STAGE",
+      "owner_id": "00000000-0000-0000-0000-000000009003"
+    },
+    "type_key": "INTEGER"
+  },
+  "declaration_id": "00000000-0000-0000-0000-000000002328",
+  "modified": true,
+  "mutation_scope": "PYTHON_WORKING_COPY_ONLY",
+  "operation": "CREATE",
+  "persisted": false,
+  "previous_version": {
+    "program_dirty": false,
+    "program_saved_version": 0,
+    "stage_dirty": false,
+    "stage_saved_version": 0,
+    "stage_workspace_epoch": "00000000-0000-0000-0000-0000000002bc",
+    "working_revision": 0
+  },
+  "request_id": "00000000-0000-0000-0000-000000002260",
+  "request_id_semantics": "CORRELATION_ONLY",
+  "retry_automatically": false,
+  "status": "ok",
+  "target": {
+    "program_id": "00000000-0000-0000-0000-000000009002",
+    "stage_id": "00000000-0000-0000-0000-000000009003"
+  },
+  "transport_context": {
+    "content_scope": "SHARED_PROGRAM",
+    "hall_id": "00000000-0000-0000-0000-000000009004",
+    "mode": "explicit",
+    "program_id": "00000000-0000-0000-0000-000000009002",
+    "stage_id": "00000000-0000-0000-0000-000000009003",
+    "working_copy_id": "ce4476d1-03a5-5610-9c74-3ad91ac25954"
+  },
+  "version_context": {
+    "program_dirty": true,
+    "program_saved_version": 0,
+    "stage_dirty": true,
+    "stage_saved_version": 0,
+    "stage_workspace_epoch": "00000000-0000-0000-0000-0000000002bc",
+    "working_revision": 1
+  }
+}

@@ -39,6 +39,7 @@ internal class BlockEditorSessionRuntime(
     private val wires: WireInteractionCoordinator? = null,
 ) {
     var onChanged: (EditorSessionSnapshot) -> Unit = {}
+    var onOpening: (UUID) -> Unit = {}
     private val sessions = BlockEditorSessionCoordinator(
         ::recapture, transport::get, transport::apply, ::prepare, mainThread, ::deliver,
     )
@@ -77,8 +78,10 @@ internal class BlockEditorSessionRuntime(
         sessions.invalidate(player.uuid, "NEW_OPEN")
         // The Hall and instance are resolved and checked here, never supplied as a client context/CAS.
         val capture = capture(player, hallId, instanceId, null, UUID.randomUUID()) ?: return null
+        onOpening(player.uuid)
         return sessions.open(capture)
     }
+    fun invalidate(player: UUID, reason: String) { checkThread(); sessions.invalidate(player, reason) }
     fun apply(player: ServerPlayer, id: EditorSessionId, changes: EditorChanges): Boolean {
         checkThread()
         return owns(player, id) && sessions.apply(id, changes)

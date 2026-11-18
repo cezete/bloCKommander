@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Test JVM only: never use Minecraft's default logs/latest.log file appender. -->
+<Configuration status="WARN">
+    <Appenders>
+        <Console name="TestConsole" target="SYSTEM_ERR">
+            <PatternLayout pattern="[%level] %logger: %message%n"/>
+        </Console>
+    </Appenders>
+    <Loggers>
+        <Root level="INFO">
+            <AppenderRef ref="TestConsole"/>
+        </Root>
+    </Loggers>
+</Configuration>

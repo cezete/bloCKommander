@@ -12,6 +12,17 @@ object Networking {
         PayloadTypeRegistry.serverboundPlay().register(SubmitFormPayload.TYPE, SubmitFormPayload.CODEC)
         PayloadTypeRegistry.clientboundPlay().register(EditorStatePayload.TYPE, EditorStatePayload.CODEC)
         PayloadTypeRegistry.serverboundPlay().register(EditorIntentPayload.TYPE, EditorIntentPayload.CODEC)
+        PayloadTypeRegistry.clientboundPlay().register(DeclarationStatePayload.TYPE, DeclarationStatePayload.CODEC)
+        PayloadTypeRegistry.serverboundPlay().register(DeclarationIntentPayload.TYPE, DeclarationIntentPayload.CODEC)
+        ServerPlayNetworking.registerGlobalReceiver(DeclarationIntentPayload.TYPE) { payload, context ->
+            context.server().execute {
+                val player = context.player()
+                val runtime = BlockCommanderMod.declarationSessions ?: return@execute
+                if (!runtime.intent(player, payload.intent)) {
+                    runtime.snapshot(player, payload.intent.session)?.let { runtime.onChanged(it) }
+                }
+            }
+        }
         ServerPlayNetworking.registerGlobalReceiver(SubmitFormPayload.TYPE) { payload, context ->
             context.server().execute { interactions.submitForm(context.player(), payload) }
         }

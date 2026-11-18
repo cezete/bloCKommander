@@ -53,6 +53,15 @@ class Interactions(
 
     fun register() {
         CommandRegistrationCallback.EVENT.register { dispatcher, _, _ ->
+            dispatcher.register(Commands.literal("ck").then(Commands.literal("declarations").executes { context ->
+                val player = context.source.playerOrException
+                if (!ServerPlayNetworking.canSend(player, me.buciqua.blockommander.network.DeclarationStatePayload.TYPE)) {
+                    player.sendSystemMessage(Component.literal("§c[CK] A deklarációs editorhoz azonos verziójú kliensmod szükséges."))
+                } else if (BlockCommanderMod.declarationSessions?.open(player) != true) {
+                    player.sendSystemMessage(Component.literal("§c[CK] Az editor a saját, egyértelmű fizikai hangárad aktuális Stage-ében nyitható meg."))
+                }
+                1
+            }))
             dispatcher.register(Commands.literal("ck").then(Commands.literal("hall")
                 .then(Commands.literal("select").then(Commands.argument("hall-code",StringArgumentType.word())
                     .then(Commands.argument("program-uuid",StringArgumentType.word())

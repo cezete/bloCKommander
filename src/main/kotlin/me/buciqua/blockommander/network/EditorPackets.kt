@@ -10,7 +10,7 @@ import java.nio.charset.CodingErrorAction
 import java.util.UUID
 
 /** Shared, bounded presentation protocol. No HTTP secret, target, epoch or CAS enters C2S. */
-internal const val EDITOR_PACKET_VERSION = 1
+internal const val EDITOR_PACKET_VERSION = 2
 internal const val EDITOR_PACKET_LIMIT = 16384
 data class EditorSessionKey(val player: UUID, val connection: Long, val generation: Long, val nonce: UUID)
 enum class EditorIntentAction { APPLY, CLOSE, RELOAD, RECONCILE }
@@ -29,7 +29,7 @@ data class EditorUiSnapshot(val session: EditorSessionKey, val sequence: Long, v
     val blockType: String, val schema: EditorUiSchema?, val values: EditorUiValues?, val canApply: Boolean,
     val diagnostics: List<EditorUiDiagnostic>, val domainMessage: String, val projection: String,
     val projectionMessage: String, val recoveryPending: Boolean, val recovery: EditorUiValues?,
-    val closedReason: String?, val programDirty: Boolean?)
+    val closedReason: String?, val programDirty: Boolean?, val dimension: String = "")
 
 /** Strict binary envelope; unknown versions/tags/extra bytes fail closed before any runtime dispatch. */
 internal object EditorPacketWire {
@@ -104,6 +104,7 @@ internal object EditorPacketWire {
         s.diagnostics.forEach { nullText(it.field, 16); text(it.code, 96); text(it.message, 256) }
         text(s.domainMessage, 256); text(s.projection, 32); text(s.projectionMessage, 256); writeBoolean(s.recoveryPending)
         values(s.recovery); nullText(s.closedReason, 96); writeByte(when (s.programDirty) { null -> 0; false -> 1; true -> 2 })
+        text(s.dimension, 128)
     }
     fun snapshot(bytes: ByteArray): EditorUiSnapshot = input(bytes) {
         val key = key(); val sequence = readLong(); require(sequence > 0)
@@ -122,15 +123,16 @@ internal object EditorPacketWire {
         val diagnostics = List(count) { EditorUiDiagnostic(nullText(16), text(96), text(256)) }
         val message = text(256); val projection = text(32); val detail = text(256); val pending = flag(); val recovery = values()
         val closed = nullText(96); val dirty = when (readUnsignedByte()) { 0 -> null; 1 -> false; 2 -> true; else -> error("INVALID_DIRTY") }
+        val dimension = text(128)
         require(!canApply || (schema != null && values != null && state in setOf(EditorUiState.EDITING, EditorUiState.VALIDATION_ERROR)))
-        EditorUiSnapshot(key, sequence, state, type, schema, values, canApply, diagnostics, message, projection, detail, pending, recovery, closed, dirty)
+        EditorUiSnapshot(key, sequence, state, type, schema, values, canApply, diagnostics, message, projection, detail, pending, recovery, closed, dirty, dimension)
     }
 }
 
 data class EditorIntentPayload(val intent: EditorIntent) : CustomPacketPayload {
     override fun type() = TYPE
     companion object {
-        val TYPE = CustomPacketPayload.Type<EditorIntentPayload>(Identifier.fromNamespaceAndPath("blockommander", "editor_intent_v1"))
+        val TYPE = CustomPacketPayload.Type<EditorIntentPayload>(Identifier.fromNamespaceAndPath("blockommander", "editor_intent_v2"))
         val CODEC = object : StreamCodec<RegistryFriendlyByteBuf, EditorIntentPayload> {
             override fun encode(buffer: RegistryFriendlyByteBuf, value: EditorIntentPayload) { buffer.writeByteArray(EditorPacketWire.encode(value.intent)) }
             override fun decode(buffer: RegistryFriendlyByteBuf): EditorIntentPayload {
@@ -143,7 +145,7 @@ data class EditorIntentPayload(val intent: EditorIntent) : CustomPacketPayload {
 data class EditorStatePayload(val snapshot: EditorUiSnapshot) : CustomPacketPayload {
     override fun type() = TYPE
     companion object {
-        val TYPE = CustomPacketPayload.Type<EditorStatePayload>(Identifier.fromNamespaceAndPath("blockommander", "editor_state_v1"))
+        val TYPE = CustomPacketPayload.Type<EditorStatePayload>(Identifier.fromNamespaceAndPath("blockommander", "editor_state_v2"))
         val CODEC = object : StreamCodec<RegistryFriendlyByteBuf, EditorStatePayload> {
             override fun encode(buffer: RegistryFriendlyByteBuf, value: EditorStatePayload) { buffer.writeByteArray(EditorPacketWire.encode(value.snapshot)) }
             override fun decode(buffer: RegistryFriendlyByteBuf): EditorStatePayload {
