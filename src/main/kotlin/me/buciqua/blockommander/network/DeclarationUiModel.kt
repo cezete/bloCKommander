@@ -22,6 +22,7 @@ class EditorSurfaceFence(private val player: UUID) {
 
 /** Client presentation only. No transport context, epoch, CAS or scope algorithm. */
 class DeclarationUiModel(private val player: UUID) {
+    val viewport = DeclarationViewport()
     var snapshot: DeclarationUiSnapshot? = null
         private set
     var selected: Pair<DeclarationGroup, UUID>? = null
@@ -45,6 +46,7 @@ class DeclarationUiModel(private val player: UUID) {
         if (prior != null && (s.sequence <= prior.sequence || s.session.connection < prior.session.connection ||
                 s.session == prior.session && prior.state == DeclarationState.CLOSED)) return false
         if (s.session != prior?.session) {
+            viewport.clear()
             selected = null; fields = DeclarationFields("", DeclarationType.INTEGER, DeclarationMutability.MUTABLE); basis = fields
             pending = null; mutation = null; operation = 0; confirmDelete = false
         }
@@ -55,6 +57,7 @@ class DeclarationUiModel(private val player: UUID) {
             if (selectedRow == null) selected = null
             basis = fields; mutation = null
         } else if (!draftDirty && selectedRow != null && !busy) { fields = selectedRow!!.fields; basis = fields }
+        viewport.receive(s)
         return true
     }
     fun select(row: DeclarationRow?, discard: Boolean = false): Boolean {
@@ -83,7 +86,7 @@ class DeclarationUiModel(private val player: UUID) {
         if (action in setOf(DeclarationAction.CREATE, DeclarationAction.UPDATE, DeclarationAction.DELETE)) mutation = operation
         return DeclarationIntent(s.session, operation, action,
             if (action in setOf(DeclarationAction.UPDATE, DeclarationAction.DELETE)) selectedRow!!.id else null,
-            if (action in setOf(DeclarationAction.CREATE, DeclarationAction.UPDATE)) fields else null)
+            if (action in setOf(DeclarationAction.CREATE, DeclarationAction.UPDATE)) fields else null).also(viewport::requested)
     }
     fun transportClosed() {
         snapshot?.let { dismissed = it.session; snapshot = it.copy(state = DeclarationState.CLOSED, busy = false, canCreate = false, canEdit = false) }

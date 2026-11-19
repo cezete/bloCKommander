@@ -28,12 +28,13 @@ internal class DeclarationSessionRuntime(private val server: MinecraftServer, pr
     var onOpening: (UUID) -> Unit = {}
     private val reconciler = DeclarationReconciliation(registry, wires)
     private val sessions = DeclarationSessionCoordinator(api, ::current, ::stamp, ::reconcile, main,
-        { snapshot ->
-            if (snapshot.state == DeclarationState.PENDING) markDirty(snapshot.capture.context.transport.programId)
-            onChanged(snapshot)
-        }, { context, except -> sessionsChanged(context, except) })
+        { onChanged(it) }, { context, except -> sessionsChanged(context, except) }, ::beginOptimisticStatus)
     private val connections = EditorConnections { sessions.invalidate(it, "CONNECTION_CHANGED") }
-    private fun sessionsChanged(context: DeclarationContext, except: EditorSessionKey) { sessions.programChanged(context, except) }
+    private fun sessionsChanged(context: DeclarationContext, except: EditorSessionKey) {
+        // A confirmed mutation dirties the shared Program in every mounted Hall.
+        markDirty(context.transport.programId)
+        sessions.programChanged(context, except)
+    }
     private fun checkThread() = check(server.isSameThread)
     fun joined(player: ServerPlayer) { checkThread(); connections.join(player.uuid, player.connection) }
     fun disconnected(player: ServerPlayer) { checkThread(); connections.disconnect(player.uuid, player.connection) }
@@ -73,13 +74,21 @@ internal class DeclarationSessionRuntime(private val server: MinecraftServer, pr
         return hall.id == c.transport.hallId.toString() && hall.transportContext == c.transport && hall.stage?.id == c.stage.toString() &&
             hall.stage.workspaceEpoch == capture.fence.workspaceEpoch && registry.isStageFenceCurrent(capture.fence)
     }
-    private fun stamp(capture: DeclarationCapture): Any = server.allLevels.flatMap { registry.inWorld(WorldIdentity.uuid(it).toString()) }
-        .filter { it.transportContext.programId == capture.context.transport.programId }.sortedBy { it.id }.map {
-            listOf(it.id, it.stage?.id, it.stage?.workspaceEpoch, it.stage?.workingRevision, it.programDirty,
-                registry.graphProjections.view(it.projectionKey())?.stageRevision,
-                registry.graphProjections.view(it.projectionKey())?.status,
-                registry.navigationState(it.id)?.programWorkspaceEpoch, registry.navigationState(it.id)?.hierarchyRevision)
-        }
+    private fun stamp(capture: DeclarationCapture): DeclarationProgramStamp = declarationProgramStamp(registry,
+        server.allLevels.flatMap { registry.inWorld(WorldIdentity.uuid(it).toString()) }
+            .filter { it.transportContext.programId == capture.context.transport.programId })
+    private fun beginOptimisticStatus(capture: DeclarationCapture): DeclarationOwnStatusChange? {
+        checkThread()
+        val before = stamp(capture)
+        val c = capture.context
+        val hall = registry.hall(c.transport.hallId.toString()) ?: return null
+        val level = server.allLevels.singleOrNull { WorldIdentity.uuid(it) == c.world } ?: return null
+        // Before receipt only the initiating Hall is pessimistic. A known 422 can
+        // restore it via the original token-pinned GET and existing reconciliation.
+        registry.beginProgramStatus(hall.id) ?: return null
+        registry.hall(hall.id)?.let { WorldRenderer.renderSaveState(level, it, true) }
+        return DeclarationOwnStatusChange.verified(before, stamp(capture), c.transport.hallId)
+    }
     private fun markDirty(program: UUID) {
         server.allLevels.forEach { level ->
             registry.inWorld(WorldIdentity.uuid(level).toString()).filter { it.transportContext.programId == program }.forEach { hall ->

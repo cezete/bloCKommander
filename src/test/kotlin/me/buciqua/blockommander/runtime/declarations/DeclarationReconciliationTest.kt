@@ -16,7 +16,7 @@ import java.util.concurrent.Executor
 
 class DeclarationReconciliationTest {
     private val f = DeclarationFixtures
-    private inner class Rig {
+    internal inner class Rig(basePage: DeclarationPage = f.page("editor-empty")) {
         val c = f.context
         val registry = HallRegistry()
         val key = c.transport.projectionKey(c.stage)
@@ -26,7 +26,7 @@ class DeclarationReconciliationTest {
         val route = GraphRoute(UUID(0, 11), edge.edgeId, GraphPortRef(f.f.start, "out"), GraphPortRef(f.f.stop, "in"),
             listOf(GraphRouteStep(relative, "SINGLE")), "VALID")
         val before = GraphStateSnapshot(c.stage, c.transport.hallId, c.world, GraphPosition(1, 1, 1), GraphPosition(7, 5, 7),
-            f.f.epoch, 0, 0, false, 1, "ck-control-v3", true, emptyList(),
+            f.f.epoch, basePage.version.revision, basePage.version.stageSaved, false, 1, "ck-control-v3", true, emptyList(),
             GraphStatuses("DRAFT", "VALID", "SAVED", "PRESENT", "NOT_CHECKED"),
             listOf(GraphNode(f.f.start, "START", GraphPosition(1, 0, 1), "EAST"), GraphNode(f.f.stop, "STOP", GraphPosition(2, 0, 1), "EAST")),
             listOf(GraphWireCell(relative, listOf(GraphWireChannel("SINGLE", emptyList())))), listOf(edge), listOf(route), GraphValidation(null, emptyList()))
@@ -58,7 +58,7 @@ class DeclarationReconciliationTest {
               "door":{"x":0,"y":1,"z":1},"orientation":"NORTH","active_stage_id":"${UUID(0, 999)}",
               "controls":[{"kind":"SAVE_SIGN","x":0,"y":2,"z":2}],
               "stage":{"stage_id":"${f.f.stage}","hall_id":"${f.f.hall}","origin":{"x":1,"y":1,"z":1},"size":{"x":7,"y":5,"z":7},
-              "dirty":false,"program_dirty":false,"workspace_epoch":"${f.f.epoch}","working_revision":0,"blocks":[
+              "dirty":false,"program_dirty":false,"workspace_epoch":"${f.f.epoch}","working_revision":${basePage.version.revision},"blocks":[
               {"instance_id":"${f.f.start}","type_key":"START","x":2,"y":1,"z":2,"orientation":"EAST","label":"Initial","description":""},
               {"instance_id":"${f.f.stop}","type_key":"STOP","x":3,"y":1,"z":2,"orientation":"EAST","label":"Initial","description":""}]}}
             """).asJsonObject)

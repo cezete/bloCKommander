@@ -105,6 +105,7 @@ class DeclarationSessionTest {
     @Test fun `validation error preserves editable authoritative view and draft can be corrected`() {
         val r = Rig(); val key = r.ready(); r.intent(key)
         r.writes.last().complete(DeclarationResult.Rejected(422, "INVALID_DECLARATION_NAME")); r.queue.drain()
+        r.readDone(); r.reconciliationDone()
         assertEquals(DeclarationState.REJECTED, r.snapshot(key).state); assertTrue(r.snapshot(key).editable)
         assertTrue(r.intent(key, 2)); assertEquals(2, r.writes.size)
     }

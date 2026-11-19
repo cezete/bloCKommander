@@ -120,6 +120,11 @@ internal fun DeclarationSessionSnapshot.ui(sequence: Long): DeclarationUiSnapsho
     val p = page; val v = p?.version
     return DeclarationUiSnapshot(key, sequence, capture.dimension, capture.context.transport.programId, capture.context.stage,
         state, busy, p?.rows.orEmpty(), p?.index ?: 0, p?.total ?: 0, p?.hasNext ?: false, editable && p?.canCreate == true,
-        editable && p?.canEdit == true, when (state) { DeclarationState.PENDING -> true; DeclarationState.UNKNOWN -> null; else -> v?.programDirty },
+        editable && p?.canEdit == true, when {
+            state == DeclarationState.PENDING -> true
+            state in setOf(DeclarationState.UNKNOWN, DeclarationState.STALE, DeclarationState.RELOAD_REQUIRED) ||
+                projection in setOf("STALE", "FAILED", "NOT_CHECKED") -> null
+            else -> v?.programDirty
+        },
         v?.stageDirty, v?.stageSaved, v?.programSaved, v?.revision, error, projection, receipt?.modified, lastOperation)
 }

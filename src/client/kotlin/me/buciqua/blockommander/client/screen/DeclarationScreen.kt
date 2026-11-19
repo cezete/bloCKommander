@@ -6,6 +6,7 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking
 import net.minecraft.client.gui.GuiGraphicsExtractor
 import net.minecraft.client.gui.components.Button
 import net.minecraft.client.gui.components.EditBox
+import net.minecraft.client.gui.components.Tooltip
 import net.minecraft.client.gui.screens.Screen
 import net.minecraft.network.chat.Component
 
@@ -22,29 +23,31 @@ internal class DeclarationScreen(val model: DeclarationUiModel) : Screen(Compone
     private lateinit var next: Button
     private lateinit var previous: Button
     private lateinit var refreshButton: Button
+    private lateinit var scrollUp: Button
+    private lateinit var scrollDown: Button
     private val rowButtons = mutableListOf<Button>()
-    private var offset = 0
     private var syncing = false
     private var discardTarget: Pair<DeclarationGroup, java.util.UUID>? = null
     private var confirmingDiscard = false
     override fun init() {
         layout = DeclarationLayout(width, height); val l = layout.left; val w = layout.contentWidth; val y = layout.formY
+        model.viewport.resize(layout.rowCount)
         fun button(text: String, x: Int, yy: Int, ww: Int, action: () -> Unit) = addRenderableWidget(
             Button.builder(Component.literal(text)) { action() }.bounds(x, yy, ww, 20).build())
         rowButtons.clear()
         repeat(layout.rowCount) { index ->
             rowButtons += button("", l, layout.listY + index * 18, w - 26) {
-                val row = model.snapshot?.rows?.getOrNull(offset + index) ?: return@button
+                val row = model.viewport.visibleRows.getOrNull(index) ?: return@button
                 val target = row.group to row.id
                 if (!model.select(row, confirmingDiscard && discardTarget == target)) { confirmingDiscard = true; discardTarget = target }
                 else confirmingDiscard = false
                 refresh()
             }.also { it.height = 18 }
         }
-        button("▲", l + w - 23, layout.listY, 23) { offset = (offset - layout.rowCount).coerceAtLeast(0); refresh() }
-        button("▼", l + w - 23, layout.listY + 21, 23) {
-            offset = (offset + layout.rowCount).coerceAtMost(((model.snapshot?.rows?.size ?: 0) - 1).coerceAtLeast(0)); refresh()
-        }
+        scrollUp = button("▲", l + w - 23, layout.listY, 23) { model.viewport.up(); refresh() }
+        scrollDown = button("▼", l + w - 23, layout.listY + 21, 23) { model.viewport.down(); refresh() }
+        scrollUp.setTooltip(Tooltip.create(Component.literal("Görgetés felfelé ezen az oldalon")))
+        scrollDown.setTooltip(Tooltip.create(Component.literal("Görgetés lefelé ezen az oldalon")))
         name = addRenderableWidget(EditBox(font, l, y, w, 20, Component.literal("Név")))
         name.setMaxLength(128); name.value = model.fields.name
         name.setResponder { if (!syncing) { model.edit(model.fields.copy(name = it)); confirmingDiscard = false; refreshControls() } }
@@ -65,6 +68,8 @@ internal class DeclarationScreen(val model: DeclarationUiModel) : Screen(Compone
         delete = button("Töröl", l + 3 * (col + 3), y + 48, col) { send(DeclarationAction.DELETE, model.confirmDelete) }
         previous = button("PREV", l, y + 72, col) { send(DeclarationAction.PREV) }
         next = button("NEXT", l + col + 3, y + 72, col) { send(DeclarationAction.NEXT) }
+        previous.setTooltip(Tooltip.create(Component.literal("Előző adatoldal")))
+        next.setTooltip(Tooltip.create(Component.literal("Következő adatoldal")))
         refreshButton = button("REFRESH", l + 2 * (col + 3), y + 72, col) { send(DeclarationAction.REFRESH) }
         button("CLOSE", l + 3 * (col + 3), y + 72, col) { onClose() }
         refresh(); setInitialFocus(name)
@@ -84,9 +89,10 @@ internal class DeclarationScreen(val model: DeclarationUiModel) : Screen(Compone
     private fun refreshControls() {
         if (!::create.isInitialized) return
         val s = model.snapshot ?: return
-        offset = offset.coerceIn(0, (s.rows.size - 1).coerceAtLeast(0))
+        val viewport = model.viewport
+        val visibleRows = viewport.visibleRows
         rowButtons.forEachIndexed { index, button ->
-            val row = s.rows.getOrNull(offset + index)
+            val row = visibleRows.getOrNull(index)
             button.visible = row != null; button.active = !model.busy
             button.message = Component.literal(row?.let {
                 val own = if (it.group == DeclarationGroup.OWN) "LOCAL/saját" else it.group.name
@@ -101,8 +107,11 @@ internal class DeclarationScreen(val model: DeclarationUiModel) : Screen(Compone
         update.active = model.editable && model.selectedRow != null
         delete.active = model.editable && model.selectedRow != null
         delete.message = Component.literal(if (model.confirmDelete) "Tényleg?" else "Töröl")
-        previous.active = !model.busy && s.page > 0 && s.state !in setOf(DeclarationState.STALE, DeclarationState.RELOAD_REQUIRED)
-        next.active = !model.busy && s.hasNext && s.state !in setOf(DeclarationState.STALE, DeclarationState.RELOAD_REQUIRED)
+        scrollUp.active = !model.busy && viewport.canUp
+        scrollDown.active = !model.busy && viewport.canDown
+        val currentPage = viewport.pageIndex == s.page && s.projection == "CURRENT"
+        previous.active = !model.busy && currentPage && s.page > 0 && s.state !in setOf(DeclarationState.STALE, DeclarationState.RELOAD_REQUIRED)
+        next.active = !model.busy && currentPage && s.hasNext && s.state !in setOf(DeclarationState.STALE, DeclarationState.RELOAD_REQUIRED)
         refreshButton.active = !model.busy && s.state != DeclarationState.CLOSED
     }
     override fun onClose() { send(DeclarationAction.CLOSE); minecraft.gui.setScreen(null) }
@@ -118,13 +127,20 @@ internal class DeclarationScreen(val model: DeclarationUiModel) : Screen(Compone
             g.text(font, Component.literal(font.plainSubstrByWidth(text, layout.contentWidth)), layout.left, y, color)
         }
         line("Program: ${s.program}", 6); line("Stage: ${s.stage}", 18)
-        line("${s.state}${if (model.busy) " / várakozás" else ""} | oldal ${s.page + 1} | sor ${offset + 1}–${(offset + layout.rowCount).coerceAtMost(s.rows.size)}/${s.total}", 32)
+        line("${s.state}${if (model.busy) " / várakozás" else ""} | ${model.viewport.indicator}", 32)
         val selected = model.selectedRow
-        line(selected?.let { "Owner Stage: ${it.ownerStage}" } ?: "Új saját deklaráció", layout.formY - 22)
-        line(selected?.let { "UUID: ${it.id}" } ?: "Név / típus / mutability", layout.formY - 11)
+        line(selected?.let { "Owner Stage: ${it.ownerStage}" }
+            ?: if (model.selected != null) "Kijelölés másik oldalon" else "Új saját deklaráció", layout.formY - 22)
+        line(model.selected?.let { "UUID: ${it.second}" } ?: "Név / típus / mutability", layout.formY - 11)
         line(if (confirmingDiscard) "Vázlat eldobása? Ugyanazt válaszd újra a megerősítéshez."
             else declarationError(s.error), height - 36, 0xFFFF9999.toInt())
-        line("Working copy: ${if (s.stageDirty == true) "módosított" else "változatlan/ismeretlen"}; rev ${s.revision ?: "?"}; projekció ${s.projection}", height - 24)
+        val freshness = when {
+            s.state == DeclarationState.UNKNOWN -> "UNKNOWN | ${if (s.projection == "CURRENT") "friss nézet" else "nézet: ${s.projection}"} | csak olvasás"
+            s.state == DeclarationState.STALE || s.projection == "STALE" -> "Nézet elavult: REFRESH szükséges."
+            s.state == DeclarationState.RELOAD_REQUIRED -> "Újratöltés szükséges; a session nem szerkeszthető."
+            else -> "Working copy: ${if (s.stageDirty == true) "módosított" else "változatlan/ismeretlen"}; rev ${s.revision ?: "?"}; projekció ${s.projection}"
+        }
+        line(freshness, height - 24)
         line("Program SAVE: ${when (s.programDirty) { true -> "NINCS MENTVE"; false -> "MENTVE"; null -> "ISMERETLEN" }} (${s.programSaved ?: "?"}) | Alkalmazás ≠ SAVE", height - 12, 0xFFFFCC88.toInt())
     }
 }
