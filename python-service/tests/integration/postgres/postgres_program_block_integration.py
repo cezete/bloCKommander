@@ -90,7 +90,8 @@ class ProgramCatalogUpgradePostgreSQLIntegrationTest(unittest.TestCase):
             with connect() as conn,conn.cursor() as cur:
                 rows=[]
                 for table in tables:
-                    cur.execute(f"SELECT * FROM blockcommander.{table} ORDER BY 1,2")
+                    columns = "instance_id,stage_id,type_key,rel_x,rel_y,rel_z,orientation,label,description,created_at,updated_at" if table == "stage_blocks" else "*"
+                    cur.execute(f"SELECT {columns} FROM blockcommander.{table} ORDER BY 1,2")
                     rows.append((table,cur.fetchall()))
                 return rows
         before=fingerprint()

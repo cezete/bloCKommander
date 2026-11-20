@@ -123,6 +123,10 @@ class VersionedPortCatalog(Mapping[str, tuple[PortDefinition, ...]]):
     def check_runtime_types(self, runtime_types: Iterable[str]) -> RuntimeCatalogCheck:
         runtime = frozenset(str(item) for item in runtime_types)
         catalog = frozenset(self._by_type)
+        # C1 adds persisted domain types; the legacy CONTROL endpoint still
+        # rejects those nodes, but unrelated old Stages remain compatible.
+        if self.version == "ck-control-v3":
+            runtime = runtime - {"LET", "LITERAL", "REF", "OPERATOR", "RESULT"}
         issues = [
             PortCatalogIssue(
                 PortCatalogIssueCode.RUNTIME_TYPE_MISSING_FROM_CATALOG,

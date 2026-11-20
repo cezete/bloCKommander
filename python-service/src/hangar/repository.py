@@ -19,7 +19,7 @@ from .graph.model import (
 from .graph.port_catalog import PORT_CATALOG_VERSION
 from .graph.snapshot import (
     GRAPH_SNAPSHOT_VERSION, ProgramValidationStatus, StageBlockSnapshot,
-    StageSnapshot,
+    StageSnapshot, thaw_json,
 )
 
 class HallNotFound(LookupError): pass
@@ -57,6 +57,7 @@ class SnapshotRows:
     wire_cells: tuple[tuple[Any,...],...]
     wire_channels: tuple[tuple[Any,...],...]
     declarations: tuple[tuple[Any,...],...] = ()
+    semantic_configs: tuple[tuple[Any,...],...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,7 @@ class ProgramStageLink:
     program_block_instance_id: uuid.UUID
     child_stage_id: uuid.UUID
     link_state: str = "ACTIVE"
+    owner_role: str = "PROGRAM_BODY"
 
 
 @dataclass(frozen=True)
@@ -217,7 +219,9 @@ def _snapshot_rows(snapshot:StageSnapshot)->SnapshotRows:
         )
     declarations=tuple((str(d.declaration_id),str(stage_id),d.name,d.variable_type.value,d.mutability.value)
                        for d in snapshot.declarations)
-    return SnapshotRows(blocks,edges,routes,steps,tuple(cells),tuple(channels),declarations)
+    return SnapshotRows(blocks,edges,routes,steps,tuple(cells),tuple(channels),declarations,
+                        tuple((str(b.instance_id), json.dumps(thaw_json(b.semantic_config)))
+                              for b in snapshot.blocks if b.semantic_config))
 
 
 def _snapshot_from_rows(
@@ -231,6 +235,13 @@ def _snapshot_from_rows(
     declaration_rows: list[Mapping[str,Any]] | None = None,
 )->StageSnapshot:
     stage_id=uuid.UUID(str(stage["stage_id"]))
+    value_version=stage.get("value_schema_version",0)
+    if type(value_version) is not int or value_version not in (0,1):
+        raise SnapshotCompatibilityError("Unknown value snapshot version")
+    if value_version and any("semantic_config" not in row for row in block_rows):
+        raise SnapshotStorageError("Value-aware snapshot requires explicit semantic configuration")
+    if not value_version and any(row.get("semantic_config") for row in block_rows):
+        raise SnapshotStorageError("Value configuration requires format 1")
     declaration_version=stage.get("declaration_schema_version",0)
     if type(declaration_version) is not int or declaration_version not in (0,DECLARATION_SCHEMA_VERSION):
         raise SnapshotCompatibilityError("Unknown declaration snapshot version")
@@ -250,10 +261,13 @@ def _snapshot_from_rows(
             CardinalDirection(str(row["orientation"])),str(row["label"]),
             None if row.get("description") is None else str(row["description"]),
             str(row["display_name"]),str(row["material_name"]),
-            row.get("display_definition") or {},
+            row.get("display_definition") or {}, row.get("semantic_config") or {},
         )
         for row in block_rows
     )
+    if not value_version and (stage.get("stage_kind")=="VALUE_BODY" or any(b.type_key in ("LET","LITERAL","REF","OPERATOR","RESULT") for b in blocks)
+                              or any(row["edge_kind"]=="VALUE" for row in edge_rows)):
+        raise SnapshotStorageError("VALUE content requires format 1")
     edges=tuple(
         GraphEdge(
             uuid.UUID(str(row["edge_id"])),stage_id,
@@ -314,7 +328,7 @@ def _snapshot_from_rows(
     return StageSnapshot(
         stage_id,blocks,edges,tuple(routes),tuple(cells),0,None,None,
         ProgramValidationStatus.NOT_CHECKED,stage.get("port_catalog_version"),
-        declarations,declaration_version,
+        declarations,declaration_version,value_version,
     )
 
 
@@ -322,6 +336,7 @@ def _replace_stage_snapshot_rows(
     cur,stage_id:str,current_version:int,snapshot:StageSnapshot,rows:SnapshotRows
 )->int:
     """Replace one locked Stage snapshot using the caller's transaction/cursor."""
+    cur.execute("SELECT set_config('blockcommander.value_writer','1',true)")
     cur.execute("SELECT set_config('blockcommander.declaration_writer','1',true)")
     for table in (
         "route_steps","edge_routes","graph_edges","wire_channels",
@@ -336,6 +351,9 @@ def _replace_stage_snapshot_rows(
             (instance_id,stage_id,type_key,rel_x,rel_y,rel_z,
              orientation,label,description)
             VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)""",values)
+    for instance_id,config in rows.semantic_configs:
+        cur.execute("UPDATE blockcommander.stage_blocks SET semantic_config=%s::jsonb WHERE stage_id=%s AND instance_id=%s",
+                    (config,stage_id,instance_id))
     for values in rows.edges:
         cur.execute("""INSERT INTO blockcommander.graph_edges
             (edge_id,stage_id,source_instance_id,source_port_key,
@@ -361,10 +379,10 @@ def _replace_stage_snapshot_rows(
     new_version=int(current_version)+1
     cur.execute("""UPDATE blockcommander.stages
         SET saved_version=%s,graph_snapshot_version=%s,
-            declaration_schema_version=%s,
+            declaration_schema_version=%s,value_schema_version=%s,
             port_catalog_version=%s,updated_at=now()
         WHERE stage_id=%s""",
-        (new_version,GRAPH_SNAPSHOT_VERSION,snapshot.declaration_schema_version,PORT_CATALOG_VERSION,stage_id))
+        (new_version,GRAPH_SNAPSHOT_VERSION,snapshot.declaration_schema_version,snapshot.value_schema_version,snapshot.port_catalog_version,stage_id))
     return new_version
 
 
@@ -435,7 +453,7 @@ def _validate_program_plan(plan:ProgramSavePlan)->dict[uuid.UUID,ProgramStageSav
             header=item.new_stage
             if not header.stage_name or len(header.stage_name)>96:
                 raise ProgramSavePlanError("Invalid new Stage name")
-            if header.stage_kind not in ("ROOT","PROGRAM_BODY"):
+            if header.stage_kind not in ("ROOT","PROGRAM_BODY","VALUE_BODY"):
                 raise ProgramSavePlanError("Invalid new Stage kind")
             if any(
                 not isinstance(value,int) or isinstance(value,bool) or value<=0
@@ -454,6 +472,8 @@ def _validate_program_plan(plan:ProgramSavePlan)->dict[uuid.UUID,ProgramStageSav
     for link in plan.links:
         if not isinstance(link,ProgramStageLink):
             raise ProgramSavePlanError("Invalid Program Stage link")
+        if link.owner_role not in ("PROGRAM_BODY", "LET_RHS"):
+            raise ProgramSavePlanError("Unknown owner role")
         if link.link_state not in ("ACTIVE","RETAINED"):
             raise ProgramSavePlanError("Invalid Program Stage link state")
         if link.parent_stage_id not in stages or link.child_stage_id not in stages:
@@ -694,7 +714,7 @@ class HallRepository:
             stage=self._row(cur.fetchone())
             if not stage: raise HallNotFound("Nincs ilyen stage.")
             cur.execute("""SELECT b.instance_id,b.type_key,b.rel_x,b.rel_y,b.rel_z,
-                    b.orientation,b.label,b.description,t.display_name,t.material_name,
+                    b.orientation,b.label,b.description,b.semantic_config,t.display_name,t.material_name,
                     t.display_definition
                 FROM blockcommander.stage_blocks b
                 JOIN blockcommander.program_block_types t ON t.type_key=b.type_key
@@ -770,7 +790,7 @@ class HallRepository:
                 WHERE program_id=%s ORDER BY stage_id""",(program_id,))
             stages=tuple(MappingProxyType(self._row(row)) for row in cur.fetchall())
             cur.execute("""SELECT parent_stage_id,program_block_instance_id,
-                    child_stage_id,link_state
+                    child_stage_id,link_state,owner_role
                 FROM blockcommander.program_stage_links
                 WHERE program_id=%s
                 ORDER BY parent_stage_id,program_block_instance_id,child_stage_id""",
@@ -778,7 +798,7 @@ class HallRepository:
             links=tuple(ProgramStageLink(
                 uuid.UUID(str(row["parent_stage_id"])),
                 uuid.UUID(str(row["program_block_instance_id"])),
-                uuid.UUID(str(row["child_stage_id"])),str(row["link_state"]),
+                uuid.UUID(str(row["child_stage_id"])),str(row["link_state"]),str(row.get("owner_role","PROGRAM_BODY")),
             ) for row in cur.fetchall())
             cur.execute("""SELECT hall_id,program_id,working_copy_id,active_stage_id,selection_revision,created_at,updated_at
                 FROM blockcommander.hall_program_mounts
@@ -939,6 +959,7 @@ class HallRepository:
         }
         program_id=str(plan.program_id)
         with self._connect() as conn,conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT set_config('blockcommander.value_writer','1',true)")
             cur.execute("""SELECT program_id,root_stage_id,saved_version
                 FROM blockcommander.programs
                 WHERE program_id=%s FOR UPDATE""",(program_id,))
@@ -952,7 +973,7 @@ class HallRepository:
                 raise ProgramSavePlanError("Program root Stage mismatch")
 
             cur.execute("""SELECT stage_id,stage_kind,saved_version,
-                    graph_snapshot_version,declaration_schema_version
+                    graph_snapshot_version,declaration_schema_version,value_schema_version
                 FROM blockcommander.stages
                 WHERE program_id=%s ORDER BY stage_id FOR UPDATE""",(program_id,))
             persisted_rows=cur.fetchall()
@@ -968,6 +989,10 @@ class HallRepository:
                 )
             for stage_id in sorted(existing_plan_ids,key=str):
                 declaration_version=int(persisted[stage_id]["declaration_schema_version"])
+                value_version=int(persisted[stage_id].get("value_schema_version",0))
+                value_snapshot=stage_plans[stage_id].snapshot
+                if value_version not in (0,1) or (value_snapshot is not None and value_snapshot.value_schema_version < value_version):
+                    raise SnapshotCompatibilityError("Unknown value format or downgrade")
                 snapshot=stage_plans[stage_id].snapshot
                 if declaration_version not in (0,DECLARATION_SCHEMA_VERSION) or (
                         snapshot is not None and snapshot.declaration_schema_version < declaration_version):
@@ -986,7 +1011,7 @@ class HallRepository:
                         f"{persisted[stage_id]['graph_snapshot_version']}"
                     )
             for stage_id in new_plan_ids:
-                if stage_plans[stage_id].new_stage.stage_kind!="PROGRAM_BODY":
+                if stage_plans[stage_id].new_stage.stage_kind not in ("PROGRAM_BODY","VALUE_BODY"):
                     raise ProgramSavePlanError(
                         "A persisted Program already has its only ROOT Stage"
                     )
@@ -1003,7 +1028,9 @@ class HallRepository:
             if stage_kinds.get(plan.root_stage_id)!="ROOT":
                 raise ProgramSavePlanError("Program root must have ROOT Stage kind")
             for link in plan.links:
-                if stage_kinds[link.child_stage_id]!="PROGRAM_BODY":
+                if link.owner_role=="LET_RHS" and stage_kinds[link.parent_stage_id] not in ("ROOT","PROGRAM_BODY"):
+                    raise ProgramSavePlanError("LET_RHS requires a control parent")
+                if stage_kinds[link.child_stage_id] != {"PROGRAM_BODY":"PROGRAM_BODY", "LET_RHS":"VALUE_BODY"}[link.owner_role]:
                     raise ProgramSavePlanError("A linked child must be PROGRAM_BODY")
 
             clean_stage_ids=[
@@ -1028,13 +1055,13 @@ class HallRepository:
                     link.parent_stage_id,{}
                 ).get(
                     link.program_block_instance_id
-                )!="PROGRAM"):
+                )!=("LET" if link.owner_role=="LET_RHS" else "PROGRAM")):
                     raise ProgramSavePlanError(
                         "Program Stage link has no matching PROGRAM block in its parent"
                     )
 
             cur.execute("""SELECT parent_stage_id,program_block_instance_id,
-                    child_stage_id,link_state
+                    child_stage_id,link_state,owner_role
                 FROM blockcommander.program_stage_links
                 WHERE program_id=%s
                 ORDER BY parent_stage_id,program_block_instance_id,child_stage_id""",
@@ -1044,13 +1071,13 @@ class HallRepository:
                     uuid.UUID(str(row["parent_stage_id"])),
                     uuid.UUID(str(row["program_block_instance_id"])),
                     uuid.UUID(str(row["child_stage_id"])),
-                    str(row["link_state"]),
+                    str(row["link_state"]),str(row.get("owner_role","PROGRAM_BODY")),
                 ) for row in cur.fetchall()
             )
             desired_links=tuple(sorted((
                 (
                     link.parent_stage_id,link.program_block_instance_id,
-                    link.child_stage_id,link.link_state,
+                    link.child_stage_id,link.link_state,link.owner_role,
                 ) for link in plan.links
             ),key=lambda item:tuple(str(value) for value in item)))
             links_changed=current_links!=desired_links
@@ -1092,13 +1119,14 @@ class HallRepository:
                 changed_stages.add(stage_id)
 
             if links_changed:
+                cur.execute("SELECT set_config('blockcommander.value_writer','1',true)")
                 cur.execute("DELETE FROM blockcommander.program_stage_links WHERE program_id=%s",(program_id,))
-                for parent_id,block_id,child_id,state in desired_links:
+                for parent_id,block_id,child_id,state,role in desired_links:
                     cur.execute("""INSERT INTO blockcommander.program_stage_links(
                             program_id,parent_stage_id,program_block_instance_id,
-                            child_stage_id,link_state)
-                        VALUES(%s,%s,%s,%s,%s)""",
-                        (program_id,str(parent_id),str(block_id),str(child_id),state))
+                            child_stage_id,link_state,owner_role)
+                        VALUES(%s,%s,%s,%s,%s,%s)""",
+                        (program_id,str(parent_id),str(block_id),str(child_id),state,role))
 
             new_program_version=int(program["saved_version"])+1
             cur.execute("""UPDATE blockcommander.programs

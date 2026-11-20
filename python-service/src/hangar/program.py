@@ -259,8 +259,12 @@ class ProgramService:
     @staticmethod
     def assert_block_allowed(stage_kind:str,type_key:str)->None:
         normalized_kind=str(stage_kind).upper();normalized_type=str(type_key).upper()
-        if normalized_kind not in ("ROOT","PROGRAM_BODY"):
+        if normalized_kind not in ("ROOT","PROGRAM_BODY","VALUE_BODY"):
             raise HallConflict("Ismeretlen Stage-kind.")
+        if normalized_kind=="VALUE_BODY" and normalized_type not in ("LITERAL","REF","OPERATOR","RESULT"):
+            raise HallConflict("Only value blocks are allowed in VALUE_BODY")
+        if normalized_kind!="VALUE_BODY" and normalized_type in ("LITERAL","REF","OPERATOR","RESULT"):
+            raise HallConflict("Value blocks require VALUE_BODY")
         if normalized_kind=="PROGRAM_BODY" and normalized_type in ("CLASS","INTERFACE"):
             raise HallConflict(f"{normalized_type} blokk nem helyezhető PROGRAM_BODY Stage-be.")
 
@@ -278,9 +282,9 @@ class ProgramService:
         self._active(workspace)
 
     @staticmethod
-    def _find_program_block(parent:StageWorkspace,block_id:uuid.UUID)->None:
+    def _find_program_block(parent:StageWorkspace,block_id:uuid.UUID,role:str="PROGRAM_BODY")->None:
         block=next((item for item in parent.snapshot.blocks if item.instance_id==block_id),None)
-        if block is None or block.type_key!="PROGRAM":
+        if role not in ("PROGRAM_BODY", "LET_RHS") or block is None or block.type_key != ("LET" if role=="LET_RHS" else "PROGRAM"):
             raise HallConflict("A child Stage csak létező PROGRAM blokkhoz kapcsolható.")
 
     @staticmethod
@@ -299,6 +303,11 @@ class ProgramService:
                 raise HallConflict("A Stage nem lehet saját maga gyermeke.")
             if link.link_state not in ("ACTIVE","RETAINED"):
                 raise HallConflict("Ismeretlen hierarchy-link állapot.")
+            expected_kind={"PROGRAM_BODY":"PROGRAM_BODY", "LET_RHS":"VALUE_BODY"}.get(link.owner_role)
+            if expected_kind is None or workspace.stage_headers[link.child_stage_id]["stage_kind"] != expected_kind:
+                raise HallConflict("Stage kind and owner role mismatch")
+            if link.owner_role=="LET_RHS" and workspace.stage_headers[link.parent_stage_id]["stage_kind"] not in ("ROOT","PROGRAM_BODY"):
+                raise HallConflict("LET_RHS requires a control parent")
             if link.link_state=="ACTIVE":
                 block_key=(link.parent_stage_id,link.program_block_instance_id)
                 if block_key in active_blocks: raise HallConflict("Egy PROGRAM blokknak több aktív childja van.")
@@ -327,7 +336,7 @@ class ProgramService:
     def ensure_child_result(
         self,program_id:str|uuid.UUID,parent_stage_id:str|uuid.UUID,
         program_block_instance_id:str|uuid.UUID,player_uuid:str,*,
-        stage_name:str|None=None,
+        stage_name:str|None=None,owner_role:str="PROGRAM_BODY",
     )->ChildEnsureResult:
         workspace=self.load(program_id);parent_id=uuid.UUID(str(parent_stage_id))
         block_id=uuid.UUID(str(program_block_instance_id))
@@ -335,11 +344,15 @@ class ProgramService:
             self._active(workspace);self._authorize(workspace,player_uuid)
             parent=self._load_stage_locked(workspace,parent_id)
             with parent.lock:
-                self._find_program_block(parent,block_id)
+                self._find_program_block(parent,block_id,owner_role)
+                if owner_role=="LET_RHS" and parent.stage["stage_kind"] not in ("ROOT","PROGRAM_BODY"):
+                    raise HallConflict("LET_RHS requires a control parent")
                 existing=next((link for link in workspace.links
                     if link.parent_stage_id==parent_id
                     and link.program_block_instance_id==block_id),None)
                 if existing is not None:
+                    if existing.owner_role != owner_role:
+                        raise HallConflict("Owner role mismatch")
                     if existing.link_state=="RETAINED":
                         replacement=replace(existing,link_state="ACTIVE")
                         candidate=tuple(replacement if item==existing else item for item in workspace.links)
@@ -357,8 +370,8 @@ class ProgramService:
                 parent_stage=parent.stage
                 stage={
                     "stage_id":str(child_id),"program_id":str(workspace.program_id),
-                    "stage_kind":"PROGRAM_BODY","hall_id":None,
-                    "stage_name":stage_name or "Program body",
+                    "stage_kind":("VALUE_BODY" if owner_role=="LET_RHS" else "PROGRAM_BODY"),"hall_id":None,
+                    "stage_name":stage_name or ("Value body" if owner_role=="LET_RHS" else "Program body"),
                     "origin_rel_x":int(parent_stage.get("origin_rel_x",0)),
                     "origin_rel_y":int(parent_stage.get("origin_rel_y",0)),
                     "origin_rel_z":int(parent_stage.get("origin_rel_z",0)),
@@ -376,6 +389,7 @@ class ProgramService:
                 snapshot=StageSnapshot(
                     child_id,(),(),(),(),0,None,None,
                     ProgramValidationStatus.NOT_CHECKED,PORT_CATALOG_VERSION,
+                    value_schema_version=(1 if owner_role=="LET_RHS" else 0),
                 )
                 child=StageWorkspace(
                     stage,snapshot,0,True,
@@ -387,7 +401,7 @@ class ProgramService:
                 workspace.new_stage_ids.add(child_id)
                 with self._guard: self._stage_to_program[child_id]=workspace.program_id
                 self.stages._register_workspace(child)
-                link=ProgramStageLink(parent_id,block_id,child_id,"ACTIVE")
+                link=ProgramStageLink(parent_id,block_id,child_id,"ACTIVE",owner_role)
                 candidate=(*workspace.links,link)
                 self._validate_hierarchy(workspace,candidate)
                 workspace.links=candidate;workspace.hierarchy_dirty=True
@@ -397,7 +411,7 @@ class ProgramService:
     def link_child(
         self,program_id:str|uuid.UUID,parent_stage_id:str|uuid.UUID,
         program_block_instance_id:str|uuid.UUID,child_stage_id:str|uuid.UUID,
-        player_uuid:str,*,link_state:str="ACTIVE",
+        player_uuid:str,*,link_state:str="ACTIVE",owner_role:str="PROGRAM_BODY",
     )->None:
         workspace=self.load(program_id);parent_id=uuid.UUID(str(parent_stage_id))
         block_id=uuid.UUID(str(program_block_instance_id));child_id=uuid.UUID(str(child_stage_id))
@@ -410,8 +424,8 @@ class ProgramService:
             with ExitStack() as stack:
                 for item in sorted((parent,child),key=lambda ws:str(ws.snapshot.stage_id)):
                     stack.enter_context(item.lock)
-                self._find_program_block(parent,block_id)
-                link=ProgramStageLink(parent_id,block_id,child_id,link_state)
+                self._find_program_block(parent,block_id,owner_role)
+                link=ProgramStageLink(parent_id,block_id,child_id,link_state,owner_role)
                 same=next((item for item in workspace.links
                     if item.parent_stage_id==parent_id
                     and item.program_block_instance_id==block_id),None)
@@ -424,7 +438,7 @@ class ProgramService:
                 workspace.hierarchy_revision+=1
 
     def _stage_block_deleted(self,stage_id:str,block_id:uuid.UUID,type_key:str)->None:
-        if type_key!="PROGRAM": return
+        if type_key not in ("PROGRAM", "LET"): return
         try: workspace=self._workspace_for_stage_id(uuid.UUID(str(stage_id)))
         except HallNotFound: return
         with workspace.lock:
@@ -579,9 +593,11 @@ class ProgramService:
             stage_workspace.saved_version=item.saved_version
             stage_workspace.stage["saved_version"]=item.saved_version
             stage_workspace.stage["declaration_schema_version"]=stage_workspace.snapshot.declaration_schema_version
+            stage_workspace.stage["value_schema_version"]=stage_workspace.snapshot.value_schema_version
             stage_workspace.dirty=False
             workspace.stage_headers[stage_id]["saved_version"]=item.saved_version
             workspace.stage_headers[stage_id]["declaration_schema_version"]=stage_workspace.snapshot.declaration_schema_version
+            workspace.stage_headers[stage_id]["value_schema_version"]=stage_workspace.snapshot.value_schema_version
         workspace.new_stage_ids.clear()
         workspace.hierarchy_dirty=False
 

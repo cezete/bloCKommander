@@ -422,6 +422,7 @@ def to_stage_snapshot(
         port_catalog_version=current.port_catalog_version,
         declarations=current.declarations,
         declaration_schema_version=current.declaration_schema_version,
+        value_schema_version=current.value_schema_version,
     )
 
 

@@ -20,7 +20,7 @@ class StageScopeParentProvider:
                 continue
             if (link.link_state != "ACTIVE" or link.child_stage_id == root or
                     link.parent_stage_id not in headers or link.child_stage_id not in headers or
-                    link.child_stage_id in parents or headers[link.child_stage_id]["stage_kind"] != "PROGRAM_BODY"):
+                    link.child_stage_id in parents or headers[link.child_stage_id]["stage_kind"] != {"PROGRAM_BODY":"PROGRAM_BODY", "LET_RHS":"VALUE_BODY"}.get(link.owner_role)):
                 raise DeclarationError("SCOPE_UNAVAILABLE", "Invalid active scope ancestry")
             parents[link.child_stage_id] = link.parent_stage_id
         chain = []; seen = set(); current = stage_id

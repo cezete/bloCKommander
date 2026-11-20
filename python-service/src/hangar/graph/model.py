@@ -29,6 +29,7 @@ class LocalSide(str, Enum):
 
 class PortKind(str, Enum):
     CONTROL = "CONTROL"
+    VALUE = "VALUE"
 
 
 class PortDirection(str, Enum):
@@ -38,6 +39,7 @@ class PortDirection(str, Enum):
 
 class EdgeKind(str, Enum):
     CONTROL = "CONTROL"
+    VALUE = "VALUE"
 
 
 class WireChannel(str, Enum):
@@ -83,6 +85,7 @@ class PortDefinition:
     min_edges: int
     max_edges: int
     branch_label: str | None = None
+    value_type: str | None = None
 
     def __post_init__(self) -> None:
         _validate_semantic_key(self.port_key, "port_key")

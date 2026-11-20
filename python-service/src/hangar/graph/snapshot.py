@@ -68,6 +68,7 @@ class StageBlockSnapshot:
     display_name: str
     material_name: str
     display_definition: FrozenJson = ()
+    semantic_config: FrozenJson = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.instance_id, UUID):
@@ -87,6 +88,12 @@ class StageBlockSnapshot:
         ):
             raise TypeError("display_name and material_name must be strings")
         object.__setattr__(self, "display_definition", freeze_json(self.display_definition))
+        from ..value_model import validate_config, ValueDomainError
+        if not isinstance(self.semantic_config, (Mapping, tuple)):
+            raise ValueDomainError("INVALID_VALUE_CONFIG", "Configuration must be an object")
+        config = thaw_json(freeze_json(self.semantic_config))
+        validate_config(self.type_key, config)
+        object.__setattr__(self, "semantic_config", freeze_json(self.semantic_config))
 
     def as_legacy_dict(self, stage_id: UUID) -> dict[str, Any]:
         return {
@@ -119,6 +126,7 @@ class StageSnapshot:
     port_catalog_version: str | None
     declarations: tuple[VariableDeclaration, ...] = ()
     declaration_schema_version: int = 0
+    value_schema_version: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.stage_id, UUID):
@@ -135,6 +143,10 @@ class StageSnapshot:
             if not all(isinstance(item, item_type) for item in values):
                 raise ValueError(f"{field_name} contains an invalid value")
         block_ids = tuple(item.instance_id for item in self.blocks)
+        if type(self.value_schema_version) is not int or self.value_schema_version not in (0, 1):
+            raise ValueError("Unsupported value snapshot format")
+        if any(b.semantic_config or b.type_key in ("LET", "LITERAL", "REF", "OPERATOR", "RESULT") for b in self.blocks) or any(e.edge_kind.value == "VALUE" for e in self.edges):
+            object.__setattr__(self, "value_schema_version", 1)
         if type(self.declaration_schema_version) is not int or self.declaration_schema_version not in (0, DECLARATION_SCHEMA_VERSION):
             raise DeclarationError("UNSUPPORTED_DECLARATION_FORMAT", "Unknown declaration snapshot format")
         if not isinstance(self.declarations, tuple) or not all(isinstance(d, VariableDeclaration) for d in self.declarations):
@@ -192,7 +204,7 @@ class StageSnapshot:
 
     @property
     def has_unpersisted_graph_content(self) -> bool:
-        return bool(self.edges or self.routes or self.wire_cells or self.declarations)
+        return bool(self.edges or self.routes or self.wire_cells or self.declarations or self.value_schema_version)
 
     def with_content_change(
         self,

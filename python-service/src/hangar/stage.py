@@ -65,7 +65,7 @@ class StageWorkspace:
         if snapshot is not None and blocks is not None:
             raise TypeError("pass snapshot or legacy blocks, not both")
         if snapshot is None:
-            if stage.get("declaration_schema_version",0) != 0:
+            if stage.get("declaration_schema_version",0) != 0 or stage.get("value_schema_version",0) != 0:
                 raise SnapshotCompatibilityError("Block-only constructor cannot represent declaration metadata")
             converted=[];seen=set()
             for index,raw in enumerate(blocks or []):
@@ -229,9 +229,13 @@ class StageService:
         )
         if loaded.compatible_for_graph_mutation:
             runtime_types={str(item["type_key"]) for item in self.repository.list_block_types()}
+            catalog=CK_CONTROL_PORT_CATALOG
+            if snapshot.value_schema_version:
+                from .value_ports import catalog_for
+                catalog=catalog_for(stage.get("stage_kind"))
             try:
                 mapping=to_graph_workspace(
-                    candidate,CK_CONTROL_PORT_CATALOG,known_block_types=runtime_types
+                    candidate,catalog,known_block_types=runtime_types
                 )
             except GraphWorkspaceMappingError as exc:
                 candidate.compatible_for_graph_mutation=False
@@ -245,7 +249,7 @@ class StageService:
                     f"{item.code.value}: {item.message}" for item in mapping.issues
                 )
                 return candidate
-            report=validate_graph(mapping.state,CK_CONTROL_PORT_CATALOG)
+            report=validate_graph(mapping.state,catalog)
             candidate.snapshot=replace(
                 snapshot,
                 validated_revision=(None if report.has_blocking_errors else report.revision),
@@ -272,7 +276,7 @@ class StageService:
     def _snapshot_from_legacy(
         cls,stage:dict[str,Any],raw_blocks:list[dict[str,Any]],*,working_revision:int
     )->StageSnapshot:
-        if stage.get("declaration_schema_version",0) != 0:
+        if stage.get("declaration_schema_version",0) != 0 or stage.get("value_schema_version",0) != 0:
             raise SnapshotCompatibilityError("Legacy blocks cannot replace declaration-aware content")
         return StageSnapshot(
             stage_id=uuid.UUID(str(stage["stage_id"])),

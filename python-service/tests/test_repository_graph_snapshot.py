@@ -451,7 +451,7 @@ class RepositoryGraphSnapshotUnitTest(unittest.TestCase):
         self.assertTrue(connection.committed)
         update = next(call for call in cursor.calls if call[0].startswith("UPDATE blockcommander.stages"))
         self.assertEqual(update[1][0], 5)
-        self.assertEqual(update[1][1:4], (1, 0, PORT_CATALOG_VERSION))
+        self.assertEqual(update[1][1:5], (1, 0, 0, PORT_CATALOG_VERSION))
 
     def test_stale_saved_version_stops_before_snapshot_delete(self):
         cursor = RecordingCursor((5, 1))

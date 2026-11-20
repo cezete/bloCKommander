@@ -41,7 +41,7 @@ FINGERPRINT_QUERIES = (
               size_x,size_y,size_z,saved_version,created_at,updated_at,
               graph_snapshot_version,port_catalog_version
          FROM blockcommander.stages ORDER BY stage_id""",
-    "SELECT * FROM blockcommander.stage_blocks ORDER BY instance_id",
+    "SELECT instance_id,stage_id,type_key,rel_x,rel_y,rel_z,orientation,label,description,created_at,updated_at FROM blockcommander.stage_blocks ORDER BY instance_id",
     "SELECT * FROM blockcommander.graph_edges ORDER BY edge_id",
     "SELECT * FROM blockcommander.edge_routes ORDER BY route_id",
     "SELECT * FROM blockcommander.route_steps ORDER BY route_id,step_index",
@@ -88,6 +88,9 @@ class ProgramModelMigrationIntegrationTest(unittest.TestCase):
         before = storage_fingerprint()
         self.migrate()
         self.assertEqual(storage_fingerprint(), before)
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM blockcommander.stage_blocks WHERE semantic_config <> '{}'::jsonb")
+            self.assertEqual((0,), cur.fetchone())
 
         with connect() as conn, conn.cursor() as cur:
             cur.execute(

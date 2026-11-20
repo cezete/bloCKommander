@@ -91,14 +91,21 @@ def _candidate_key(candidate: RouteCandidate) -> tuple[object, ...]:
     )
 
 
-def _semantic_key(stage_id: UUID, candidate: RouteCandidate) -> tuple:
+def _edge_kind(state, candidate, catalog):
+    node = next((n for n in state.nodes if n.instance_id == candidate.source_port.instance_id), None)
+    ports = catalog.get(node.type_key, ()) if node else ()
+    port = next((p for p in ports if p.port_key == candidate.source_port.port_key), None)
+    return EdgeKind.VALUE if port and port.port_kind == PortKind.VALUE else EdgeKind.CONTROL
+
+
+def _semantic_key(stage_id: UUID, candidate: RouteCandidate, kind=EdgeKind.CONTROL) -> tuple:
     return (
         stage_id,
         candidate.source_port.instance_id,
         candidate.source_port.port_key,
         candidate.target_port.instance_id,
         candidate.target_port.port_key,
-        EdgeKind.CONTROL,
+        kind,
     )
 
 
@@ -128,7 +135,7 @@ def _preflight(
     resolved: dict[PortRef, PortDefinition] = {}
 
     for candidate in candidates:
-        key = _semantic_key(state.stage_id, candidate)
+        key = _semantic_key(state.stage_id, candidate, _edge_kind(state, candidate, port_catalog))
         if key in seen_keys:
             diagnostics.append(
                 _error(
@@ -237,13 +244,13 @@ def _preflight(
         incompatible = tuple(
             port_ref
             for port_ref, definition, _ in endpoint_definitions
-            if definition is not None and definition.port_kind != PortKind.CONTROL
+            if definition is not None and source_definition is not None and definition.port_kind != source_definition.port_kind
         )
         if incompatible:
             diagnostics.append(
                 _error(
                     DiagnosticCode.INCOMPATIBLE_PORT_KIND,
-                    "Route candidate supports CONTROL ports only",
+                    "Route candidate requires matching port kinds",
                     port_refs=incompatible,
                 )
             )
@@ -348,7 +355,7 @@ def bind_edges(
 
     ambiguity = []
     for candidate in candidates:
-        existing_edge = edges_by_key.get(_semantic_key(state.stage_id, candidate))
+        existing_edge = edges_by_key.get(_semantic_key(state.stage_id, candidate, _edge_kind(state, candidate, port_catalog)))
         if existing_edge is not None and len(routes_by_edge[existing_edge.edge_id]) > 1:
             ambiguity.append(
                 _error(
@@ -370,7 +377,7 @@ def bind_edges(
     allocated_route_ids = set(routes_by_id)
 
     for candidate in candidates:
-        key = _semantic_key(state.stage_id, candidate)
+        key = _semantic_key(state.stage_id, candidate, _edge_kind(state, candidate, port_catalog))
         graph_edge = edges_by_key.get(key)
         if graph_edge is None:
             edge_id = edge_id_factory()
@@ -386,7 +393,7 @@ def bind_edges(
                 candidate.source_port.port_key,
                 candidate.target_port.instance_id,
                 candidate.target_port.port_key,
-                EdgeKind.CONTROL,
+                _edge_kind(state, candidate, port_catalog),
             )
             edges_by_key[key] = graph_edge
             existing_edge_ids.add(edge_id)
