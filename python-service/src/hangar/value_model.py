@@ -58,4 +58,16 @@ class ValueAnalysis:
 
     @property
     def valid(self):
+        """Whole-analysis validity, including global graph and LET diagnostics."""
         return not self.diagnostics
+
+    @property
+    def result_valid(self):
+        """Single RESULT expression only; not a whole-Stage/finalization decision.
+
+        A disconnected cycle or an incompatible LET target can leave the RHS
+        expression itself correct while ``valid`` remains false.
+        """
+        dependencies = frozenset(self.dependency_order)
+        return (self.expression is not None and self.result_type is not None
+                and not any(d.block_id in dependencies for d in self.diagnostics))

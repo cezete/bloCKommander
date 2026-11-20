@@ -77,6 +77,24 @@ in deterministic topological order. It distinguishes actual cycle members from
 consumers blocked by a cycle. Constant folding serves diagnostics only; it is
 not Program execution. No derived text is persisted as source truth.
 
+### C1-R1 – RESULT processing and validity
+
+Type checks, constant diagnostic folding and expression rendering run only on
+the dependencies of the placed RESULT blocks. Unconnected noncyclic drafts
+(including an invalid operator type, broken REF or constant division by zero)
+are not processed as part of the RESULT expression. Zero or multiple RESULT
+blocks still produce cardinality diagnostics and no single expression text.
+
+Whole-Stage topology integrity checks and cycle detection remain global.
+`ValueAnalysis.valid` retains its meaning: there must be no diagnostics, including
+global cycles and LET-target diagnostics. The additional read-only `result_valid`
+property describes only a complete, typed single RESULT expression without
+diagnostics on its dependency nodes. Therefore a disconnected cycle can yield
+`valid=False, result_valid=True`; a cycle affecting RESULT yields both false.
+A LET-target mismatch also leaves a correct RHS `result_valid=True` while the
+whole analysis remains invalid. `result_valid` must not replace global validation
+in a future finalization gate. Neither property is a SAVE condition.
+
 ## Storage and compatibility
 
 [Migration 012](../python-service/src/hangar/migrations/012_value_stages.sql) adds

@@ -87,6 +87,9 @@ class ValuePostgreSQLTest(unittest.TestCase):
     def test_semantically_broken_ref_saved_without_losing_uuid(self):
         ref = self.values.place_block(self.rhs, OWNER_ID, self.basis(self.rhs), 'REF', GridPos(1, 0, 1))
         self.values.set_ref(self.rhs, OWNER_ID, self.basis(self.rhs), ref, self.x.declaration_id)
+        result = self.values.place_block(self.rhs, OWNER_ID, self.basis(self.rhs), 'RESULT', GridPos(1, 0, 3))
+        stage = self.programs.stage(PROGRAM_ID, self.rhs.stage_id)
+        self.values._commit(stage, edges=(GraphEdge(uuid4(), self.rhs.stage_id, ref, 'out', result, 'in', EdgeKind.VALUE),))
         root = self.programs.root(PROGRAM_ID)
         self.declarations.delete(self.root, OWNER_ID, root.workspace_epoch, root.revision, self.x.declaration_id)
         self.programs.save(PROGRAM_ID, str(OWNER_ID))
@@ -141,6 +144,40 @@ class ValuePostgreSQLTest(unittest.TestCase):
             self.sql("SELECT set_config('blockcommander.value_writer','1',true); "
                      "UPDATE blockcommander.stages SET value_schema_version=0 WHERE stage_id=%s", (str(self.rhs.stage_id),))
         self.assertEqual([(1,)], self.sql('SELECT value_schema_version FROM blockcommander.stages WHERE stage_id=%s', (str(self.rhs.stage_id),)))
+
+    def test_static_zero_division_saves_and_reloads_as_semantic_error(self):
+        ids = self.build()
+        self.values.set_literal(self.rhs, OWNER_ID, self.basis(self.rhs), ids[1], 0)
+        self.values.set_operator(self.rhs, OWNER_ID, self.basis(self.rhs), ids[2], 'DIVIDE')
+        self.assertIn('DIVISION_BY_ZERO', {d.code for d in self.values.view(self.rhs, OWNER_ID).analysis.diagnostics})
+        receipt = self.programs.save(PROGRAM_ID, str(OWNER_ID))
+        restored = self.restart().view(self.rhs, OWNER_ID).analysis
+        self.assertTrue(receipt.changed)
+        self.assertIn('DIVISION_BY_ZERO', {d.code for d in restored.diagnostics})
+        self.assertFalse(restored.valid); self.assertFalse(restored.result_valid)
+        self.assertFalse(self.programs.load(PROGRAM_ID).dirty)
+
+    def test_bound_type_mismatch_saves_declaration_and_expression_together(self):
+        ids = self.build()
+        root = self.programs.root(PROGRAM_ID)
+        text = self.declarations.create(self.root, OWNER_ID, root.workspace_epoch, root.revision,
+            name='text', variable_type=VariableType.STRING, mutability=Mutability.MUTABLE).declaration
+        stage = self.programs.stage(PROGRAM_ID, self.rhs.stage_id)
+        self.programs.stages.delete(str(self.rhs.stage_id), str(ids[1]), {
+            'player_uuid': str(OWNER_ID), 'workspace_epoch': str(stage.workspace_epoch),
+            'expected_working_revision': stage.revision})
+        ref = self.values.place_block(self.rhs, OWNER_ID, self.basis(self.rhs), 'REF',
+                                     GridPos(10, 0, 8), orientation=CardinalDirection.WEST)
+        self.values.set_ref(self.rhs, OWNER_ID, self.basis(self.rhs), ref, text.declaration_id)
+        self.assertTrue(self.values.bind(self.rhs, OWNER_ID, self.basis(self.rhs)).accepted)
+        self.assertIn('TYPE_MISMATCH', {d.code for d in self.values.view(self.rhs, OWNER_ID).analysis.diagnostics})
+        self.programs.save(PROGRAM_ID, str(OWNER_ID))
+        restored = self.restart().view(self.rhs, OWNER_ID).analysis
+        self.assertIn('TYPE_MISMATCH', {d.code for d in restored.diagnostics})
+        self.assertFalse(restored.result_valid)
+        self.assertFalse(self.programs.load(PROGRAM_ID).dirty)
+        self.assertEqual([(str(text.declaration_id),)], self.sql(
+            "SELECT semantic_config->>'target_id' FROM blockcommander.stage_blocks WHERE instance_id=%s", (str(ref),)))
 
     def test_unknown_format_load_and_save_fail_closed(self):
         self.programs.save(PROGRAM_ID, str(OWNER_ID))

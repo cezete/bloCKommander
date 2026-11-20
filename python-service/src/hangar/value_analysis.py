@@ -73,6 +73,8 @@ def analyze_value(snapshot, resolution, *, target_id=None, owner_id=None):
         pending.extend(dependencies[bid])
     types = {}; text = {}; constants = {}
     for bid in order:
+        if bid not in reachable:
+            continue
         block = blocks[bid]; config = thaw_json(block.semantic_config)
         if block.type_key not in VALUE_PORT_CATALOG:
             issue("INVALID_VALUE_BLOCK", bid); continue

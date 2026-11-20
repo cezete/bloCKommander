@@ -158,6 +158,9 @@ class ValueDomainTest(ValueFixture):
         self.assertIn('LET_TYPE_MISMATCH', self.codes())
         op = self.operator(); self.edge(ref, op, 'lhs')
         number = self.literal(1); self.edge(number, op, 'rhs')
+        stage = self.programs.stage(PROGRAM, self.rhs.stage_id)
+        self.values._commit(stage, edges=tuple(e for e in stage.snapshot.edges if e.target_instance_id != result))
+        self.edge(op, result)
         self.assertIn('TYPE_MISMATCH', self.codes())
 
     def test_mixed_edge_kind_invalid(self):
@@ -290,6 +293,9 @@ class ValueDomainTest(ValueFixture):
         rhs = self.values.ensure_rhs(child, OWNER, self.basis(child), let)
         ref = self.values.place_block(rhs, OWNER, self.basis(rhs), 'REF', GridPos(1, 0, 1))
         self.values.set_ref(rhs, OWNER, self.basis(rhs), ref, local.declaration_id)
+        result = self.values.place_block(rhs, OWNER, self.basis(rhs), 'RESULT', GridPos(2, 0, 1))
+        stage = self.programs.stage(PROGRAM, rhs.stage_id)
+        self.values._commit(stage, edges=(GraphEdge(uuid4(), rhs.stage_id, ref, 'out', result, 'in', EdgeKind.VALUE),))
         old = self.basis(rhs)
         self.programs.retain_child(PROGRAM, child.stage_id, let, str(OWNER))
         # Reparent the saved identity under a different LET whose scope lacks local.
@@ -298,7 +304,7 @@ class ValueDomainTest(ValueFixture):
         view = self.values.view(rhs, OWNER)
         self.assertIn('BROKEN_REF', {d.code for d in view.analysis.diagnostics})
         self.assertNotEqual(old.resolution_basis, view.basis.resolution_basis)
-        self.assertEqual(str(local.declaration_id), thaw_json(view.snapshot.blocks[0].semantic_config)['target_id'])
+        self.assertEqual(str(local.declaration_id), thaw_json(next(b for b in view.snapshot.blocks if b.instance_id == ref).semantic_config)['target_id'])
 
     def test_let_delete_retains_child_and_saved_content(self):
         self.binary()
@@ -367,6 +373,137 @@ class ValueDomainTest(ValueFixture):
                              VALUE_PORT_CATALOG, edge_id_factory=uuid4, route_id_factory=uuid4)
         self.assertFalse(outcome.accepted)
         self.assertIn('PORT_CARDINALITY_VIOLATION', {d.code.value for d in outcome.diagnostics})
+
+
+class ResultDependencyRegressionTest(ValueFixture):
+    def detached_binary(self, operation, lhs=None, rhs=None):
+        lhs = self.literal(1) if lhs is None else lhs
+        rhs = self.literal(0) if rhs is None else rhs
+        op = self.operator(operation)
+        self.edge(lhs, op, 'lhs'); self.edge(rhs, op, 'rhs')
+        return op
+
+    def test_detached_zero_division_does_not_invalidate_result(self):
+        self.binary(); before = self.analysis()
+        detached = self.detached_binary('DIVIDE')
+        after = self.analysis()
+        self.assertTrue(after.valid); self.assertTrue(after.result_valid)
+        self.assertEqual((), after.diagnostics)
+        self.assertEqual(before.dependency_order, after.dependency_order)
+        self.assertEqual('2 + 3', after.expression)
+        self.assertNotIn(detached, after.dependency_order)
+
+    def test_detached_type_error_does_not_invalidate_result(self):
+        self.binary(); before = self.analysis()
+        string = self.create('text', variable_type=VariableType.STRING).declaration
+        self.detached_binary('ADD', self.ref(string), self.literal(1))
+        after = self.analysis()
+        self.assertTrue(after.valid); self.assertTrue(after.result_valid)
+        self.assertEqual((), after.diagnostics)
+        self.assertEqual(before.dependency_order, after.dependency_order)
+        self.assertEqual(before.expression, after.expression)
+
+    def test_detached_unconfigured_and_broken_ref_remain_drafts(self):
+        self.binary(); self.place('OPERATOR'); self.ref(self.y)
+        self.service.delete(self.target, OWNER, self.root.workspace_epoch, self.root.revision, self.y.declaration_id)
+        self.assertTrue(self.analysis().valid)
+        self.assertTrue(self.analysis().result_valid)
+
+    def test_disconnected_cycle_keeps_global_invalid_and_result_valid(self):
+        self.binary(); before = self.analysis()
+        a = self.operator(); b = self.operator()
+        self.edge(a, b, 'lhs'); self.edge(b, a, 'lhs')
+        after = self.analysis()
+        self.assertIn('VALUE_CYCLE', self.codes())
+        self.assertFalse(after.valid); self.assertTrue(after.result_valid)
+        self.assertEqual(before.dependency_order, after.dependency_order)
+        self.assertEqual(before.expression, after.expression)
+
+    def test_connected_cycle_invalidates_result(self):
+        a = self.operator(); b = self.operator(); result = self.place('RESULT')
+        self.edge(a, b, 'lhs'); self.edge(b, a, 'lhs'); self.edge(b, result)
+        self.assertIn('VALUE_CYCLE', self.codes())
+        self.assertFalse(self.analysis().valid)
+        self.assertFalse(self.analysis().result_valid)
+
+    def test_connected_zero_division_remains_invalid_and_saveable(self):
+        self.binary(1, 0, 'DIVIDE')
+        self.assertIn('DIVISION_BY_ZERO', self.codes())
+        self.assertFalse(self.analysis().valid)
+        self.assertFalse(self.analysis().result_valid)
+        self.programs.save(PROGRAM, str(OWNER))
+        fresh = ValueService(ProgramService(self.repo, StageService(self.repo)))
+        restored = fresh.view(self.rhs, OWNER).analysis
+        self.assertIn('DIVISION_BY_ZERO', {d.code for d in restored.diagnostics})
+        self.assertFalse(self.program.dirty)
+
+    def test_missing_and_multiple_results_have_no_single_valid_expression(self):
+        self.detached_binary('DIVIDE')
+        self.assertEqual({'MISSING_RESULT'}, self.codes())
+        self.assertFalse(self.analysis().result_valid)
+        self.assertIsNone(self.analysis().expression)
+        self.assertEqual((), self.analysis().dependency_order)
+        self.programs.save(PROGRAM, str(OWNER))
+        self.place('RESULT'); self.place('RESULT')
+        self.assertIn('MULTIPLE_RESULTS', self.codes())
+        self.assertFalse(self.analysis().result_valid)
+        self.assertIsNone(self.analysis().expression)
+        self.programs.save(PROGRAM, str(OWNER))
+
+    def test_connected_type_mismatch_is_saveable(self):
+        string = self.create('text', variable_type=VariableType.STRING).declaration
+        op = self.detached_binary('ADD', self.ref(string), self.literal(1))
+        result = self.place('RESULT'); self.edge(op, result)
+        self.assertIn('TYPE_MISMATCH', self.codes())
+        self.assertFalse(self.analysis().result_valid)
+        self.programs.save(PROGRAM, str(OWNER))
+        fresh = ValueService(ProgramService(self.repo, StageService(self.repo)))
+        self.assertIn('TYPE_MISMATCH', {d.code for d in fresh.view(self.rhs, OWNER).analysis.diagnostics})
+        self.assertFalse(self.program.dirty)
+
+    def assert_division_quotient(self, numerator, denominator, expected):
+        # Observe the exact folded quotient through a zero-denominator diagnostic,
+        # without adding a runtime-value API just for tests: 1 / (a/b - expected).
+        divide = self.detached_binary('DIVIDE', self.literal(numerator), self.literal(denominator))
+        difference = self.detached_binary('SUBTRACT', divide, self.literal(expected))
+        outer = self.detached_binary('DIVIDE', self.literal(1), difference)
+        result = self.place('RESULT'); self.edge(outer, result)
+        self.assertEqual([('DIVISION_BY_ZERO', outer, 'rhs')],
+                         [(d.code, d.block_id, d.port_key) for d in self.analysis().diagnostics])
+
+    def test_division_positive_positive(self): self.assert_division_quotient(7, 2, 3)
+
+    def test_division_negative_positive(self): self.assert_division_quotient(-7, 2, -3)
+
+    def test_division_positive_negative(self): self.assert_division_quotient(7, -2, -3)
+
+    def test_division_negative_negative(self): self.assert_division_quotient(-7, -2, 3)
+
+    def test_unknown_runtime_denominator_is_not_proven_zero(self):
+        op = self.detached_binary('DIVIDE', self.literal(100), self.ref(self.y))
+        result = self.place('RESULT'); self.edge(op, result)
+        analysis = self.analysis()
+        self.assertEqual('100 / y', analysis.expression)
+        self.assertTrue(analysis.valid); self.assertTrue(analysis.result_valid)
+        self.assertEqual((), analysis.diagnostics)
+
+    def test_max_plus_one_overflow(self):
+        self.binary(2**31 - 1, 1, 'ADD')
+        self.assertEqual({'INTEGER_OVERFLOW'}, self.codes())
+        self.assertFalse(self.analysis().result_valid)
+
+    def test_min_divide_minus_one_overflow(self):
+        self.binary(-(2**31), -1, 'DIVIDE')
+        self.assertEqual({'INTEGER_OVERFLOW'}, self.codes())
+        self.assertFalse(self.analysis().result_valid)
+
+    def test_let_target_mismatch_does_not_change_rhs_validity(self):
+        self.binary()
+        string = self.create('text', variable_type=VariableType.STRING).declaration
+        self.values.set_let_target(self.target, OWNER, self.basis(self.target), self.let, string.declaration_id)
+        self.assertEqual({'LET_TYPE_MISMATCH'}, self.codes())
+        self.assertFalse(self.analysis().valid)
+        self.assertTrue(self.analysis().result_valid)
 
 
 if __name__ == '__main__': unittest.main()
