@@ -11,6 +11,7 @@ from typing import Any
 
 import psycopg2
 
+from .graph.snapshot import thaw_json
 from .program import ProgramReloadRequired, ProgramService, ProgramWorkspace
 from .repository import (
     HallConflict,
@@ -66,8 +67,10 @@ def parse_json_object(raw:Any,*,required:set[str],optional:set[str]=frozenset())
 
 def parse_ensure_request(raw:Any)->dict[str,Any]:
     data=parse_json_object(
-        raw,required={"player_uuid","program_block_instance_id"},optional={"stage_name"},
+        raw,required={"player_uuid","program_block_instance_id"},optional={"stage_name","owner_role"},
     )
+    if data.get("owner_role", "PROGRAM_BODY") != "PROGRAM_BODY":
+        raise ProgramHttpFailure(400,"INVALID_FIELD","Invalid PROGRAM owner role.","owner_role")
     result={
         "player_uuid":parse_uuid(data["player_uuid"],"player_uuid"),
         "program_block_instance_id":parse_uuid(
@@ -103,6 +106,7 @@ def link_dto(link)->dict[str,Any]:
         "program_block_instance_id":str(link.program_block_instance_id),
         "child_stage_id":str(link.child_stage_id),
         "state":str(link.link_state),
+        "owner_role":link.owner_role,
     }
 
 
@@ -117,6 +121,7 @@ def stage_dto(workspace:ProgramWorkspace,stage_id:uuid.UUID)->dict[str,Any]:
         "name":str(header["stage_name"]),
         "is_root":stage_id==workspace.root_stage_id,
         "saved_version":saved_version,
+        "value_schema_version":loaded.snapshot.value_schema_version if loaded is not None else int(header.get("value_schema_version",0)),
         "workspace":None if loaded is None else {
             "epoch":str(loaded.workspace_epoch),
             "working_revision":loaded.revision,
@@ -160,6 +165,7 @@ def stage_projection_dto(
         "orientation":block.orientation.value,
         "label":block.label,
         "description":block.description,
+        **({"semantic_config":thaw_json(block.semantic_config)} if block.type_key=="LET" else {}),
     } for block in stage_workspace.snapshot.blocks]
     return projected
 
@@ -203,6 +209,11 @@ def receipt_dto(receipt:ProgramSaveReceipt,workspace:ProgramWorkspace)->dict[str
             "stage_id":str(item.stage_id),
             "saved_version":item.saved_version,
             "changed":bool(item.changed),
+            "workspace":{
+                "epoch":str(workspace.stage_workspaces[item.stage_id].workspace_epoch),
+                "working_revision":workspace.stage_workspaces[item.stage_id].revision,
+                "dirty":workspace.stage_workspaces[item.stage_id].dirty,
+            },
         } for item in receipt.stages],
     }
 

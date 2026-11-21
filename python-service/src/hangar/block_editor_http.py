@@ -65,20 +65,21 @@ def _unsupported_number(_raw):
     raise EditorHttpFailure("INVALID_NUMBER", "Floating point and non-finite JSON numbers are unsupported.")
 
 
-def parse_body():
+def parse_body(raw=None):
     if not request.is_json:
         raise EditorHttpFailure("INVALID_CONTENT_TYPE", "A JSON content type is required.")
     if request.content_length is not None and request.content_length > MAX_BODY_BYTES:
-        raise EditorHttpFailure("BODY_TOO_LARGE", "Editor body exceeds 64 KiB.", 413)
+        raise EditorHttpFailure("BODY_TOO_LARGE", "Request body exceeds 64 KiB.", 413)
     try:
-        raw = request.stream.read(MAX_BODY_BYTES + 1)
+        if raw is None:
+            raw = request.stream.read(MAX_BODY_BYTES + 1)
         if len(raw) > MAX_BODY_BYTES:
-            raise EditorHttpFailure("BODY_TOO_LARGE", "Editor body exceeds 64 KiB.", 413)
+            raise EditorHttpFailure("BODY_TOO_LARGE", "Request body exceeds 64 KiB.", 413)
         body = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs,
                           parse_int=_integer, parse_float=_unsupported_number,
                           parse_constant=_unsupported_number)
     except RequestEntityTooLarge as exc:
-        raise EditorHttpFailure("BODY_TOO_LARGE", "Editor body exceeds its transport limit.", 413) from exc
+        raise EditorHttpFailure("BODY_TOO_LARGE", "Request body exceeds its transport limit.", 413) from exc
     except (ValueError, UnicodeError, RecursionError, BadRequest) as exc:
         raise EditorHttpFailure("INVALID_JSON", "Invalid UTF-8 JSON body.") from exc
     if type(body) is not dict:

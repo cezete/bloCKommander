@@ -42,6 +42,7 @@ from .graph import (
 )
 from .repository import HallConflict, HallForbidden, HallNotFound
 from .stage import GraphOperationRejected, StageGraphContext, StageService
+from .value_model import ValueDomainError
 
 
 API_VERSION = "ck-graph-v1"
@@ -304,7 +305,7 @@ class GraphApplicationService:
                 "api_version":API_VERSION,"status":"ok","modified":False,
                 **_context_envelope(context),"diagnostics":[],
                 "discovery":_discovery_dict(discover_physical_topology(
-                    context.state,CK_CONTROL_PORT_CATALOG
+                    context.state,context.catalog
                 )),
                 "state":_state_dict(context),
             })
@@ -342,6 +343,10 @@ class GraphApplicationService:
                 )
             except Exception as exc:
                 return _exception_response(command,None,exc)
+            if before.stage_kind == "VALUE_BODY":
+                return _problem_response(command,before,GraphApplicationError(
+                    "CONTROL_STAGE_REQUIRED","CONTROL mutations require a control Stage.",status_code=409,
+                ))
             self._expire_other_epochs(str(command.stage_id),str(before.workspace_epoch))
             diagnostic("PY_GRAPH_VERSION_CHECK",stage_id=command.stage_id,request_id=command.request_id,
                 request_epoch=command.workspace_epoch,request_revision=command.expected_working_revision,
@@ -389,7 +394,7 @@ class GraphApplicationService:
                     "diagnostics":[_diagnostic_dict(item) for item in diagnostics],
                     "wire_diff":wire_diff,
                     "discovery":_discovery_dict(discover_physical_topology(
-                        after.state,CK_CONTROL_PORT_CATALOG
+                        after.state,after.catalog
                     )),
                     "state":_state_dict(after),**extra,
                 })
@@ -442,7 +447,7 @@ class GraphApplicationService:
         def mutate(state:GraphWorkspaceState)->GraphWorkspaceState:
             try:
                 result=place_wire_intent(
-                    state,position,intent,context.size,CK_CONTROL_PORT_CATALOG
+                    state,position,intent,context.size,context.catalog
                 )
             except WirePlacementError as exc:
                 raise GraphApplicationError(
@@ -467,7 +472,7 @@ class GraphApplicationService:
 
     def _bind_edges(self,command:GraphCommand,context:StageGraphContext):
         captured={}
-        discovery=discover_physical_topology(context.state,CK_CONTROL_PORT_CATALOG)
+        discovery=discover_physical_topology(context.state,context.catalog)
         candidates=tuple(item.as_route_candidate() for item in discovery.candidates)
         if not candidates:
             # Preserve the established CK-04 error contract for its exact
@@ -493,7 +498,7 @@ class GraphApplicationService:
                 BindEdgesCommand(
                     state.stage_id,command.player_uuid,state.working_revision,candidates
                 ),
-                CK_CONTROL_PORT_CATALOG,
+                context.catalog,
                 edge_id_factory=self._id_factory,
                 route_id_factory=self._id_factory,
             )
@@ -645,6 +650,8 @@ def _state_dict(context:StageGraphContext)->dict[str,Any]:
         "working_revision":state.working_revision,"saved_version":state.saved_version,
         "dirty":state.dirty,"graph_snapshot_version":context.graph_snapshot_version,
         "port_catalog_version":context.port_catalog_version,
+        "stage_kind":context.stage_kind,"value_schema_version":context.value_schema_version,
+        "control_mutation_allowed":context.stage_kind!="VALUE_BODY" and context.compatible_for_graph_mutation,
         "compatible_for_graph_mutation":context.compatible_for_graph_mutation,
         "compatibility_issues":list(context.compatibility_issues),
         "status":{
@@ -753,6 +760,9 @@ def _exception_response(command:GraphCommand,context:StageGraphContext|None,
         code="GRAPH_OPERATION_REJECTED";status=422
     elif isinstance(exc,GraphWorkspaceMappingError):
         diagnostics=tuple(exc.issues);code="GRAPH_MAPPING_ERROR";status=422
+    elif isinstance(exc,ValueDomainError):
+        diagnostics=(ApplicationDiagnostic(exc.code,"ERROR",str(exc)),)
+        code=exc.code;status=409
     elif isinstance(exc,HallForbidden):
         diagnostics=(ApplicationDiagnostic("FORBIDDEN","ERROR",str(exc)),)
         code="FORBIDDEN";status=403

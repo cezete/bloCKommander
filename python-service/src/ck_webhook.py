@@ -2,12 +2,13 @@ from __future__ import annotations
 import os
 import uuid
 from flask import Flask, g, jsonify, request
+from werkzeug.exceptions import RequestEntityTooLarge
 from hangar.builder import HallValidationError, control_elements, hall_client_view
 from hangar.repository import HallConflict, HallForbidden, HallNotFound, HallRepository
 from hangar.service import HallService
-from hangar.program import ProgramService
+from hangar.program import ProgramReloadRequired, ProgramService, ProgramWorkspaceState
 from hangar.block_editor import BlockEditorService
-from hangar.block_editor_http import BlockEditorHttpAdapter, EDITOR_ENDPOINTS
+from hangar.block_editor_http import BlockEditorHttpAdapter, EDITOR_ENDPOINTS, MAX_BODY_BYTES
 from hangar.declaration_service import DeclarationService
 from hangar.declaration_http import DeclarationHttpAdapter, DECLARATION_ENDPOINTS
 from hangar.program_http import (
@@ -17,6 +18,9 @@ from hangar.program_http import (
     translate_error as translate_program_error,
 )
 from hangar.stage import StageService
+from hangar.value_http import VALUE_ENDPOINTS, ValueHttpAdapter
+from hangar.value_model import ValueDomainError
+from hangar.value_service import ValueService
 from hangar.selection import SelectionFailure, parse_selection, selection_dto
 from hangar.hall_projection import project_stage
 from hangar.diagnostics import emit as diagnostic, context as diagnostic_context
@@ -67,6 +71,10 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
     declaration_http=DeclarationHttpAdapter(declarations,contexts,graph_auth)
     declaration_http.register(app)
     app.extensions["blockcommander_declarations"]=declarations
+    values=ValueService(programs,declarations=declarations)
+    value_http=ValueHttpAdapter(values,contexts,graph_auth)
+    value_http.register(app)
+    app.extensions["blockcommander_value_service"]=values
 
     @app.before_request
     def diagnostic_request_start():
@@ -132,6 +140,17 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
             # Editor has bounded, duplicate-safe parsing and mandatory explicit context.
             # Do not feed its body through the legacy request.get_json path.
             return editor_http.preflight()
+        if endpoint in VALUE_ENDPOINTS:
+            return None
+        if endpoint in {"place_stage_block","delete_stage_block","ensure_program_child"}:
+            # Bound the shared-route body before looking at its discriminator.
+            request.max_content_length=MAX_BODY_BYTES
+            try:
+                operation=value_http.dispatch(endpoint,request.get_json(silent=True))
+            except RequestEntityTooLarge:
+                return value_http.failure("BODY_TOO_LARGE","Request body exceeds 64 KiB.",413)
+            if operation is not None:
+                return value_http.extended(operation,args)
         program_routes={"get_program","get_program_children","get_program_stage",
             "ensure_program_child","program_status","save_program"}
         stage_routes={"place_stage_block","update_stage_block","delete_stage_block",
@@ -210,8 +229,10 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
                 for key in ("stage","state"):
                     view=body.get(key)
                     if isinstance(view,dict) and "stage_id" in view:
-                        ws=programs.stage(context.program_id,view["stage_id"])
-                        body[key]=project_stage(view,ws.stage,hall)
+                        header=getattr(g,"response_stage_header",None)
+                        if header is None or str(header["stage_id"])!=view["stage_id"]:
+                            header=programs.stage(context.program_id,view["stage_id"]).stage
+                        body[key]=project_stage(view,header,hall)
             response.set_data(app.json.dumps(body))
         return response
 
@@ -272,6 +293,13 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
         with workspace.lock:
             return {**stage,"program_dirty":programs.is_dirty(workspace.program_id)}
 
+    def projection_dirty(workspace,stage_workspace):
+        dirty=programs.is_dirty(workspace.program_id)
+        if workspace.state is ProgramWorkspaceState.RELOAD_REQUIRED:
+            raise ProgramReloadRequired("The Program workspace must be reloaded.")
+        g.response_stage_header=dict(stage_workspace.stage)
+        return dirty
+
     def enrich(hall):
         bounds={k:int(hall[k]) for k in ("min_x","min_y","min_z","max_x","max_y","max_z")}
         expected=[e.as_record() for e in control_elements(bounds,str(hall["orientation"]),str(hall["owner_name"]),str(hall["hall_name"]))]
@@ -327,6 +355,8 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
     def forbidden(exc): return jsonify(status="error",message=str(exc)),403
     @app.errorhandler(HallNotFound)
     def missing(exc): return jsonify(status="error",message=str(exc)),404
+    @app.errorhandler(ValueDomainError)
+    def value_block_failure(exc): return value_http.failure(exc.code,str(exc),409)
     @app.errorhandler(KeyError)
     def bad_request(exc): return jsonify(status="error",message=f"Hiányzó mező: {exc.args[0]}"),400
     @app.errorhandler(Exception)
@@ -440,7 +470,7 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
                 program_epoch=str(workspace.workspace_epoch)
                 program_version=workspace.saved_version
                 hierarchy_revision=workspace.hierarchy_revision
-                aggregate_dirty=programs.is_dirty(workspace.program_id)
+                aggregate_dirty=projection_dirty(workspace,stage_workspace)
             return jsonify(program_success(
                 program_id=normalized_program,
                 program_saved_version=program_version,
@@ -484,8 +514,8 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
         try:
             normalized=parse_uuid(program_id,"program_id")
             workspace=programs.load(normalized)
-            dirty=programs.is_dirty(normalized)
             with workspace.lock:
+                dirty=programs.is_dirty(normalized)
                 status={
                     "program_id":normalized,"saved_version":workspace.saved_version,
                     "aggregate_dirty":dirty,"hierarchy_dirty":workspace.hierarchy_dirty,
@@ -533,12 +563,12 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
 
     @app.post("/api/v1/stages/<stage_id>/blocks/<instance_id>")
     def update_stage_block(stage_id,instance_id):
-        stage=with_program_dirty(stages.update(stage_id,instance_id,request.get_json(silent=True) or {}))
+        stage=with_program_dirty(stages.update(stage_id,instance_id,request.get_json(silent=True) or {},legacy_only=True))
         return jsonify(status="ok",message="Programelem módosítva; a stage még nincs mentve.",stage=stage)
 
     @app.post("/api/v1/stages/<stage_id>/blocks/<instance_id>/delete")
     def delete_stage_block(stage_id,instance_id):
-        stage=with_program_dirty(stages.delete(stage_id,instance_id,request.get_json(silent=True) or {}))
+        stage=with_program_dirty(stages.delete(stage_id,instance_id,request.get_json(silent=True) or {},legacy_only=True))
         return jsonify(status="ok",message="Programelem törölve; a stage még nincs mentve.",stage=stage)
 
     @app.post("/api/v1/stages/<stage_id>/save")
@@ -560,7 +590,27 @@ def create_app(repository=None,mc=None,migrate=True,graph_shared_secret=None,all
         except GraphRequestError as exc:
             result=request_error_response(exc)
             return jsonify(result.body),result.status_code
-        try:result=graph_app.graph_state(stage_id,player_uuid)
+        try:
+            context=g.transport_context
+            if context.mount is None:
+                result=graph_app.graph_state(stage_id,player_uuid)
+            else:
+                with programs.locked_stage(context.program_id,stage_id,player_uuid) as (program,stage_workspace):
+                    result=graph_app.graph_state(stage_id,player_uuid)
+                    if result.status_code==200:
+                        result.body.update(program_id=str(program.program_id),
+                            program_workspace_epoch=str(program.workspace_epoch),
+                            hierarchy_revision=program.hierarchy_revision,
+                            program_saved_version=program.saved_version,
+                            aggregate_dirty=projection_dirty(program,stage_workspace))
+        except HallForbidden:
+            result=request_error_response(GraphRequestError("FORBIDDEN","Access to the Stage is forbidden.",status_code=403))
+        except HallNotFound:
+            result=request_error_response(GraphRequestError("STAGE_NOT_FOUND","Stage not found.",status_code=404))
+        except ProgramReloadRequired as exc:
+            result=request_error_response(GraphRequestError("RELOAD_REQUIRED",str(exc),status_code=409))
+        except HallConflict:
+            result=request_error_response(GraphRequestError("CONFLICT","The Program workspace must be reloaded.",status_code=409))
         except Exception as exc:return graph_internal_error(exc)
         return jsonify(result.body),result.status_code
 

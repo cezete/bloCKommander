@@ -4,15 +4,19 @@ import unittest
 from uuid import uuid4
 from dataclasses import replace
 import psycopg2
+from ck_webhook import create_app
 from hangar.program import ProgramService
 from hangar.stage import StageService
 from hangar.declaration_service import DeclarationService, DeclarationTarget
 from hangar.declarations import VariableType, Mutability
 from hangar.graph import GridPos, CardinalDirection, GraphEdge, EdgeKind
 from hangar.graph.placement import WirePlacementIntent
+from hangar.graph_application import GRAPH_SECRET_HEADER
+from hangar.value_http import API_VERSION
 from hangar.value_service import ValueService
 from hangar.repository import SnapshotCompatibilityError
-from postgres_graph_integration import (OWNER_ID, PROGRAM_ID, STAGE_ID, assert_database_identity,
+from hangar.transport_context import CONTEXT_HEADERS
+from postgres_graph_integration import (HALL_ID, OWNER_ID, PROGRAM_ID, STAGE_ID, assert_database_identity,
                                         connect, create_stage, repository, reset_schema)
 from postgres_program_save_integration import stage_snapshot
 
@@ -187,6 +191,140 @@ class ValuePostgreSQLTest(unittest.TestCase):
         self.sql('UPDATE blockcommander.stages SET value_schema_version=2 WHERE stage_id=%s', (str(self.rhs.stage_id),))
         with self.assertRaises(SnapshotCompatibilityError): self.repo.load_full_stage_snapshot(str(self.rhs.stage_id))
         with self.assertRaises(SnapshotCompatibilityError): self.programs.save(PROGRAM_ID, str(OWNER_ID))
+
+
+class ValueHttpPostgreSQLTest(unittest.TestCase):
+    def setUp(self):
+        assert_database_identity()
+        reset_schema()
+        self.repo = repository()
+        self.repo.migrate()
+        create_stage()
+        initial = replace(stage_snapshot(STAGE_ID, "Root"), blocks=(), edges=(), routes=(), wire_cells=())
+        self.repo.save_full_stage_snapshot(str(STAGE_ID), 0, initial)
+        self.client = self.new_client()
+        self.program_url = f"/api/v1/programs/{PROGRAM_ID}"
+        self.stage_url = f"{self.program_url}/stages/{STAGE_ID}"
+        self.legacy_url = f"/api/v1/stages/{STAGE_ID}"
+        mount = self.repo.resolve_working_copy_context(HALL_ID)
+        self.headers = {GRAPH_SECRET_HEADER: "isolated-value-postgres",
+                        **{CONTEXT_HEADERS[key]: value for key, value in mount.as_dict().items()}}
+
+    def new_client(self):
+        return create_app(repository=self.repo, migrate=False,
+                          graph_shared_secret="isolated-value-postgres").test_client()
+
+    def call(self, method, path, status=200, body=None):
+        result = self.client.open(path, method=method, headers=self.headers, json=body)
+        self.assertEqual(status, result.status_code, result.get_data(as_text=True))
+        return result.get_json()
+
+    def read(self, path):
+        return self.call("GET", f"{path}?player_uuid={OWNER_ID}")
+
+    def command(self, version=API_VERSION, **fields):
+        page = self.read(self.stage_url + "/symbols")
+        return dict(api_version=version, player_uuid=str(OWNER_ID), request_id=str(uuid4()),
+                    expected_stage_workspace_epoch=page["version_context"]["stage_workspace_epoch"],
+                    expected_working_revision=page["version_context"]["working_revision"],
+                    expected_resolution_basis=page["resolution_basis_digest"], **fields)
+
+    def create_let_and_child(self):
+        declaration = self.call("POST", self.stage_url + "/declarations", 201,
+            self.command("ck-declarations-v1", declaration=dict(name="counter", type_key="INTEGER", mutability="IMMUTABLE")))
+        declaration_id = declaration["declaration"]["declaration_id"]
+        let = self.call("POST", self.legacy_url + "/blocks", 201,
+            self.command(type_key="LET", coordinate_space="STAGE_RELATIVE", x=4, y=0, z=5, orientation="EAST"))["let"]
+        self.let_url = f'{self.stage_url}/blocks/{let["instance_id"]}/value'
+        self.call("PATCH", self.let_url, body=self.command(target_id=declaration_id))
+        ensured = self.call("POST", self.stage_url + "/children/ensure", 201,
+            self.command(owner_role="LET_RHS", program_block_instance_id=let["instance_id"]))
+        return let["instance_id"], declaration_id, ensured["child"]["stage_id"]
+
+    def graph_command(self, path, operation, payload):
+        state = self.read(self.legacy_url + "/graph")["state"]
+        return self.call("POST", self.legacy_url + "/graph" + path, body=dict(
+            schema_version=1, request_id=str(uuid4()), player_uuid=str(OWNER_ID),
+            stage_id=str(STAGE_ID), workspace_epoch=state["workspace_epoch"],
+            expected_working_revision=state["working_revision"], operation=operation, payload=payload))
+
+    def save(self, status=200):
+        return self.call("POST", self.program_url + "/save", status,
+                         {"player_uuid": str(OWNER_ID), "expected_saved_version": 0})
+
+    def test_http_save_reload_rebuild_and_control_route_round_trip(self):
+        let, target, child = self.create_let_and_child()
+        for kind, x in (("START", 2), ("STOP", 6)):
+            self.call("POST", self.legacy_url + "/blocks", 201, dict(
+                player_uuid=str(OWNER_ID), type_key=kind, coordinate_space="STAGE_RELATIVE",
+                x=x, y=0, z=5, orientation="EAST"))
+        for x in (3, 5):
+            self.graph_command("/wire/place", "WIRE_PLACE_INTENT",
+                               {"position": {"x": x, "y": 0, "z": 5}, "intent": "AUTO"})
+        bound = self.graph_command("/bind", "BIND_EDGES", {})["state"]
+        self.assertEqual({"CONTROL"}, {edge["edge_kind"] for edge in bound["edges"]})
+        self.assertEqual(2, len(bound["edges"]))
+        self.assertEqual(2, len(bound["routes"]))
+        self.assertEqual(2, len(bound["wire_cells"]))
+        receipt = self.save()["receipt"]
+        self.assertEqual({str(STAGE_ID), child}, {stage["stage_id"] for stage in receipt["stages"]})
+
+        # New Flask app means a new WH workspace with the same persisted database.
+        self.client = self.new_client()
+        restored = self.read(self.let_url)
+        self.assertEqual(let, restored["let"]["instance_id"])
+        self.assertEqual(target, restored["let"]["target_id"])
+        self.assertEqual(child, restored["let"]["rhs_link"]["child_stage_id"])
+        self.assertNotEqual(bound["workspace_epoch"], restored["stage_workspace_epoch"])
+        self.assertFalse(restored["aggregate_dirty"])
+        child_graph = self.read(f"/api/v1/stages/{child}/graph")
+        self.assertEqual("VALUE_BODY", child_graph["state"]["stage_kind"])
+        self.assertEqual([], child_graph["state"]["nodes"])
+        self.assertEqual([], child_graph["state"]["edges"])
+        before = self.read(self.legacy_url + "/graph")["state"]
+        self.call("POST", self.legacy_url + "/rebuild", body=dict(
+            player_uuid=str(OWNER_ID), workspace_epoch=before["workspace_epoch"],
+            expected_working_revision=before["working_revision"]))
+        rebuilt = self.read(self.legacy_url + "/graph")["state"]
+        self.assertNotEqual(before["workspace_epoch"], rebuilt["workspace_epoch"])
+        self.assertTrue(rebuilt["compatible_for_graph_mutation"])
+        for field in ("edges", "routes", "wire_cells"):
+            self.assertEqual(bound[field], rebuilt[field])
+        removed = self.graph_command("/wire", "WIRE_LAYOUT",
+            {"changes": [{"position": {"x": 3, "y": 0, "z": 5}, "cell": None}]})["state"]
+        self.assertEqual(1, len(removed["wire_cells"]))
+        deleted = self.call("POST", f"{self.legacy_url}/blocks/{let}/delete", body=self.command())
+        self.assertEqual("RETAINED", deleted["link"]["state"])
+        self.call("POST", self.program_url + "/save", body={
+            "player_uuid": str(OWNER_ID), "expected_saved_version": receipt["saved_version"],
+        })
+        self.client = self.new_client()
+        retained = self.call("GET", self.program_url + f"/stages/{child}")["stage"]
+        self.assertEqual("VALUE_BODY", retained["kind"])
+        self.assertEqual("RETAINED", retained["parents"][0]["state"])
+        self.assertEqual([], retained["blocks"])
+        symbols = self.read(self.stage_url + "/symbols")
+        self.assertIn(target, {row["declaration"]["declaration_id"] for row in symbols["rows"]})
+
+    def test_http_save_rolls_back_and_preserves_dirty_workspace(self):
+        let, _, child = self.create_let_and_child()
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute("""CREATE FUNCTION blockcommander.c2_test_fail() RETURNS trigger LANGUAGE plpgsql
+                AS $$ BEGIN RAISE EXCEPTION 'injected link failure'; END $$""")
+            cur.execute("""CREATE TRIGGER c2_test_fail BEFORE INSERT ON blockcommander.program_stage_links
+                FOR EACH ROW EXECUTE FUNCTION blockcommander.c2_test_fail()""")
+        self.assertEqual("REPOSITORY_ERROR", self.save(503)["error_code"])
+        self.assertTrue(self.read(self.let_url)["aggregate_dirty"])
+        self.assertEqual(0, self.read(self.let_url)["program_saved_version"])
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM blockcommander.stage_blocks WHERE instance_id=%s", (let,))
+            self.assertEqual(0, cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM blockcommander.stages WHERE stage_id=%s", (child,))
+            self.assertEqual(0, cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM blockcommander.program_stage_links")
+            self.assertEqual(0, cur.fetchone()[0])
+            cur.execute("DROP TRIGGER c2_test_fail ON blockcommander.program_stage_links")
+        self.assertFalse(self.save()["receipt"]["aggregate_dirty"])
 
 
 if __name__ == '__main__':

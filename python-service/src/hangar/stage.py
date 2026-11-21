@@ -16,7 +16,7 @@ from .graph.adapter import (
     to_graph_workspace,
     to_stage_snapshot,
 )
-from .graph.model import CardinalDirection, GridPos
+from .graph.model import CardinalDirection, EdgeKind, GridPos
 from .graph.port_catalog import CK_CONTROL_PORT_CATALOG
 from .graph.snapshot import (
     GRAPH_SNAPSHOT_VERSION,
@@ -26,6 +26,8 @@ from .graph.snapshot import (
 )
 from .graph.state import GraphWorkspaceState
 from .graph.validation import validate_graph
+from .value_model import VALUE_TYPES, ValueDomainError
+from .value_ports import catalog_for
 from .repository import (
     HallConflict,
     HallForbidden,
@@ -142,6 +144,12 @@ class StageGraphContext:
     port_catalog_version: str|None
     program_validation_status: ProgramValidationStatus
     state: GraphWorkspaceState
+    stage_kind: str = "ROOT"
+    value_schema_version: int = 0
+
+    @property
+    def catalog(self):
+        return catalog_for(self.stage_kind, self.value_schema_version)
 
 class StageService:
     def __init__(self,repository:HallRepository):
@@ -229,10 +237,7 @@ class StageService:
         )
         if loaded.compatible_for_graph_mutation:
             runtime_types={str(item["type_key"]) for item in self.repository.list_block_types()}
-            catalog=CK_CONTROL_PORT_CATALOG
-            if snapshot.value_schema_version:
-                from .value_ports import catalog_for
-                catalog=catalog_for(stage.get("stage_kind"))
+            catalog=catalog_for(stage.get("stage_kind"),snapshot.value_schema_version)
             try:
                 mapping=to_graph_workspace(
                     candidate,catalog,known_block_types=runtime_types
@@ -329,6 +334,7 @@ class StageService:
         with self._locked_workspace(stage_id,ws):
             self._authorize(ws,str(payload["player_uuid"]))
             type_key=str(payload.get("type_key","")).upper()
+            self._require_legacy_block(type_key)
             types={str(t["type_key"]):t for t in self.repository.list_block_types()}
             if type_key not in types: raise HallValidationError("Ismeretlen CK-elemtípus.")
             if self._program_block_policy is not None:
@@ -348,10 +354,17 @@ class StageService:
             ws.dirty=True
             return self.view(ws)
 
-    def update(self,stage_id:str,instance_id:str,payload:dict[str,Any])->dict[str,Any]:
+    @staticmethod
+    def _require_legacy_block(type_key):
+        if type_key in VALUE_TYPES | {"LET"}:
+            raise ValueDomainError("VALUE_HTTP_REQUIRED", "Use the versioned VALUE block operations.")
+
+    def update(self,stage_id:str,instance_id:str,payload:dict[str,Any],*,legacy_only=False)->dict[str,Any]:
         ws=self._workspace(stage_id)
         with self._locked_workspace(stage_id,ws):
             self._authorize(ws,str(payload["player_uuid"]));block=self._find(ws,instance_id)
+            if legacy_only:
+                self._require_legacy_block(block.type_key)
             updated=block
             if "label" in payload:
                 label=str(payload["label"]).strip()
@@ -368,10 +381,12 @@ class StageService:
                 ws.dirty=True
             return self.view(ws)
 
-    def delete(self,stage_id:str,instance_id:str,payload:dict[str,Any])->dict[str,Any]:
+    def delete(self,stage_id:str,instance_id:str,payload:dict[str,Any],*,legacy_only=False)->dict[str,Any]:
         ws=self._workspace(stage_id)
         with self._locked_workspace(stage_id,ws):
             self._authorize(ws,str(payload["player_uuid"]));block=self._find(ws,instance_id)
+            if legacy_only:
+                self._require_legacy_block(block.type_key)
             removed_edges=tuple(
                 edge for edge in ws.snapshot.edges
                 if edge.source_instance_id!=block.instance_id and edge.target_instance_id!=block.instance_id
@@ -458,6 +473,8 @@ class StageService:
         ws=self._workspace(stage_id)
         with self._locked_workspace(stage_id,ws):
             self._authorize(ws,str(payload["player_uuid"]))
+            if ws.stage.get("stage_kind") == "VALUE_BODY":
+                raise ValueDomainError("CONTROL_STAGE_REQUIRED", "CONTROL mutations require a control Stage.")
             if not ws.compatible_for_graph_mutation:
                 raise SnapshotCompatibilityError(
                     "A Stage graph formátuma vagy portkatalógusa nem kompatibilis módosításhoz."
@@ -472,9 +489,8 @@ class StageService:
                 raise HallConflict("A working revision elavult; töltsd újra a Stage-et.")
 
             runtime_types={str(item["type_key"]) for item in self.repository.list_block_types()}
-            mapping=to_graph_workspace(
-                ws,CK_CONTROL_PORT_CATALOG,known_block_types=runtime_types
-            )
+            catalog=catalog_for(ws.stage.get("stage_kind"),ws.snapshot.value_schema_version)
+            mapping=to_graph_workspace(ws,catalog,known_block_types=runtime_types)
             if not mapping.permits_graph_mutation:
                 raise GraphWorkspaceMappingError(mapping.issues)
             domain_result=operation(mapping.state)
@@ -488,6 +504,8 @@ class StageService:
                 diagnostics=getattr(domain_result,"diagnostics",())
             if not isinstance(target,GraphWorkspaceState):
                 raise TypeError("graph operation must return a GraphWorkspaceState result")
+            if any(edge.edge_kind != EdgeKind.CONTROL for edge in target.edges):
+                raise ValueDomainError("CONTROL_EDGES_REQUIRED", "A control Stage only accepts CONTROL edges.")
             plan=prepare_graph_workspace_update(
                 mapping.state,target,operation_accepted=accepted
             )
@@ -546,6 +564,8 @@ class StageService:
                 port_catalog_version=snapshot.port_catalog_version,
                 program_validation_status=snapshot.program_validation_status,
                 state=state,
+                stage_kind=ws.stage.get("stage_kind","ROOT"),
+                value_schema_version=snapshot.value_schema_version,
             )
 
     @staticmethod
@@ -588,6 +608,7 @@ class StageService:
             else:
                 persistence="READ_ONLY_INCOMPATIBLE"
             return {"stage_id":str(s["stage_id"]),
+                    "stage_kind":s.get("stage_kind","ROOT"),"value_schema_version":ws.snapshot.value_schema_version,
                     "hall_id":None if s.get("hall_id") is None else str(s["hall_id"]),"stage_name":s["stage_name"],
                     "world_uuid":None if s.get("world_uuid") is None else str(s["world_uuid"]),
                     "origin":{"x":ox,"y":oy,"z":oz},
