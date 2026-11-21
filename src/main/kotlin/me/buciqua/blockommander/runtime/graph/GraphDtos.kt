@@ -72,7 +72,11 @@ data class GraphStateSnapshot(
     val edges: List<GraphEdge>,
     val routes: List<GraphRoute>,
     val validation: GraphValidation,
+    val stageKind: String? = null,
+    val valueSchemaVersion: Long? = null,
 )
+data class GraphProgramStamp(val programId: UUID, val epoch: UUID, val hierarchy: Long,
+    val savedVersion: Long, val dirty: Boolean)
 data class GraphWireDiff(val position: GraphPosition, val cell: GraphWireCell?)
 data class GraphBinding(val createdEdgeIds: List<UUID>, val reusedEdgeIds: List<UUID>)
 data class GraphPlacement(val intent: GraphPlacementIntent, val affectedCells: List<GraphWireCell>)
@@ -127,6 +131,7 @@ data class GraphSuccessResponse(
     val state: GraphStateSnapshot,
     val discovery: GraphDiscovery? = null,
     val placement: GraphPlacement? = null,
+    val programStamp: GraphProgramStamp? = null,
 ) : GraphApiResponse
 
 data class GraphErrorResponse(
@@ -177,6 +182,10 @@ object GraphResponseParser {
             root.optionalObject("binding")?.let(::parseBinding), state,
             root.optionalObject("discovery")?.let(::parseDiscovery),
             root.optionalObject("placement")?.let(::parsePlacement),
+            root.optionalUuid("program_id")?.let {
+                GraphProgramStamp(it, root.requiredUuid("program_workspace_epoch"), root.requiredLong("hierarchy_revision"),
+                    root.requiredLong("program_saved_version"), root.requiredBoolean("aggregate_dirty"))
+            },
         )
     }
 
@@ -254,6 +263,7 @@ object GraphResponseParser {
         obj.requiredArray("nodes").mapObjects(::parseNode), obj.requiredArray("wire_cells").mapObjects(::parseWireCell),
         obj.requiredArray("edges").mapObjects(::parseEdge), obj.requiredArray("routes").mapObjects(::parseRoute),
         parseValidation(obj.requiredObject("validation")),
+        obj.optionalString("stage_kind"), obj.optionalLong("value_schema_version"),
     )
 
     private fun parseStatuses(obj: JsonObject) = GraphStatuses(

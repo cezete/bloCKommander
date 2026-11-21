@@ -18,6 +18,12 @@ class EditorSurfaceFence(private val player: UUID) {
         return true
     }
     fun invalidate() { active?.let { dismissed[it.first] = it.second }; active = null }
+    fun dismiss(surface: String, key: EditorSessionKey) {
+        if (active == (surface to key)) {
+            dismissed[surface] = key
+            active = null
+        }
+    }
 }
 
 /** Client presentation only. No transport context, epoch, CAS or scope algorithm. */

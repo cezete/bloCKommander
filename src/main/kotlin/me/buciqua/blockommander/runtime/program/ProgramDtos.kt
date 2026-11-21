@@ -9,6 +9,7 @@ const val PROGRAM_API_VERSION = "ck-program-v1"
 
 enum class ProgramWorkspaceState { ACTIVE, RELOAD_REQUIRED }
 enum class ProgramLinkState { ACTIVE, RETAINED }
+enum class ProgramOwnerRole(val childKind: String) { PROGRAM_BODY("PROGRAM_BODY"), LET_RHS("VALUE_BODY") }
 
 data class ProgramMount(
     val hallId: UUID,
@@ -21,6 +22,7 @@ data class ProgramLink(
     val programBlockInstanceId: UUID,
     val childStageId: UUID,
     val state: ProgramLinkState,
+    val ownerRole: ProgramOwnerRole = ProgramOwnerRole.PROGRAM_BODY,
 )
 data class ProgramStageWorkspace(val epoch: UUID, val workingRevision: Long, val dirty: Boolean)
 data class ProgramDomainLayout(val origin: GraphPosition, val size: GraphPosition)
@@ -35,6 +37,7 @@ data class ProgramStageSummary(
     val domainLayout: ProgramDomainLayout,
     val parents: List<ProgramLink>,
     val children: List<ProgramLink>,
+    val valueSchemaVersion: Long? = null,
 )
 data class ProgramStageBlock(
     val instanceId: UUID,
@@ -119,14 +122,16 @@ object ProgramResponseParser {
         )
     }
 
-    fun child(text: String): ChildEnsureResponse = success(text).let { root ->
+    fun child(text: String): ChildEnsureResponse = child(success(text))
+
+    internal fun child(root: JsonObject): ChildEnsureResponse {
         val programId=root.requiredUuid("program_id")
         val link=parseLink(root.requiredObject("link"))
         val child=parseStageSummary(root.requiredObject("child"))
         if (child.programId!=programId || child.stageId!=link.childStageId) {
             fail("A child ensure válasz identity mezői eltérnek.")
         }
-        ChildEnsureResponse(
+        return ChildEnsureResponse(
             programId,root.requiredLong("program_saved_version"),
             root.requiredUuid("program_workspace_epoch"),root.requiredLong("hierarchy_revision"),
             root.requiredBoolean("created"),link,child,
@@ -206,12 +211,13 @@ object ProgramResponseParser {
             },
             obj.requiredObject("domain_layout").let {
                 ProgramDomainLayout(parsePosition(it.requiredObject("origin")),parsePosition(it.requiredObject("size")))
-            },parents,children,
+            },parents,children,obj.get("value_schema_version")?.let { obj.requiredLong("value_schema_version") },
         )
     }
-    private fun parseLink(obj:JsonObject)=ProgramLink(
+    internal fun parseLink(obj:JsonObject)=ProgramLink(
         obj.requiredUuid("parent_stage_id"),obj.requiredUuid("program_block_instance_id"),
         obj.requiredUuid("child_stage_id"),obj.requiredEnum("state"),
+        obj.optionalString("owner_role")?.let(ProgramOwnerRole::valueOf) ?: ProgramOwnerRole.PROGRAM_BODY,
     )
     private fun parseMount(obj:JsonObject)=ProgramMount(
         obj.requiredUuid("hall_id"),obj.requiredUuid("program_id"),

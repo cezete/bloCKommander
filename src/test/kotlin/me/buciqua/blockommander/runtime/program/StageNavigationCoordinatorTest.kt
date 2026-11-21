@@ -3,6 +3,8 @@ package me.buciqua.blockommander.runtime.program
 import com.google.gson.JsonParser
 import me.buciqua.blockommander.runtime.*
 import me.buciqua.blockommander.runtime.graph.*
+import me.buciqua.blockommander.runtime.value.LetBasis
+import me.buciqua.blockommander.runtime.value.LetChild
 import net.minecraft.core.BlockPos
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
@@ -210,6 +212,69 @@ class StageNavigationCoordinatorTest {
         assertFalse(fixture.registry.navigationState(HALL.toString())!!.switchInProgress)
     }
 
+    @Test fun `LET RHS ensure enters the same empty VALUE_BODY and back follows its owner`() {
+        val f=fixture()
+        f.programs.b1=true
+        assertEquals(NavigationStatus.SUCCESS,f.navigation.enter(HALL,ROOT_BLOCK,player,f.committer).get().status)
+        val selection=f.registry.hall(HALL.toString())!!.selectedStageId
+        repeat(2) {
+            val entered=f.navigation.enterLet(HALL,player,CHILD_BLOCK,f.committer,{true}) { f.programs.letChild() }.get()
+            assertEquals(NavigationStatus.SUCCESS,entered.status)
+            val shown=f.registry.hall(HALL.toString())!!
+            assertEquals(GRANDCHILD.toString(),shown.stage!!.id)
+            assertEquals("VALUE_BODY",shown.stage.kind)
+            assertTrue(shown.stage.blocks.isEmpty())
+            assertEquals(selection,shown.selectedStageId)
+            val displayFence=f.registry.saveFenceForHall(shown.id)!!
+            assertEquals(NavigationStatus.SUCCESS,f.navigation.reloadDisplayed(displayFence,player,f.committer,{true}).get().status)
+            assertEquals(CHILD,f.navigation.back(HALL,player,f.committer).get().targetStageId)
+        }
+        assertEquals(1,f.programs.links.count { it.ownerRole==ProgramOwnerRole.LET_RHS })
+        assertEquals(0,f.programs.mutationCalls)
+    }
+
+    @Test fun `same revision graph from before SAVE cannot commit displayed reload`() {
+        val f=fixture()
+        f.programs.b1=true
+        val fence=f.registry.saveFenceForHall(HALL.toString())!!
+        f.graph.graphSavedOverride=1
+        val before=f.registry.hall(HALL.toString())!!.stage
+        val result=f.navigation.reloadDisplayed(fence,player,f.committer,{true}).get()
+        assertEquals("GRAPH_PROGRAM_VERSION_MISMATCH",result.detail)
+        assertSame(before,f.registry.hall(HALL.toString())!!.stage)
+        assertNotNull(f.registry.saveFenceForHall(HALL.toString()))
+    }
+
+    @Test fun `closed connection rejects queued reconnect without touching Hall selection`() {
+        val f=fixture()
+        f.programs.b1=true
+        val queue=mutableListOf<Runnable>()
+        val nav=StageNavigationCoordinator(f.registry,f.programs,f.graph,Executor { queue+=it })
+        var live=true
+        val future=nav.reloadDisplayed(f.registry.saveFenceForHall(HALL.toString())!!,player,f.committer,{live})
+        live=false
+        queue.forEach(Runnable::run)
+        assertEquals(NavigationStatus.STALE,future.get().status)
+        assertEquals(0,f.committer.commits)
+    }
+
+    @Test fun `only a missing unsaved displayed child qualifies for a fenced selection fallback`() {
+        val f=fixture()
+        val root=f.registry.hall(HALL.toString())!!.stage!!
+        val child=root.copy(id=GRANDCHILD.toString(),kind="VALUE_BODY",savedVersion=0)
+        val missing=NavigationResult(NavigationStatus.REJECTED,HALL,GRANDCHILD,null,"HALL_NOT_FOUND")
+        assertTrue(allowsDisplayedFallback(child,missing))
+        assertFalse(allowsDisplayedFallback(root,missing))
+        assertFalse(allowsDisplayedFallback(child.copy(savedVersion=1),missing))
+        assertFalse(allowsDisplayedFallback(child,missing.copy(status=NavigationStatus.STALE)))
+        assertFalse(allowsDisplayedFallback(child,missing.copy(detail="FORBIDDEN")))
+        val context=f.registry.transportContext(HALL.toString())!!
+        assertFalse(f.navigation.confirmMissing(context,GRANDCHILD,OWNER).get())
+        f.programs.missingGrandchild=true
+        assertTrue(f.navigation.confirmMissing(context,GRANDCHILD,OWNER).get())
+        assertFalse(f.navigation.confirmMissing(context.copy(workingCopyId=UUID.randomUUID()),GRANDCHILD,OWNER).get())
+    }
+
     private fun fixture(hallMin:BlockPos=BlockPos.ZERO):Fixture {
         val registry=HallRegistry()
         registry.install(JsonParser.parseString(hallJson(hallMin)).asJsonObject)
@@ -263,6 +328,16 @@ class StageNavigationCoordinatorTest {
         var mutationCalls=0
         var stageDirty=true
         var aggregateDirty=true
+        var b1=false
+        var missingGrandchild=false
+
+        fun letChild():CompletableFuture<ProgramHttpResult<LetChild>> {
+            val prior=links.firstOrNull { it.ownerRole==ProgramOwnerRole.LET_RHS }
+            val link=prior ?: ProgramLink(CHILD,CHILD_BLOCK,GRANDCHILD,ProgramLinkState.ACTIVE,ProgramOwnerRole.LET_RHS)
+                .also { links+=it; hierarchyRevision++ }
+            return success(LetChild(LetBasis(CHILD_EPOCH,2,"basis",PROGRAM_EPOCH,hierarchyRevision,0,0),
+                ChildEnsureResponse(PROGRAM,0,PROGRAM_EPOCH,hierarchyRevision,prior==null,link,summary(GRANDCHILD))))
+        }
 
         override fun mountedProgram(context:WorkingCopyTransportContext)=success(MountedProgramResponse(
             ProgramMount(HALL,PROGRAM,WORKING_COPY,true),snapshot(),
@@ -297,18 +372,25 @@ class StageNavigationCoordinatorTest {
                     ROOT->listOf(block(ROOT_BLOCK,GraphPosition(1,0,1)))
                     CHILD->listOf(block(CHILD_BLOCK,GraphPosition(2,0,1)))
                     else->emptyList()
-                },
+                },if(b1) PhysicalStageMetadata(HALL,WORLD,GraphPosition(1,1,1),GraphPosition(7,5,7)) else null,
             ),aggregateDirty,
         )
         fun summary(stageId:UUID)=ProgramStageSummary(
-            stageId,PROGRAM,if(stageId==ROOT) "ROOT" else "PROGRAM_BODY","Stage",stageId==ROOT,0,
+            stageId,PROGRAM,when {
+                stageId==ROOT -> "ROOT"
+                links.any { it.childStageId==stageId && it.ownerRole==ProgramOwnerRole.LET_RHS } -> "VALUE_BODY"
+                else -> "PROGRAM_BODY"
+            },"Stage",stageId==ROOT,0,
             ProgramStageWorkspace(epoch(stageId),revision(stageId),stageDirty),
             ProgramDomainLayout(GraphPosition(1,1,1),GraphPosition(7,5,7)),
             links.filter { it.childStageId==stageId },links.filter { it.parentStageId==stageId },
+            if(b1) if(links.any { it.childStageId==stageId && it.ownerRole==ProgramOwnerRole.LET_RHS }) 1L else 0L else null,
         )
         fun snapshot()=ProgramSnapshot(
             PROGRAM,OWNER,ROOT,0,true,links.isNotEmpty(),hierarchyRevision,PROGRAM_EPOCH,
-            ProgramWorkspaceState.ACTIVE,listOf(ROOT,CHILD,GRANDCHILD).map(::summary),links.toList(),
+            ProgramWorkspaceState.ACTIVE,listOf(ROOT,CHILD,GRANDCHILD).filterNot {
+                it==GRANDCHILD && missingGrandchild
+            }.map(::summary),links.toList(),
             listOf(ProgramMount(HALL,PROGRAM,WORKING_COPY,true)),
         )
         private fun block(id:UUID,pos:GraphPosition)=ProgramStageBlock(
@@ -324,6 +406,7 @@ class StageNavigationCoordinatorTest {
     private class FakeNavigationGraph(
         private val store:GraphProjectionStore,private val programs:FakePrograms,
     ):GraphGateway {
+        var graphSavedOverride:Long?=null
         override fun reconcile(context: WorkingCopyTransportContext,stageId:UUID,player:ServerPlayerIdentity):CompletableFuture<ReconciliationOutcome> {
             val snapshot=snapshotFor(stageId)
             val applied=store.apply(store.begin(context.projectionKey(stageId),GraphRequestKind.RECONCILIATION),snapshot)
@@ -331,6 +414,8 @@ class StageNavigationCoordinatorTest {
                 GraphSuccessResponse(
                     GRAPH_API_VERSION,"ok",null,stageId,snapshot.workspaceEpoch,snapshot.workingRevision,
                     false,emptyList(),emptyList(),null,snapshot,
+                    programStamp=if(programs.b1) GraphProgramStamp(PROGRAM,PROGRAM_EPOCH,programs.hierarchyRevision,
+                        graphSavedOverride ?: 0,programs.aggregateDirty) else null,
                 ),
             ),applied))
         }
@@ -340,10 +425,11 @@ class StageNavigationCoordinatorTest {
             val stage=programs.stageResponse(stageId).stage
             val workspace=stage.summary.workspace!!
             return GraphStateSnapshot(
-                stageId,null,null,stage.summary.domainLayout.origin,stage.summary.domainLayout.size,
+                stageId,HALL.takeIf { programs.b1 },WORLD.takeIf { programs.b1 },stage.summary.domainLayout.origin,stage.summary.domainLayout.size,
                 workspace.epoch,workspace.workingRevision,0,workspace.dirty,1,"ck-control-v3",true,
                 emptyList(),GraphStatuses("DRAFT","NONE","DIRTY","PRESENT","NOT_CHECKED"),
                 emptyList(),emptyList(),emptyList(),emptyList(),GraphValidation(null,emptyList()),
+                stage.summary.kind.takeIf { programs.b1 },stage.summary.valueSchemaVersion,
             )
         }
     }

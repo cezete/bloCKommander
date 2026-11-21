@@ -15,19 +15,19 @@ internal class EditorConnections(private val invalidated: (UUID) -> Unit) {
     private data class Connection(val token: Any, val generation: Long)
     private val current = mutableMapOf<UUID, Connection>()
     private val generations = mutableMapOf<UUID, Long>()
-    fun join(player: UUID, token: Any) {
+    @Synchronized fun join(player: UUID, token: Any) {
         if (current[player]?.token === token) return
         invalidated(player)
         val generation = Math.addExact(generations[player] ?: 0, 1)
         generations[player] = generation
         current[player] = Connection(token, generation)
     }
-    fun disconnect(player: UUID, token: Any) {
+    @Synchronized fun disconnect(player: UUID, token: Any) {
         if (current[player]?.token !== token) return
         invalidated(player)
         current.remove(player)
     }
-    fun generation(player: UUID, token: Any): Long? = current[player]?.takeIf { it.token === token }?.generation
+    @Synchronized fun generation(player: UUID, token: Any): Long? = current[player]?.takeIf { it.token === token }?.generation
 }
 
 /** Server-only facade. No packet, command or player interaction is registered by B3/B. */

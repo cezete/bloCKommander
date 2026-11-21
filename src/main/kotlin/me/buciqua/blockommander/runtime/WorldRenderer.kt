@@ -26,11 +26,12 @@ object WorldRenderer {
         renderStage(level, hall)
     }
 
-    fun buildHallStructure(level: ServerLevel, hall: Hall) {
+    fun buildHallStructure(level: ServerLevel, hall: Hall, clearInterior: Boolean = true) {
         val wall = material(hall.material)
         for (x in hall.min.x..hall.max.x) for (y in hall.min.y..hall.max.y) for (z in hall.min.z..hall.max.z) {
             val shell = x == hall.min.x || x == hall.max.x || y == hall.min.y || y == hall.max.y || z == hall.min.z || z == hall.max.z
-            level.setBlockAndUpdate(BlockPos(x, y, z), if (shell) wall.defaultBlockState() else Blocks.AIR.defaultBlockState())
+            if (shell || clearInterior)
+                level.setBlockAndUpdate(BlockPos(x, y, z), if (shell) wall.defaultBlockState() else Blocks.AIR.defaultBlockState())
         }
         val windowY = hall.min.y + 2
         for (x in hall.min.x + 1 until hall.max.x step 2) for (z in listOf(hall.min.z, hall.max.z))
@@ -90,6 +91,7 @@ object WorldRenderer {
     internal fun programBlock(type: String): Block = when (type) {
         "START" -> ModContent.START; "STOP" -> ModContent.STOP; "IF" -> ModContent.IF
         "FOR" -> ModContent.FOR; "FUN" -> ModContent.FUN; "PROGRAM" -> ModContent.PROGRAM
+        "LET" -> ModContent.LET
         else -> Blocks.BARRIER
     }
 

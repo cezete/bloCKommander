@@ -6,6 +6,7 @@
   "block.blockommander.for": "FOR",
   "block.blockommander.fun": "FUN",
   "block.blockommander.program": "PROGRAM",
+  "block.blockommander.let": "LET",
   "block.blockommander.ck_wire": "CK Vezeték",
   "item.blockommander.hangar_sword": "Hangár Kard"
 }

@@ -15,7 +15,7 @@ data class StageBlock(val instanceId: String, val type: String, val pos: BlockPo
                       val label: String, val description: String)
 data class Stage(val id: String, val origin: BlockPos, val sizeX: Int, val sizeY: Int, val sizeZ: Int,
                  val dirty: Boolean, val workspaceEpoch: UUID, val workingRevision: Long,
-                 val blocks: List<StageBlock>) {
+                 val blocks: List<StageBlock>, val kind: String = "ROOT", val savedVersion: Long? = null) {
     fun contains(pos: BlockPos) = pos.x in origin.x until origin.x + sizeX &&
         pos.y in origin.y until origin.y + sizeY && pos.z in origin.z until origin.z + sizeZ
 }
@@ -33,6 +33,7 @@ data class StageSwitchToken(
     val transportContext: WorkingCopyTransportContext,
     val hallGeneration: Long,
     val selection: Boolean = false,
+    val sourceRevision: Long? = null,
 )
 data class ProgramStatusFence(val stage: StageUpdateFence, val generation: Long)
 class BootstrapFence internal constructor(val worldUuid: String, internal val generations: Map<String,Long>)
@@ -422,7 +423,7 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
             switchInProgress=true,pendingStageId=null,
         )
         return StageSwitchToken(hallId,generation,UUID.fromString(stage.id),playerUuid,statusGeneration,
-            hall.transportContext,hallGenerations.getValue(hallId))
+            hall.transportContext,hallGenerations.getValue(hallId),sourceRevision=currentRevision(hall,stage))
     }
 
     @Synchronized
@@ -486,6 +487,14 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
             state.hierarchyRevision==hierarchyRevision
     }
 
+    internal fun isSwitchAttemptCurrent(token:StageSwitchToken):Boolean {
+        val state=navigation[token.hallId] ?: return false
+        val hall=halls[token.hallId] ?: return false
+        return state.switchInProgress && state.switchGeneration==token.generation && state.activeStageId==token.sourceStageId &&
+            hall.transportContext==token.transportContext && hallGenerations[token.hallId]==token.hallGeneration &&
+            programStatusGenerations[token.hallId]==token.programStatusGeneration
+    }
+
     @Synchronized
     fun commitStageSwitch(
         token:StageSwitchToken,programId:UUID,programEpoch:UUID,
@@ -523,6 +532,11 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
             pendingProjections[token.hallId]?.takeIf { it.owner==token.generation }?.let {
                 graphProjections.removeIfLifecycleCurrent(it.key,it.lifecycle)
                 pendingProjections.remove(token.hallId)
+                if (it.key.stageId==token.sourceStageId && graphProjections.view(it.key)==null) {
+                    val source=halls[token.hallId]?.stage
+                    if (source!=null) graphProjections.authoritativeStageReload(it.key,source.workspaceEpoch,
+                        maxOf(source.workingRevision,token.sourceRevision ?: 0))
+                }
             }
             navigation[token.hallId]=state.copy(switchInProgress=false,pendingStageId=null)
             if(token.selection) selections.computeIfPresent(token.hallId) { _,session->
@@ -706,6 +720,8 @@ class HallRegistry(val graphProjections: GraphProjectionStore = GraphProjectionS
                 StageBlock(b["instance_id"].asString, b["type_key"].asString,
                     BlockPos(b["x"].asInt, b["y"].asInt, b["z"].asInt), b["orientation"].asString,
                     b["label"].asString, b.get("description")?.takeUnless { it.isJsonNull }?.asString ?: "")
-            })
+            }, json.get("stage_kind")?.asString ?: "ROOT", json.get("saved_version")?.asLong).also {
+            require(it.kind!="VALUE_BODY" || it.blocks.isEmpty()) { "UNSUPPORTED_VALUE_BODY_PROJECTION" }
+        }
     }
 }

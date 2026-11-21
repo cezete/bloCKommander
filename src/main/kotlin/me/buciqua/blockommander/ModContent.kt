@@ -54,6 +54,7 @@ object ModContent {
     val FOR: Block = programBlock("for", SoundType.GLASS)
     val FUN: Block = programBlock("fun", SoundType.GLASS)
     val PROGRAM: Block = programBlock("program", SoundType.GLASS)
+    val LET: Block = programBlock("let", SoundType.GLASS, CkProgramPortFace.FRONT)
     private val wireContent = wire()
     val CK_WIRE: Block = wireContent.first
     val CK_WIRE_ITEM: Item = wireContent.second
@@ -66,6 +67,7 @@ object ModContent {
         .displayItems { _, output ->
             output.accept(START); output.accept(STOP); output.accept(IF)
             output.accept(FOR); output.accept(FUN); output.accept(PROGRAM)
+            output.accept(LET)
             output.accept(CK_WIRE); output.accept(HANGAR_SWORD)
         }.build()
 
@@ -73,13 +75,14 @@ object ModContent {
 
     fun typeOf(block: Block): String? = when (block) {
         START -> "START"; STOP -> "STOP"; IF -> "IF"; FOR -> "FOR"; FUN -> "FUN"
-        PROGRAM -> "PROGRAM"; else -> null
+        PROGRAM -> "PROGRAM"; LET -> "LET"; else -> null
     }
 
     fun placementFacing(type: String, playerDirection: Direction): Direction = when (type) {
         "START" -> (START as CkProgramBlock).facingForPlacement(playerDirection)
         "STOP" -> (STOP as CkProgramBlock).facingForPlacement(playerDirection)
         "IF" -> (IF as CkProgramBlock).facingForPlacement(playerDirection)
+        "LET" -> (LET as CkProgramBlock).facingForPlacement(playerDirection)
         else -> playerDirection
     }
 }

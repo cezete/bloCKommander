@@ -31,13 +31,14 @@ class StageSwitchProjection<S>(
         val context=prepared.program
         val targetId=UUID.fromString(prepared.target.id)
         return registry.withStageSwitch(token,context.programId,targetId,context.workspaceEpoch,context.hierarchyRevision) { hall ->
-            if(token.selection && world.worldUuid()?.toString()!=hall.worldUuid) return@withStageSwitch false
+            fun inWorld()=world.worldUuid()?.toString()?.let { it==hall.worldUuid } ?: !token.selection
+            if(!inWorld()) return@withStageSwitch false
             val plan=try { prepare(hall,prepared) } catch (_:Exception) { null }
                 ?: return@withStageSwitch false
             if (!current(hall,prepared) || !registry.isStageSwitchCurrent(
                     token,context.programId,targetId,context.workspaceEpoch,context.hierarchyRevision,
                 ) || plan.before.any { (position,state)->world.readState(position)!=state } ||
-                (token.selection && world.worldUuid()?.toString()!=hall.worldUuid)) return@withStageSwitch false
+                !inWorld()) return@withStageSwitch false
             if(!current(hall,prepared) || !registry.isStageSwitchCurrent(token,context.programId,targetId,
                     context.workspaceEpoch,context.hierarchyRevision)) return@withStageSwitch false
             try {

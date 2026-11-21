@@ -57,4 +57,26 @@ class ProgramBlockIntegrationTest {
         assertFalse(projection.contains("delete"))
         assertFalse(projection.contains("ProgramService"))
     }
+
+    @Test fun `LET registry assets and CONTROL sockets share the same facing`() {
+        val source=Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/ModContent.kt"))
+        assertTrue(source.contains("output.accept(LET)"))
+        assertTrue(source.contains("LET -> \"LET\""))
+        assertTrue(source.contains("programBlock(\"let\", SoundType.GLASS, CkProgramPortFace.FRONT)"))
+        val renderer=Files.readString(root.resolve("src/main/kotlin/me/buciqua/blockommander/runtime/WorldRenderer.kt"))
+        assertTrue(renderer.contains("\"LET\" -> ModContent.LET"))
+        val resources=root.resolve("src/main/resources")
+        fun json(relative:String)=JsonParser.parseString(Files.readString(resources.resolve(relative))).asJsonObject
+        val states=json("assets/blockommander/blockstates/let.json").getAsJsonObject("variants")
+        listOf("north","east","south","west").forEachIndexed { index,name ->
+            assertEquals(index*90,states.getAsJsonObject("facing=$name").get("y")?.asInt ?: 0)
+        }
+        val sockets=json("assets/blockommander/models/block/let.json").getAsJsonArray("elements")
+            .map { it.asJsonObject }.filter { it.has("name") }.associateBy { it["name"].asString }
+        assertEquals("#output",sockets.getValue("front_out").getAsJsonObject("faces").getAsJsonObject("north")["texture"].asString)
+        assertEquals("#input",sockets.getValue("back_in").getAsJsonObject("faces").getAsJsonObject("south")["texture"].asString)
+        json("assets/blockommander/models/item/let.json")
+        json("assets/blockommander/items/let.json")
+        json("data/blockommander/loot_table/blocks/let.json")
+    }
 }

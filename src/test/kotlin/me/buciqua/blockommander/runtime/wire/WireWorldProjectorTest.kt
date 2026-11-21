@@ -4,6 +4,7 @@ import me.buciqua.blockommander.CkWireGeometry
 import me.buciqua.blockommander.runtime.graph.*
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
+import java.util.UUID
 
 class WireWorldProjectorTest {
     private val stage = WireStageContext(TRANSPORT_CONTEXT, STAGE_ID, GraphPosition(10, 20, 30), GraphPosition(7, 5, 7), EPOCH_A, 1)
@@ -19,6 +20,32 @@ class WireWorldProjectorTest {
         assertEquals(1, world.setCalls)
         assertTrue(second.complete)
         assertEquals(1, world.setCalls)
+    }
+
+    @Test fun `bound START LET STOP renders in CONTROL and never projects on VALUE_BODY`() {
+        val projector=WireWorldProjector()
+        val world=FakeWireWorld()
+        val positions=listOf(GraphPosition(1,0,0),GraphPosition(3,0,0))
+        val blocks=listOf("START","LET","STOP").mapIndexed { i, kind ->
+            GraphNode(UUID(0,i.toLong()+1),kind,GraphPosition(2*i,0,0),"EAST")
+        }
+        val edges=blocks.zipWithNext().mapIndexed { i, (source,target) ->
+            GraphEdge(UUID(1,i.toLong()),source.instanceId,"out",target.instanceId,"in","CONTROL")
+        }
+        val routes=edges.mapIndexed { i, edge ->
+            GraphRoute(UUID(2,i.toLong()),edge.edgeId,GraphPortRef(edge.sourceInstanceId,"out"),
+                GraphPortRef(edge.targetInstanceId,"in"),listOf(GraphRouteStep(positions[i],"SINGLE")),"VALID")
+        }
+        val state=wireSnapshot(1).copy(stageKind="PROGRAM_BODY",valueSchemaVersion=1,nodes=blocks,
+            edges=edges,routes=routes,wireCells=positions.map {
+                GraphWireCell(it,listOf(GraphWireChannel("SINGLE",listOf("EAST","WEST"))))
+            })
+        assertTrue(projector.apply(stage,1,state,world).complete)
+        positions.forEach { assertEquals(WireWorldCell.CK_WIRE_BOUND_VALID,world.cell(stage.origin+it)) }
+        val denied=projector.apply(stage,1,state.copy(stageKind="VALUE_BODY"),world)
+        assertEquals("UNSUPPORTED_VALUE_WIRE",denied.issues.single().code)
+        assertEquals(2,world.setCalls)
+        assertEquals(0,world.removeCalls)
     }
 
     @Test fun `missing authoritative cell removes only CK managed wire`() {

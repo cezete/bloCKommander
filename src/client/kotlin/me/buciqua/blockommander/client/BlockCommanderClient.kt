@@ -8,6 +8,7 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import me.buciqua.blockommander.client.screen.BlockEditorScreen
 import me.buciqua.blockommander.client.screen.DeclarationScreen
+import me.buciqua.blockommander.client.screen.LetScreen
 import me.buciqua.blockommander.runtime.declarations.DeclarationState
 import me.buciqua.blockommander.network.*
 
@@ -58,6 +59,28 @@ class BlockCommanderClient : ClientModInitializer {
                 }
             }
         }
+        ClientPlayNetworking.registerGlobalReceiver(LetStatePayload.TYPE) { payload, context ->
+            val connection = connections.token
+            val receivedLevel = context.client().level
+            context.client().execute {
+                if (!connections.current(connection)) return@execute
+                val client = context.client()
+                val player = client.player ?: return@execute
+                val state = payload.state
+                if (client.level !== receivedLevel || client.level?.dimension()?.identifier()?.toString() != state.dimension) return@execute
+                val fence = surfaces ?: EditorSurfaceFence(player.uuid).also { surfaces = it }
+                if (!fence.receive("LET", state.session, state.sequence, state.closed)) return@execute
+                val screen = client.gui.screen()
+                if (state.closed) {
+                    if (screen is LetScreen && screen.session == state.session) client.gui.setScreen(null)
+                } else if (screen is LetScreen && screen.session == state.session) screen.receive(state)
+                else {
+                    model?.transportClosed(); declarations?.transportClosed()
+                    levelIdentity = client.level
+                    client.gui.setScreen(LetScreen(state) { fence.dismiss("LET", it) })
+                }
+            }
+        }
         ClientPlayConnectionEvents.DISCONNECT.register { handler, _ ->
             if (connections.disconnect(handler)) {
                 model?.transportClosed(); declarations?.transportClosed(); surfaces?.invalidate()
@@ -65,10 +88,11 @@ class BlockCommanderClient : ClientModInitializer {
             }
         }
         ClientTickEvents.END_CLIENT_TICK.register { client ->
-            if ((model != null || declarations != null) && levelIdentity !== client.level) {
+            if ((model != null || declarations != null || client.gui.screen() is LetScreen) && levelIdentity !== client.level) {
                 model?.transportClosed()
                 declarations?.transportClosed(); surfaces?.invalidate()
-                if (client.gui.screen() is BlockEditorScreen || client.gui.screen() is DeclarationScreen) client.gui.setScreen(null)
+                if (client.gui.screen() is BlockEditorScreen || client.gui.screen() is DeclarationScreen ||
+                    client.gui.screen() is LetScreen) client.gui.setScreen(null)
                 levelIdentity = client.level
             }
         }

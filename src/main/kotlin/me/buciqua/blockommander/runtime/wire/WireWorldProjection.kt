@@ -74,6 +74,12 @@ class WireWorldProjector {
                 WireProjectionIssue("STALE_WORLD_PROJECTION", null, "A graph snapshot nem az aktuális Stage lifecycle-hoz tartozik."),
             ))
         }
+        if (snapshot.stageKind=="VALUE_BODY" && (snapshot.wireCells.isNotEmpty() ||
+                snapshot.edges.isNotEmpty() || snapshot.routes.isNotEmpty())) {
+            return WireProjectionPlan(emptyMap(),emptySet(),listOf(
+                WireProjectionIssue("UNSUPPORTED_VALUE_WIRE",null,"A VALUE Wire projekció még nem érhető el."),
+            ))
+        }
 
         val issues = mutableListOf<WireProjectionIssue>()
         val desired = linkedMapOf<GraphPosition, PlannedWire>()

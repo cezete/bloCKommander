@@ -15,6 +15,7 @@ import java.net.http.HttpResponse
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 
 sealed interface ProgramHttpResult<out T> {
     data class Success<T>(val value:T):ProgramHttpResult<T>
@@ -76,8 +77,9 @@ class ProgramApiClient private constructor(
     private fun <T> get(
         context:WorkingCopyTransportContext,stageId:UUID?,path:String,parser:(String)->T,
     )=request(context,stageId,"GET",path,null,parser)
-    private fun <T> request(
+    internal fun <T> request(
         context:WorkingCopyTransportContext,stageId:UUID?,method:String,path:String,body:String?,parser:(String)->T,
+        parseError:(Int,String)->ProgramApiError=ProgramResponseParser::error,
     ):CompletableFuture<ProgramHttpResult<T>> {
         val configuredSecret=secret ?: return CompletableFuture.completedFuture(
             ProgramHttpResult.Unavailable("A Program transport nincs konfigurálva."),
@@ -90,7 +92,7 @@ class ProgramApiClient private constructor(
         if (body==null) builder.GET() else builder.header("Content-Type","application/json")
             .method(method,HttpRequest.BodyPublishers.ofString(body))
         Diagnostics.http("PROGRAM_HTTP_START",trace,context,stageId,method,path)
-        return http.sendAsync(builder.build(),HttpResponse.BodyHandlers.ofString()).handle { response,failure ->
+        return http.sendAsync(builder.build(),HttpResponse.BodyHandlers.ofString()).orTimeout(12,TimeUnit.SECONDS).handle { response,failure ->
             Diagnostics.http("PROGRAM_HTTP_RESULT",trace,context,stageId,method,path,response?.statusCode(),response?.body(),
                 if(failure==null) "RECEIVED" else "TRANSPORT_UNAVAILABLE")
             if (failure!=null) return@handle ProgramHttpResult.Unavailable("A Program szolgáltatás nem érhető el.")
@@ -101,7 +103,7 @@ class ProgramApiClient private constructor(
                     )
                     ProgramHttpResult.Success(parser(response.body()))
                 }
-                else ProgramHttpResult.ApiError(ProgramResponseParser.error(response.statusCode(),response.body()))
+                else ProgramHttpResult.ApiError(parseError(response.statusCode(),response.body()))
             } catch (failure:Exception) {
                 ProgramHttpResult.ProtocolFailure(failure.message ?: "Hibás Program API-válasz.")
             }

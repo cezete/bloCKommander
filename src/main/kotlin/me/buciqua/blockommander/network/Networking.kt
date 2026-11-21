@@ -14,6 +14,11 @@ object Networking {
         PayloadTypeRegistry.serverboundPlay().register(EditorIntentPayload.TYPE, EditorIntentPayload.CODEC)
         PayloadTypeRegistry.clientboundPlay().register(DeclarationStatePayload.TYPE, DeclarationStatePayload.CODEC)
         PayloadTypeRegistry.serverboundPlay().register(DeclarationIntentPayload.TYPE, DeclarationIntentPayload.CODEC)
+        PayloadTypeRegistry.clientboundPlay().register(LetStatePayload.TYPE, LetStatePayload.CODEC)
+        PayloadTypeRegistry.serverboundPlay().register(LetIntentPayload.TYPE, LetIntentPayload.CODEC)
+        ServerPlayNetworking.registerGlobalReceiver(LetIntentPayload.TYPE) { payload, context ->
+            context.server().execute { BlockCommanderMod.letRuntime?.intent(context.player(),payload) }
+        }
         ServerPlayNetworking.registerGlobalReceiver(DeclarationIntentPayload.TYPE) { payload, context ->
             context.server().execute {
                 val player = context.player()
