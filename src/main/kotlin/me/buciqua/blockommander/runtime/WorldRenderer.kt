@@ -48,7 +48,11 @@ object WorldRenderer {
             val xEdge = x == hall.min.x || x == hall.max.x
             val zEdge = z == hall.min.z || z == hall.max.z
             val desired = when {
-                y == hall.min.y -> if (xEdge || zEdge) wall else if ((dx + dz) % 2 == 0) black else white
+                y == hall.min.y -> {
+                    val floorRim = dx < 2 || hall.max.x - x < 2 || dz < 2 || hall.max.z - z < 2
+                    val checkerboardOffset = (dx - 2) + (dz - 2)
+                    if (floorRim) wall else if (checkerboardOffset % 2 == 0) black else white
+                }
                 y == hall.max.y -> if (!xEdge && !zEdge && dx % 3 == 2 && dz % 3 == 2) glowstone else wall
                 xEdge || zEdge -> {
                     val window = y == hall.min.y + 2 &&

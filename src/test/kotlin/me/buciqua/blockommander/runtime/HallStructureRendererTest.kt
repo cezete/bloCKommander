@@ -15,27 +15,82 @@ import java.util.concurrent.Executor
 
 class HallStructureRendererTest {
     @Test
-    fun `floor alternates along both axes and keeps the entire rim in the Hall material`() {
+    fun `rectangular Hall at negative coordinates has two structural rings and a checkerboard`() {
+        val hall = hall(BlockPos(-19, -4, -7), 8, 7)
         val black = Blocks.CONCRETE.black()
         val white = Blocks.CONCRETE.white()
         assertEquals("minecraft:black_concrete", BuiltInRegistries.BLOCK.getKey(black).toString())
         assertEquals("minecraft:white_concrete", BuiltInRegistries.BLOCK.getKey(white).toString())
-        val halls = listOf(hall(BlockPos(-19, -4, -7), 5, 5), hall(BlockPos(13, -1, 15), 8, 11))
-        for (hall in halls) {
-            val world = RecordingWorld()
-            world.render(hall, clearInterior = true)
-            for (x in hall.min.x..hall.max.x) for (z in hall.min.z..hall.max.z) {
-                val pos = BlockPos(x, hall.min.y, z)
-                if (x == hall.min.x || x == hall.max.x || z == hall.min.z || z == hall.max.z) {
-                    assertEquals(Blocks.SANDSTONE, world.read(pos).block, "$pos")
-                } else {
-                    assertTrue(world.read(pos).block in setOf(black, white))
-                    if (x + 1 < hall.max.x) assertNotEquals(world.read(pos), world.read(pos.east()))
-                    if (z + 1 < hall.max.z) assertNotEquals(world.read(pos), world.read(pos.south()))
-                }
+        val world = RecordingWorld()
+        world.render(hall, clearInterior = true)
+        val expected = listOf("FFFFFFFF", "FPPPPPPF", "FPBWBWPF", "FPWBWBPF", "FPBWBWPF", "FPPPPPPF", "FFFFFFFF")
+        val materials = mapOf('F' to Blocks.SANDSTONE, 'P' to Blocks.SANDSTONE, 'B' to black, 'W' to white)
+        expected.forEachIndexed { dz, row ->
+            row.forEachIndexed { dx, cell ->
+                val pos = hall.min.offset(dx, 0, dz)
+                assertEquals(materials.getValue(cell), world.read(pos).block, "$cell at $pos")
             }
-            assertEquals(black, world.read(hall.min.offset(1, 0, 1)).block)
         }
+    }
+
+    @Test
+    fun `minimum five by five Hall has one black center tile`() {
+        val hall = hall(BlockPos(3, -6, 15), 5, 5)
+        val world = RecordingWorld()
+        world.render(hall, clearInterior = true)
+
+        val floor = world.cells.filterKeys { it.y == hall.min.y }
+        val black = Blocks.CONCRETE.black().defaultBlockState()
+        assertEquals(25, floor.size)
+        assertEquals(mapOf(hall.min.offset(2, 0, 2) to black), floor.filterValues { it == black })
+        assertEquals(24, floor.values.count { it.block == Blocks.SANDSTONE })
+    }
+
+    @Test
+    fun `fresh ROOT Stage aligns with the checkerboard and Stage changes leave the floor intact`() {
+        val hall = hall(BlockPos(-8, -4, 12), 7, 8)
+        // The repository seeds a fresh ROOT at relative (2,1,2), with Hall width/depth minus four.
+        val root = requireNotNull(HallRegistry().install(hardeningHall()).stage).copy(
+            origin = BlockPos(-6, -3, 14), sizeX = 3, sizeY = 3, sizeZ = 4,
+        )
+        val world = RecordingWorld()
+        world.render(hall.copy(stage = root), clearInterior = true)
+        assertTrue(hall.permitsProjection(root))
+        val floor = world.cells.filterKeys { it.y == hall.min.y }
+        val concrete = setOf(Blocks.CONCRETE.black(), Blocks.CONCRETE.white())
+        floor.forEach { (pos, state) ->
+            assertEquals(root.contains(pos.above()), state.block in concrete, "Floor tile at $pos")
+        }
+
+        world.writes.clear()
+        val smallerStage = root.copy(origin = root.origin.east(), sizeX = 2, kind = "PROGRAM_BODY")
+        assertTrue(hall.permitsProjection(smallerStage))
+        world.render(hall.copy(stage = smallerStage), clearInterior = false)
+        assertTrue(world.writes.isEmpty())
+    }
+
+    @Test
+    fun `restore of a legacy checkerboard changes only the inner rim and then does no writes`() {
+        val hall = hall(BlockPos(-8, -4, 12), 7, 7)
+        val world = RecordingWorld()
+        world.render(hall, clearInterior = true)
+
+        val legacyRim = listOf("PPPPP", "P...P", "P...P", "P...P", "PPPPP").flatMapIndexed { z, row ->
+            row.mapIndexedNotNull { x, cell -> if (cell == 'P') hall.min.offset(x + 1, 0, z + 1) else null }
+        }
+        legacyRim.forEach { pos ->
+            val concrete = if ((pos.x - hall.min.x + pos.z - hall.min.z) % 2 == 0) Blocks.CONCRETE.black() else Blocks.CONCRETE.white()
+            world.cells[pos] = concrete.defaultBlockState()
+        }
+        world.writes.clear()
+        world.render(hall, clearInterior = false)
+        assertEquals(legacyRim.toSet(), world.writes.map { it.first }.toSet())
+        assertEquals(16, world.writes.size)
+        assertTrue(world.writes.all { it.second.block == Blocks.SANDSTONE })
+
+        world.writes.clear()
+        world.render(hall, clearInterior = false)
+        assertTrue(world.writes.isEmpty())
     }
 
     @Test
@@ -104,8 +159,8 @@ class HallStructureRendererTest {
         world.render(above, clearInterior = true)
         assertTrue(world.writes.none { base.contains(it.first) })
         assertEquals(baseShell, world.cells.filterKeys(base::contains))
-        assertEquals(Blocks.CONCRETE.black(), world.read(east.min.offset(1, 0, 1)).block)
-        assertEquals(Blocks.CONCRETE.black(), world.read(above.min.offset(1, 0, 1)).block)
+        assertEquals(Blocks.CONCRETE.black(), world.read(east.min.offset(2, 0, 2)).block)
+        assertEquals(Blocks.CONCRETE.black(), world.read(above.min.offset(2, 0, 2)).block)
     }
 
     private fun hall(min: BlockPos, width: Int, depth: Int): Hall = HallRegistry().install(hardeningHall()).copy(
