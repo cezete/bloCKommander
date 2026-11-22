@@ -56,6 +56,7 @@ class Interactions(
 
     fun register() {
         CommandRegistrationCallback.EVENT.register { dispatcher, _, _ ->
+            dispatcher.register(Commands.literal("ck").then(LightDebugCommand.branch()))
             dispatcher.register(Commands.literal("ck").then(Commands.literal("declarations").executes { context ->
                 val player = context.source.playerOrException
                 if (!ServerPlayNetworking.canSend(player, me.buciqua.blockommander.network.DeclarationStatePayload.TYPE)) {
