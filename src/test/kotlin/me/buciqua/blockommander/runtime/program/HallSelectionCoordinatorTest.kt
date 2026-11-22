@@ -99,6 +99,7 @@ class HallSelectionCoordinatorTest {
         override fun restoreState(position:GraphPosition,state:String) { events+="restore";if(state=="AIR") cells.remove(position) else cells[position]=state }
         override fun isManaged(position:GraphPosition)=cells[position]?.let { it.startsWith("CK:") || it.startsWith("WIRE:") } ?: false
         override fun validateProgramBlock(block:StageBlock)=block.type=="START"
+        override fun matchesProgramBlock(block:StageBlock)=cells[block.pos.let { GraphPosition(it.x,it.y,it.z) }]=="CK:${block.type}"
         override fun clearManaged(position:GraphPosition) { events+="clear";cells.remove(position) }
         override fun placeProgramBlock(block:StageBlock) { events+="program";check(!fail);cells[GraphPosition(block.pos.x,block.pos.y,block.pos.z)]="CK:START" }
         override fun renderSaveState(hall:Hall,dirty:Boolean) { events+="save:$dirty" }

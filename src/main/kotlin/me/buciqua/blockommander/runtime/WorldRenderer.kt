@@ -15,33 +15,52 @@ import net.minecraft.world.level.block.DoorBlock
 import net.minecraft.world.level.block.entity.SignBlockEntity
 import net.minecraft.world.level.block.entity.SignText
 import net.minecraft.world.level.block.entity.SignTextSlot
+import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.block.state.properties.AttachFace
 import net.minecraft.world.level.block.state.properties.BlockStateProperties
 import net.minecraft.world.level.block.state.properties.DoubleBlockHalf
 
 object WorldRenderer {
-    fun buildHall(level: ServerLevel, hall: Hall) {
-        buildHallStructure(level, hall)
+    fun buildHall(level: ServerLevel, hall: Hall, clearInterior: Boolean = false) {
+        buildHallStructure(level, hall, clearInterior)
         hall.controls.firstOrNull { it.kind == "SAVE_SIGN" }?.let { renderControl(level, hall, it) }
         renderStage(level, hall)
     }
 
-    fun buildHallStructure(level: ServerLevel, hall: Hall, clearInterior: Boolean = true) {
-        val wall = material(hall.material)
-        for (x in hall.min.x..hall.max.x) for (y in hall.min.y..hall.max.y) for (z in hall.min.z..hall.max.z) {
-            val shell = x == hall.min.x || x == hall.max.x || y == hall.min.y || y == hall.max.y || z == hall.min.z || z == hall.max.z
-            if (shell || clearInterior)
-                level.setBlockAndUpdate(BlockPos(x, y, z), if (shell) wall.defaultBlockState() else Blocks.AIR.defaultBlockState())
-        }
-        val windowY = hall.min.y + 2
-        for (x in hall.min.x + 1 until hall.max.x step 2) for (z in listOf(hall.min.z, hall.max.z))
-            level.setBlockAndUpdate(BlockPos(x, windowY, z), Blocks.GLASS.defaultBlockState())
-        for (z in hall.min.z + 1 until hall.max.z step 2) for (x in listOf(hall.min.x, hall.max.x))
-            level.setBlockAndUpdate(BlockPos(x, windowY, z), Blocks.GLASS.defaultBlockState())
-        for (x in hall.min.x + 2 until hall.max.x step 3) for (z in hall.min.z + 2 until hall.max.z step 3)
-            level.setBlockAndUpdate(BlockPos(x, hall.max.y, z), Blocks.GLOWSTONE.defaultBlockState())
+    fun buildHallStructure(level: ServerLevel, hall: Hall, clearInterior: Boolean = false) {
+        renderHallShell(hall, clearInterior, level::getBlockState) { pos, state -> level.setBlockAndUpdate(pos, state) }
         renderDoor(level, hall)
         hall.controls.filterNot { it.kind == "SAVE_SIGN" }.forEach { renderControl(level, hall, it) }
+    }
+
+    internal fun renderHallShell(hall: Hall, clearInterior: Boolean, read: (BlockPos) -> BlockState,
+                                 write: (BlockPos, BlockState) -> Unit) {
+        val wall = material(hall.material).defaultBlockState()
+        val black = Blocks.CONCRETE.black().defaultBlockState()
+        val white = Blocks.CONCRETE.white().defaultBlockState()
+        val glass = Blocks.GLASS.defaultBlockState()
+        val glowstone = Blocks.GLOWSTONE.defaultBlockState()
+        val air = Blocks.AIR.defaultBlockState()
+        val upperDoor = hall.door.above()
+        for (x in hall.min.x..hall.max.x) for (y in hall.min.y..hall.max.y) for (z in hall.min.z..hall.max.z) {
+            val dx = x - hall.min.x
+            val dz = z - hall.min.z
+            val xEdge = x == hall.min.x || x == hall.max.x
+            val zEdge = z == hall.min.z || z == hall.max.z
+            val desired = when {
+                y == hall.min.y -> if (xEdge || zEdge) wall else if ((dx + dz) % 2 == 0) black else white
+                y == hall.max.y -> if (!xEdge && !zEdge && dx % 3 == 2 && dz % 3 == 2) glowstone else wall
+                xEdge || zEdge -> {
+                    val window = y == hall.min.y + 2 &&
+                        ((zEdge && !xEdge && dx % 2 == 1) || (xEdge && !zEdge && dz % 2 == 1))
+                    if (window) glass else wall
+                }
+                clearInterior -> air
+                else -> continue
+            }
+            val pos = BlockPos(x, y, z)
+            if (pos != hall.door && pos != upperDoor && read(pos) != desired) write(pos, desired)
+        }
     }
 
     fun demolish(level: ServerLevel, hall: Hall) {
@@ -59,16 +78,17 @@ object WorldRenderer {
     fun renderStageBlocks(level: ServerLevel, hall: Hall) {
         val stage = hall.stage ?: return
         require(hall.permitsProjection(stage)) { "STAGE_OUTSIDE_HALL" }
+        val desiredPositions = stage.blocks.mapTo(hashSetOf()) { it.pos }
         for (x in stage.origin.x until stage.origin.x + stage.sizeX)
             for (y in stage.origin.y until stage.origin.y + stage.sizeY)
                 for (z in stage.origin.z until stage.origin.z + stage.sizeZ) {
                     val pos = BlockPos(x, y, z)
-                    if (ModContent.typeOf(level.getBlockState(pos).block) != null)
+                    if (pos !in desiredPositions && ModContent.typeOf(level.getBlockState(pos).block) != null)
                         level.setBlockAndUpdate(pos, Blocks.AIR.defaultBlockState())
                 }
         stage.blocks.forEach {
             val direction = runCatching { Direction.valueOf(it.orientation.uppercase()) }.getOrDefault(Direction.NORTH)
-            level.setBlockAndUpdate(it.pos, programBlock(it.type).defaultBlockState().setValue(HorizontalDirectionalBlock.FACING, direction))
+            setIfChanged(level, it.pos, programBlock(it.type).defaultBlockState().setValue(HorizontalDirectionalBlock.FACING, direction))
         }
     }
 
@@ -84,8 +104,8 @@ object WorldRenderer {
             .setValue(DoorBlock.FACING, facing)
             .setValue(DoorBlock.HALF, DoubleBlockHalf.LOWER)
         val upper = lower.setValue(DoorBlock.HALF, DoubleBlockHalf.UPPER)
-        level.setBlockAndUpdate(hall.door, lower)
-        level.setBlockAndUpdate(hall.door.above(), upper)
+        setIfChanged(level, hall.door, lower)
+        setIfChanged(level, hall.door.above(), upper)
     }
 
     internal fun programBlock(type: String): Block = when (type) {
@@ -101,13 +121,13 @@ object WorldRenderer {
             val state = Blocks.STONE_BUTTON.defaultBlockState()
                 .setValue(BlockStateProperties.ATTACH_FACE, AttachFace.WALL)
                 .setValue(HorizontalDirectionalBlock.FACING, inward)
-            level.setBlockAndUpdate(control.pos, state)
+            setIfChanged(level, control.pos, state)
             return
         }
 
         val facing = if (control.kind == "OWNER_SIGN") inward.opposite else inward
         val state = Blocks.OAK_WALL_SIGN.defaultBlockState().setValue(WallSignBlock.FACING, facing)
-        level.setBlockAndUpdate(control.pos, state)
+        setIfChanged(level, control.pos, state)
         val lines = when (control.kind) {
             "OWNER_SIGN" -> listOf("Fejlesztői", "csarnok", hall.ownerName.take(15), hall.name.take(15))
             "DESTROY_SIGN" -> listOf("Csarnok", "megszüntetése", "Tulajdonos", "gombja")
@@ -133,6 +153,10 @@ object WorldRenderer {
             "world_uuid" to hall.worldUuid,"dirty" to (graphDirty ?: hall.programDirty),
             "stage_role" to "RENDER_ARGUMENT","displayed_text" to lines.last(),
             "epoch" to hall.stage?.workspaceEpoch,"revision" to hall.stage?.workingRevision)
+    }
+
+    private fun setIfChanged(level: ServerLevel, pos: BlockPos, state: BlockState) {
+        if (level.getBlockState(pos) != state) level.setBlockAndUpdate(pos, state)
     }
 
     private fun material(name: String): Block {

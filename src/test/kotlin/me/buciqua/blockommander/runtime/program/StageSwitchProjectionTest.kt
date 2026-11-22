@@ -15,14 +15,14 @@ class StageSwitchProjectionTest {
         val registry:HallRegistry,val token:StageSwitchToken,val prepared:PreparedStageSwitch,
         val world:RecordingWorld,val committer:StageSwitchProjection<String>,
     )
-    private fun fixture(transform:(GraphStateSnapshot)->GraphStateSnapshot={it}):Fixture {
+    private fun fixture(targetId:UUID=OTHER_STAGE_ID,transform:(GraphStateSnapshot)->GraphStateSnapshot={it}):Fixture {
         val registry=HallRegistry(); val hall=registry.install(hardeningHall())
         val token=registry.beginStageSwitch(HALL_ID.toString(),PLAYER_ID)!!
-        val target=hall.stage!!.copy(id=OTHER_STAGE_ID.toString(),workingRevision=1,blocks=listOf(
+        val target=hall.stage!!.copy(id=targetId.toString(),workingRevision=1,blocks=listOf(
             StageBlock(UUID.randomUUID().toString(),"START",programPosition.blockPos(),"NORTH","START","")))
-        val graph=transform(wireSnapshot(1).copy(stageId=OTHER_STAGE_ID))
-        assertTrue(registry.prepareStageSwitchProjection(token,PROGRAM_ID,EPOCH_B,1,OTHER_STAGE_ID,EPOCH_A,1))
-        val key=hall.projectionKey(OTHER_STAGE_ID); val store=registry.graphProjections
+        val graph=transform(wireSnapshot(1).copy(stageId=targetId))
+        assertTrue(registry.prepareStageSwitchProjection(token,PROGRAM_ID,EPOCH_B,1,targetId,EPOCH_A,1))
+        val key=hall.projectionKey(targetId); val store=registry.graphProjections
         assertInstanceOf(GraphApplyResult.Applied::class.java,
             store.apply(store.begin(key,GraphRequestKind.RECONCILIATION),graph))
         val prepared=PreparedStageSwitch(target,graph,ProgramSwitchContext(PROGRAM_ID,EPOCH_B,1),true,
@@ -80,6 +80,21 @@ class StageSwitchProjectionTest {
         assertEquals(0,f.world.writes)
     }
 
+    @Test fun `same Stage reconciliation retains correct CK blocks and Wire and leaves user work untouched`() {
+        val f=fixture(targetId=STAGE_ID)
+        val userBlock=GraphPosition(4,1,1)
+        f.world.cells[programPosition]="CK:START"
+        f.world.cells[wirePosition]="WIRE:EAST_WEST"
+        f.world.cells[userBlock]="STONE"
+        val before=f.world.cells.toMap()
+
+        assertTrue(f.committer.commit(f.token,f.prepared))
+        assertEquals(before,f.world.cells)
+        assertEquals(1,f.world.boards)
+        assertEquals(f.world.boards,f.world.writes)
+        assertEquals(GraphSyncStatus.SYNCED,f.registry.graphProjections.view(f.registry.hall(HALL_ID.toString())!!.projectionKey())!!.status)
+    }
+
     @Test fun `execution failure still rolls physical state back`() {
         val f=fixture(); val before=f.world.cells.toMap()
         f.world.failPlacement=true
@@ -107,6 +122,7 @@ class StageSwitchProjectionTest {
             it.startsWith("CK:") || it.startsWith("WIRE:")
         } ?: false
         override fun validateProgramBlock(block:StageBlock)=block.type=="START" && block.orientation=="NORTH"
+        override fun matchesProgramBlock(block:StageBlock)=cells[block.pos.let { GraphPosition(it.x,it.y,it.z) }]=="CK:${block.type}"
         override fun clearManaged(position:GraphPosition) { writes++;cells.remove(position) }
         override fun placeProgramBlock(block:StageBlock) {
             writes++;cells[GraphPosition(block.pos.x,block.pos.y,block.pos.z)]="CK:${block.type}"

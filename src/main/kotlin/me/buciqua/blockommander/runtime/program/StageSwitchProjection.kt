@@ -12,6 +12,7 @@ interface StageSwitchWorld<S>:WireWorldAccess {
     fun restoreState(position:GraphPosition,state:S)
     fun isManaged(position:GraphPosition):Boolean
     fun validateProgramBlock(block:StageBlock):Boolean
+    fun matchesProgramBlock(block:StageBlock):Boolean
     fun clearManaged(position:GraphPosition)
     fun placeProgramBlock(block:StageBlock)
     fun renderSaveState(hall:Hall,dirty:Boolean)
@@ -23,7 +24,7 @@ class StageSwitchProjection<S>(
     private val projector:WireWorldProjector=WireWorldProjector(),
 ):StageSwitchCommitter {
     private data class Plan<S>(
-        val before:Map<GraphPosition,S>, val cleared:Set<GraphPosition>, val affected:Set<GraphPosition>,
+        val before:Map<GraphPosition,S>, val cleared:Set<GraphPosition>, val placed:List<StageBlock>, val affected:Set<GraphPosition>,
         val wire:WireProjectionPlan,
     )
 
@@ -43,7 +44,7 @@ class StageSwitchProjection<S>(
                     context.workspaceEpoch,context.hierarchyRevision)) return@withStageSwitch false
             try {
                 plan.cleared.forEach(world::clearManaged)
-                prepared.target.blocks.forEach(world::placeProgramBlock)
+                plan.placed.forEach(world::placeProgramBlock)
                 check(projector.applyPrepared(plan.wire,world).complete) { "WIRE_PROJECTION_FAILED" }
                 Diagnostics.event("SAVE_SIGN_TARGET",hall.projectionKey(targetId),"origin" to "STAGE_SWITCH",
                     "displayed_source_stage_id" to token.sourceStageId,"target_stage_id" to targetId,
@@ -79,9 +80,21 @@ class StageSwitchProjection<S>(
             target.blocks.any { !world.validateProgramBlock(it) }) return null
         val volume=(positions(source)+positions(target)).toSet()
         val before=volume.associateWith(world::readState)
-        val cleared=volume.filter(world::isManaged).toSet()
+        val wireStage=WireStageContext(hall.transportContext,UUID.fromString(target.id),
+            GraphPosition(target.origin.x,target.origin.y,target.origin.z),
+            GraphPosition(target.sizeX,target.sizeY,target.sizeZ),target.workspaceEpoch,prepared.projectionLifecycle)
+        val wirePositions=prepared.graph.wireCells.map { wireStage.origin+it.position }.toSet()
+        if (!volume.containsAll(wirePositions)) return null
+
+        val sameStage=source.id==target.id
+        val placed=if (sameStage) target.blocks.filterNot(world::matchesProgramBlock) else target.blocks
         val programPositions=target.blocks.map { GraphPosition(it.pos.x,it.pos.y,it.pos.z) }.toSet()
-        if (programPositions.any { it !in cleared && world.cell(it)!=WireWorldCell.REPLACEABLE }) return null
+        val placementPositions=placed.map { GraphPosition(it.pos.x,it.pos.y,it.pos.z) }.toSet()
+        val retainedPrograms=programPositions-placementPositions
+        val retainedWires=if (sameStage) (wirePositions-programPositions).filter { world.cell(it).isCkWire }.toSet()
+            else emptySet()
+        val cleared=volume.filter(world::isManaged).toSet()-retainedPrograms-retainedWires
+        if (placementPositions.any { it !in cleared && world.cell(it)!=WireWorldCell.REPLACEABLE }) return null
         // Model the planned final space: removed managed CK cells are replaceable,
         // but target program blocks must be treated as obstacles by Wire planning.
         val plannedSpace=object:WireWorldAccess by world {
@@ -92,14 +105,9 @@ class StageSwitchProjection<S>(
             }
             override fun ckWirePositions(stage:WireStageContext)=emptySet<GraphPosition>()
         }
-        val wireStage=WireStageContext(hall.transportContext,UUID.fromString(target.id),
-            GraphPosition(target.origin.x,target.origin.y,target.origin.z),
-            GraphPosition(target.sizeX,target.sizeY,target.sizeZ),target.workspaceEpoch,prepared.projectionLifecycle)
         val wire=projector.prepare(wireStage,prepared.graph.workingRevision,prepared.graph,plannedSpace)
         if (wire.issues.isNotEmpty()) return null
-        val wirePositions=prepared.graph.wireCells.map { wireStage.origin+it.position }.toSet()
-        if (!volume.containsAll(wirePositions)) return null
-        return Plan(before,cleared,cleared+programPositions+wirePositions,wire)
+        return Plan(before,cleared,placed,cleared+placementPositions+wirePositions,wire)
     }
 
     private fun positions(stage:Stage)=sequence {

@@ -613,7 +613,9 @@ class Interactions(
             add("p1", pos(selection.first)); add("p2", pos(BlockPos(second.x, selection.first.y, second.z)))
         }
         api.post(player, "/api/v1/halls", payload) { response ->
-            val hall = registry.install(response.getAsJsonObject("hall")); WorldRenderer.buildHall(level, hall); selections.remove(player.uuid)
+            val hall = registry.install(response.getAsJsonObject("hall"))
+            WorldRenderer.buildHall(level, hall, clearInterior = true)
+            selections.remove(player.uuid)
         }
     }
 

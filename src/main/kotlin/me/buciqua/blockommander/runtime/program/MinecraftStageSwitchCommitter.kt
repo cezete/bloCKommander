@@ -38,6 +38,7 @@ private class MinecraftStageSwitchWorld(
         return mapped.defaultBlockState().setValue(HorizontalDirectionalBlock.FACING,direction)
     }
     override fun validateProgramBlock(block:StageBlock)=runCatching { programState(block);true }.getOrDefault(false)
+    override fun matchesProgramBlock(block:StageBlock)=level.getBlockState(block.pos)==programState(block)
     override fun clearManaged(position:GraphPosition) {
         if (isManaged(position)) check(level.setBlockAndUpdate(position.blockPos(),Blocks.AIR.defaultBlockState()))
     }
