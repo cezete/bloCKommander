@@ -19,9 +19,21 @@ class BlockCommanderClient : ClientModInitializer {
         var surfaces: EditorSurfaceFence? = null
         var levelIdentity: Any? = null
         val connections = EditorClientConnectionFence()
+        val floorOutline = FloorOutlineClientState(connections)
+        FloorOutlineRendering.register(floorOutline)
         ClientPlayConnectionEvents.JOIN.register { handler, _, client ->
             connections.join(handler); model?.transportClosed(); declarations?.transportClosed()
+            floorOutline.reset()
             model = null; declarations = null; surfaces = null; levelIdentity = client.level
+        }
+        ClientPlayNetworking.registerGlobalReceiver(FloorOutlinePayload.TYPE) { payload, context ->
+            val client = context.client()
+            val connection = context.player().connection
+            val receivedLevel = client.level
+            client.execute {
+                val currentLevel = client.level
+                floorOutline.receive(payload, connection, receivedLevel, currentLevel, currentLevel?.dimension()?.identifier())
+            }
         }
         ClientPlayNetworking.registerGlobalReceiver(EditorStatePayload.TYPE) { payload, context ->
             val connection = connections.token
@@ -83,6 +95,7 @@ class BlockCommanderClient : ClientModInitializer {
         }
         ClientPlayConnectionEvents.DISCONNECT.register { handler, _ ->
             if (connections.disconnect(handler)) {
+                floorOutline.reset()
                 model?.transportClosed(); declarations?.transportClosed(); surfaces?.invalidate()
                 model = null; declarations = null; surfaces = null; levelIdentity = null
             }

@@ -17,14 +17,14 @@ class HallStructureRendererTest {
     @Test
     fun `rectangular Hall at negative coordinates has two structural rings and a checkerboard`() {
         val hall = hall(BlockPos(-19, -4, -7), 8, 7)
-        val black = Blocks.CONCRETE.black()
+        val lightGray = Blocks.CONCRETE.lightGray()
         val white = Blocks.CONCRETE.white()
-        assertEquals("minecraft:black_concrete", BuiltInRegistries.BLOCK.getKey(black).toString())
+        assertEquals("minecraft:light_gray_concrete", BuiltInRegistries.BLOCK.getKey(lightGray).toString())
         assertEquals("minecraft:white_concrete", BuiltInRegistries.BLOCK.getKey(white).toString())
         val world = RecordingWorld()
         world.render(hall, clearInterior = true)
-        val expected = listOf("FFFFFFFF", "FPPPPPPF", "FPBWBWPF", "FPWBWBPF", "FPBWBWPF", "FPPPPPPF", "FFFFFFFF")
-        val materials = mapOf('F' to Blocks.SANDSTONE, 'P' to Blocks.SANDSTONE, 'B' to black, 'W' to white)
+        val expected = listOf("FFFFFFFF", "FPPPPPPF", "FPGWGWPF", "FPWGWGPF", "FPGWGWPF", "FPPPPPPF", "FFFFFFFF")
+        val materials = mapOf('F' to Blocks.SANDSTONE, 'P' to Blocks.SANDSTONE, 'G' to lightGray, 'W' to white)
         expected.forEachIndexed { dz, row ->
             row.forEachIndexed { dx, cell ->
                 val pos = hall.min.offset(dx, 0, dz)
@@ -34,15 +34,15 @@ class HallStructureRendererTest {
     }
 
     @Test
-    fun `minimum five by five Hall has one black center tile`() {
+    fun `minimum five by five Hall has one light gray center tile`() {
         val hall = hall(BlockPos(3, -6, 15), 5, 5)
         val world = RecordingWorld()
         world.render(hall, clearInterior = true)
 
         val floor = world.cells.filterKeys { it.y == hall.min.y }
-        val black = Blocks.CONCRETE.black().defaultBlockState()
+        val lightGray = Blocks.CONCRETE.lightGray().defaultBlockState()
         assertEquals(25, floor.size)
-        assertEquals(mapOf(hall.min.offset(2, 0, 2) to black), floor.filterValues { it == black })
+        assertEquals(mapOf(hall.min.offset(2, 0, 2) to lightGray), floor.filterValues { it == lightGray })
         assertEquals(24, floor.values.count { it.block == Blocks.SANDSTONE })
     }
 
@@ -57,7 +57,7 @@ class HallStructureRendererTest {
         world.render(hall.copy(stage = root), clearInterior = true)
         assertTrue(hall.permitsProjection(root))
         val floor = world.cells.filterKeys { it.y == hall.min.y }
-        val concrete = setOf(Blocks.CONCRETE.black(), Blocks.CONCRETE.white())
+        val concrete = setOf(Blocks.CONCRETE.lightGray(), Blocks.CONCRETE.white())
         floor.forEach { (pos, state) ->
             assertEquals(root.contains(pos.above()), state.block in concrete, "Floor tile at $pos")
         }
@@ -66,6 +66,25 @@ class HallStructureRendererTest {
         val smallerStage = root.copy(origin = root.origin.east(), sizeX = 2, kind = "PROGRAM_BODY")
         assertTrue(hall.permitsProjection(smallerStage))
         world.render(hall.copy(stage = smallerStage), clearInterior = false)
+        assertTrue(world.writes.isEmpty())
+    }
+
+    @Test
+    fun `restore recolors only the old black tiles and is idempotent`() {
+        val hall = hall(BlockPos(-9, -4, 12), 7, 7)
+        val world = RecordingWorld()
+        world.render(hall, clearInterior = true)
+        val oldBlack = setOf(hall.min.offset(2, 0, 2), hall.min.offset(4, 0, 2), hall.min.offset(3, 0, 3),
+            hall.min.offset(2, 0, 4), hall.min.offset(4, 0, 4))
+        oldBlack.forEach { world.cells[it] = Blocks.CONCRETE.black().defaultBlockState() }
+
+        world.writes.clear()
+        world.render(hall, clearInterior = false)
+        assertEquals(oldBlack, world.writes.map { it.first }.toSet())
+        assertEquals(oldBlack.size, world.writes.size)
+        assertTrue(world.writes.all { it.second.block == Blocks.CONCRETE.lightGray() })
+        world.writes.clear()
+        world.render(hall, clearInterior = false)
         assertTrue(world.writes.isEmpty())
     }
 
@@ -159,8 +178,8 @@ class HallStructureRendererTest {
         world.render(above, clearInterior = true)
         assertTrue(world.writes.none { base.contains(it.first) })
         assertEquals(baseShell, world.cells.filterKeys(base::contains))
-        assertEquals(Blocks.CONCRETE.black(), world.read(east.min.offset(2, 0, 2)).block)
-        assertEquals(Blocks.CONCRETE.black(), world.read(above.min.offset(2, 0, 2)).block)
+        assertEquals(Blocks.CONCRETE.lightGray(), world.read(east.min.offset(2, 0, 2)).block)
+        assertEquals(Blocks.CONCRETE.lightGray(), world.read(above.min.offset(2, 0, 2)).block)
     }
 
     private fun hall(min: BlockPos, width: Int, depth: Int): Hall = HallRegistry().install(hardeningHall()).copy(

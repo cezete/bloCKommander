@@ -15,6 +15,7 @@ object Networking {
         PayloadTypeRegistry.clientboundPlay().register(DeclarationStatePayload.TYPE, DeclarationStatePayload.CODEC)
         PayloadTypeRegistry.serverboundPlay().register(DeclarationIntentPayload.TYPE, DeclarationIntentPayload.CODEC)
         PayloadTypeRegistry.clientboundPlay().register(LetStatePayload.TYPE, LetStatePayload.CODEC)
+        PayloadTypeRegistry.clientboundPlay().register(FloorOutlinePayload.TYPE, FloorOutlinePayload.CODEC)
         PayloadTypeRegistry.serverboundPlay().register(LetIntentPayload.TYPE, LetIntentPayload.CODEC)
         ServerPlayNetworking.registerGlobalReceiver(LetIntentPayload.TYPE) { payload, context ->
             context.server().execute { BlockCommanderMod.letRuntime?.intent(context.player(),payload) }

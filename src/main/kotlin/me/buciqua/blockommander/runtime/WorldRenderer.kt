@@ -36,7 +36,7 @@ object WorldRenderer {
     internal fun renderHallShell(hall: Hall, clearInterior: Boolean, read: (BlockPos) -> BlockState,
                                  write: (BlockPos, BlockState) -> Unit) {
         val wall = material(hall.material).defaultBlockState()
-        val black = Blocks.CONCRETE.black().defaultBlockState()
+        val lightGray = Blocks.CONCRETE.lightGray().defaultBlockState()
         val white = Blocks.CONCRETE.white().defaultBlockState()
         val glass = Blocks.GLASS.defaultBlockState()
         val glowstone = Blocks.GLOWSTONE.defaultBlockState()
@@ -51,7 +51,7 @@ object WorldRenderer {
                 y == hall.min.y -> {
                     val floorRim = dx < 2 || hall.max.x - x < 2 || dz < 2 || hall.max.z - z < 2
                     val checkerboardOffset = (dx - 2) + (dz - 2)
-                    if (floorRim) wall else if (checkerboardOffset % 2 == 0) black else white
+                    if (floorRim) wall else if (checkerboardOffset % 2 == 0) lightGray else white
                 }
                 y == hall.max.y -> if (!xEdge && !zEdge && dx % 3 == 2 && dz % 3 == 2) glowstone else wall
                 xEdge || zEdge -> {

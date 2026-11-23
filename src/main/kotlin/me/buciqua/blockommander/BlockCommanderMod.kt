@@ -3,6 +3,7 @@ package me.buciqua.blockommander
 import net.fabricmc.api.ModInitializer
 import net.minecraft.resources.Identifier
 import me.buciqua.blockommander.runtime.ApiClient
+import me.buciqua.blockommander.runtime.FloorOutlinePublisher
 import me.buciqua.blockommander.runtime.HallRegistry
 import me.buciqua.blockommander.runtime.Interactions
 import me.buciqua.blockommander.runtime.graph.GraphApiClient
@@ -51,6 +52,7 @@ class BlockCommanderMod : ModInitializer {
     override fun onInitialize() {
         ModContent.initialize()
         val registry = HallRegistry()
+        val floorOutline = FloorOutlinePublisher(registry)
         val wireCoordinator = AtomicReference<WireInteractionCoordinator?>()
         val stageNavigation = AtomicReference<StageNavigationCoordinator?>()
         val hallSelection = AtomicReference<HallSelectionCoordinator?>()
@@ -108,6 +110,7 @@ class BlockCommanderMod : ModInitializer {
                 stageNavigation.get()!!,mainThread))
         }
         ServerLifecycleEvents.SERVER_STOPPED.register {
+            floorOutline.clear()
             editorSessions = null
             declarationSessions = null
             letRuntime = null
@@ -121,9 +124,13 @@ class BlockCommanderMod : ModInitializer {
             editorSessions?.joined(handler.player); declarationSessions?.joined(handler.player); letRuntime?.joined(handler.player)
         }
         ServerPlayConnectionEvents.DISCONNECT.register { handler, _ ->
+            floorOutline.disconnected(handler)
             editorSessions?.disconnected(handler.player); declarationSessions?.disconnected(handler.player); letRuntime?.disconnected(handler.player)
         }
-        ServerTickEvents.END_SERVER_TICK.register { editorSessions?.tick(); declarationSessions?.tick(); letRuntime?.tick() }
+        ServerTickEvents.END_SERVER_TICK.register { server ->
+            editorSessions?.tick(); declarationSessions?.tick(); letRuntime?.tick()
+            server.playerList.players.forEach(floorOutline::update)
+        }
         ServerEntityLevelChangeEvents.AFTER_PLAYER_CHANGE_LEVEL.register { player, _, _ ->
             editorSessions?.worldChanged(player); declarationSessions?.worldChanged(player); letRuntime?.worldChanged(player)
         }
